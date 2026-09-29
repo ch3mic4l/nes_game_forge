@@ -11,7 +11,7 @@ import { unsavedChanges, setSmokeNewProjectPath } from './ipc.js';
 import { decodePng } from '../test/lib/pngdecode.js';
 import { decodeGif } from '../test/lib/gifdecode.js';
 import { loadProject } from './project-io.js';
-import { checkCapacity } from './build/generate.js';
+import { checkCapacity, streamworldDialogueBanked } from './build/generate.js';
 import { battleRegionBytes, battleRegionCeiling } from './build/battletables.js';
 import { resolveMapper } from '../shared/cartridge.js';
 import { encodeTiles } from '../shared/chr.js';
@@ -19,6 +19,11 @@ import { STARTERS } from '../shared/starters/index.js';
 import { buildProject } from './build/pipeline.js';
 import { Emulator, BUTTON } from '../renderer/emulator/runcontrol.js';
 import { finishNamingIfOpen } from '../test/lib/naming.js';
+
+// The used-bytes figure exactly as checkCapacity asks for it (generate.js hands battleRegionBytes the
+// placement decision), so the on-screen meter is compared with the build's own number, not the panel's.
+const buildRegionBytes = (project, mapper) =>
+  battleRegionBytes(project, mapper, { streamDialogueBanked: streamworldDialogueBanked(project, mapper) });
 
 /**
  * A canned CHR file payload for the files:readBinary override -- one flat,
@@ -13879,12 +13884,12 @@ export async function runSmoke(window) {
     const pristine = await loadProject(sampleRpgCopy);
     const pristineMapper = resolveMapper(pristine.cartridge.mapper);
     if (
-      meter.fits.used !== battleRegionBytes(pristine, pristineMapper) ||
+      meter.fits.used !== buildRegionBytes(pristine, pristineMapper) ||
       meter.fits.total !== battleRegionCeiling(pristineMapper)
     ) {
       throw new Error(
         `the Build panel showed ${meter.fits.used}/${meter.fits.total} for the battle region, but the ` +
-          `capacity check says ${battleRegionBytes(pristine, pristineMapper)}/${battleRegionCeiling(pristineMapper)}`
+          `capacity check says ${buildRegionBytes(pristine, pristineMapper)}/${battleRegionCeiling(pristineMapper)}`
       );
     }
     if (meter.fits.used > meter.fits.total) throw new Error('the pristine RPG fixture should not overflow its region');
@@ -13893,12 +13898,12 @@ export async function runSmoke(window) {
     // ...and the overflowing side, so the boundary is crossed on screen.
     const overMapper = resolveMapper(meter.overProject.cartridge.mapper);
     if (
-      meter.over.used !== battleRegionBytes(meter.overProject, overMapper) ||
+      meter.over.used !== buildRegionBytes(meter.overProject, overMapper) ||
       meter.over.total !== battleRegionCeiling(overMapper)
     ) {
       throw new Error(
         `the Build panel showed ${meter.over.used}/${meter.over.total} for the overflowing project, but the ` +
-          `capacity check says ${battleRegionBytes(meter.overProject, overMapper)}/${battleRegionCeiling(overMapper)}`
+          `capacity check says ${buildRegionBytes(meter.overProject, overMapper)}/${battleRegionCeiling(overMapper)}`
       );
     }
     if (meter.over.used <= meter.over.total) throw new Error('the overflow case never actually overflowed the meter');

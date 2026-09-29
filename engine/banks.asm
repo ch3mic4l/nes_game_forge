@@ -419,6 +419,16 @@ call_battle:                ; A = a BE_* entry point
   ; repeat on every entry point, including BE_TICK every frame the fight
   ; runs -- the world is frozen for gameplay's own strip-arming path by
   ; then, so this is a no-op after the first call.
+  .if SW_DLG_BANKED
+  ; Phase 2 slice 10b: the streamed dialogue overlay's entry points (BE_DLG_*)
+  ; never cancel. sw_dlg15_pending_step WAITS for st_active to go idle, every
+  ; frame, so a cancel on each of those entries would kill the very strip it is
+  ; waiting on. NMI's strip drain reads sbuf (RAM) and the overlay only queues
+  ; vram_buf packets, so neither races the strip -- the hazard the cancel below
+  ; guards against is battle's own direct $2006 writes.
+  cmp #BE_DLG_FIRST
+  bcs call_battle_strip_cancel_done
+  .endif
 call_battle_strip_cancel:
   lda #0
   sta st_active

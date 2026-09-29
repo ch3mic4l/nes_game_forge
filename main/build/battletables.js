@@ -763,6 +763,19 @@ export const NAME_COPY_BATTLE_ALLOWANCE = 43;
 // streaming does not fit kernel-hi on any implemented board).
 export const STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE = 47;
 
+// Phase 2 slice 10b (ROADMAP item 15): the streamed-world dialogue overlay
+// (engine/streamdialog.asm) as the THIRD occupant of this bank, after battle
+// and naming -- present only when streamworldDialogueBanked (main/build/
+// generate.js, the single predicate) says the project's music+sfx+text would
+// not fit kernel-hi. It is the overlay's whole banked placement
+// (sw_dlg_banked_start..sw_dlg_banked_end: the mapper, writers, lifecycle and
+// the twelve dialogue bodies, the entry stubs and be_dlg_dispatch's table) plus
+// battle_entry's own 7-byte BE_DLG_FIRST intercept, measured as the exact
+// difference in nesasm's real region usage between the relocated and resident
+// builds of one project (test/unit/bankedbytes.test.js). Flat across Save/Move:
+// what those change stays resident.
+export const STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE = 1385;
+
 // monster_turn's pick-first rewrite plus its two gated helpers
 // (mod_monster_len, monster_pick_limit) -- docs/design-monster-spell-list.md
 // §6/§7, measured (a real prototype, rebuilt and remeasured, §6's own
@@ -924,7 +937,7 @@ export function emittedBytes(source) {
  * battle.asm itself includes, and they are in this region for that reason
  * rather than by being named anywhere the generator can see.
  */
-export const BATTLE_REGION_SOURCES = ['battle.asm', 'battleui.asm', 'battleturn.asm', 'nameentry.asm'];
+export const BATTLE_REGION_SOURCES = ['battle.asm', 'battleui.asm', 'battleturn.asm', 'nameentry.asm', 'streamdialog.asm'];
 
 /**
  * Files that are not *in* the region but decide what goes into it and where.
@@ -1094,7 +1107,7 @@ export function battleRegionPlacementOverridden(project) {
  * third occupant for a reservation to leave room for -- and because those two
  * numbers are exactly what a meter renders.
  */
-export function battleRegionBytes(project, mapper) {
+export function battleRegionBytes(project, mapper, { streamDialogueBanked = false } = {}) {
   const banked = battleBankEnabled(project, mapper);
   return (
     baseBattleCodeBytes(mapper) +
@@ -1109,7 +1122,12 @@ export function battleRegionBytes(project, mapper) {
     (projectUsesAnyBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
     (projectUsesPartyAttackAnim(project) ? PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE : 0) +
     (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0) +
-    (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0)
+    (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0) +
+    // streamworldDialogueBanked (main/build/generate.js) is the single writer of this
+    // flag but needs the resident kernel-hi ledger, which this module (importable by
+    // the renderer) cannot reach -- so the caller hands it in, and one that omits it
+    // gets the figure for a project that did not relocate.
+    (streamDialogueBanked ? STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE : 0)
   );
 }
 
@@ -1169,7 +1187,12 @@ export function battleRegionCeiling(mapper) {
  * NAME_LIMIT, so renaming a monster to one letter frees exactly nothing, and
  * advice that sends an author off to do that would be worse than no advice.
  */
-export function battleShortfallAdvice(project, mapper, deficit, { alternatives = [], exact = true } = {}) {
+export function battleShortfallAdvice(
+  project,
+  mapper,
+  deficit,
+  { alternatives = [], exact = true, streamDialogueBanked = false } = {}
+) {
   const target = battleTableBytes(project) - deficit;
   const levers = [
     {
@@ -1294,9 +1317,10 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     }
   }
   if (bankedFeatures.length) {
-    const bankedBudget = battleRegionBytes(project, mapper);
+    const bankedBudget = battleRegionBytes(project, mapper, { streamDialogueBanked });
     const bankedFreed = (subset) =>
-      bankedBudget - battleRegionBytes(subset.reduce((p, f) => f.strip(p), project), mapper);
+      bankedBudget -
+      battleRegionBytes(subset.reduce((p, f) => f.strip(p), project), mapper, { streamDialogueBanked });
     const soloWinners = bankedFeatures.filter((f) => bankedFreed([f]) >= deficit);
     if (soloWinners.length) {
       for (const f of soloWinners) options.push(`removing ${f.label}`);
@@ -1312,8 +1336,12 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
   // board is offered and none is ruled out either.
   const roomier = exact
     ? alternatives
-        .filter((candidate) => battleRegionBytes(project, candidate) <= battleRegionCeiling(candidate))
-        .sort((a, b) => battleRegionBytes(project, a) - battleRegionBytes(project, b))[0]
+        .filter((candidate) => battleRegionBytes(project, candidate, { streamDialogueBanked }) <= battleRegionCeiling(candidate))
+        .sort(
+          (a, b) =>
+            battleRegionBytes(project, a, { streamDialogueBanked }) -
+            battleRegionBytes(project, b, { streamDialogueBanked })
+        )[0]
     : undefined;
   let boards;
   if (!exact) {

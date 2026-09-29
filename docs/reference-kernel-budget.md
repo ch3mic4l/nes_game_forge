@@ -390,6 +390,27 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   Against the design's own original 2053+1616+123 split for base/dialogue/Move, the growth is +3160
   (base) −261 (dialogue) −2 (Move) = **+2897**, entirely inside the resident package's measured
   growth since the design estimate (`docs/design-streamed-worlds.md`'s own matching note).
+- **Phase 2 slice 10b — the dialogue overlay relocated (`streamworldDialogueBanked`,
+  `main/build/streamplacement.js:584`, the one predicate, re-exported by `generate.js`; it also writes the generated `SW_DLG_BANKED`).**
+  For a pinching project (streamed + text + battle bank + content over the resident ceiling) the three
+  overlay terms above (613 + lifecycle/terrain consumer + 222 = 1,355) are **not charged to kernel-hi at
+  all**; instead `STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE` 113 (`generate.js:1311`, the resident shim block
+  `sw_dlg_shim_start..end` less the `.if SAVE_FLASH` check the Save allowance already charges) and
+  `STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE` 4 (`generate.js:1315`, kernel-lo: `call_battle`'s
+  `cmp #BE_DLG_FIRST / bcs`) are, and the overlay's own bytes are charged to the battle region as
+  `STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE` 1,385 (`main/build/battletables.js:777`, passed to
+  `battleRegionBytes` as `{streamDialogueBanked}` because that file must stay renderer-safe and cannot
+  import the predicate; the Build panel's meter reaches the predicate through `battleRegionBytesPlaced`,
+  `streamplacement.js:645`, which the renderer may import because that module and everything it
+  imports is pure — the predicate and the resident kernel-hi allowances it sums moved there verbatim,
+  and `generate.js` re-exports every name it used to export; `test/unit/streamplacement.test.js` pins
+  the import closure, the panel's call and the 1,385-byte difference against the resident twin). Each is equality-asserted against nesasm: the 1,385 by
+  `test/unit/bankedbytes.test.js` (per variant, no-Save/Save/Move, against the resident twin), the 113 and
+  the 4 by `test/unit/kernelbytes.test.js`. `residentContentCeilingBytes` (`generate.js:3200`) is the ceiling the
+  predicate compares against; `contentCeilingBytes` is the relocated one (resident + 1,242). The
+  region-fit check (`checkCapacity`) and `switchableMappers` both pass the predicate, so a candidate
+  mapper is never offered on the resident ceiling's arithmetic. Measured figures: see
+  `docs/design-streamed-worlds.md`'s slice 10b note.
 - Phase 2 slice 2b, Part F: ten more kernel-**lo** terms streaming adds (plus two more from phase 2
   slice 4b, listed at the end of this group), each its own named allowance (`main/build/generate.js`,
   all gated on `projectUsesStreaming`, added inside `kernelCodeBytes`), measured as

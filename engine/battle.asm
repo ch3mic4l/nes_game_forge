@@ -22,6 +22,15 @@ battle_entry:
   bne battle_entry_tick
   jmp party_init
 battle_entry_tick:
+  .if SW_DLG_BANKED
+  ; The streamed dialogue overlay's entry points (engine/streamdialog.asm) --
+  ; every BE_DLG_* is >= BE_DLG_FIRST, so one compare keeps them off the chain
+  ; below. Far away by include order, hence the jmp.
+  cmp #BE_DLG_FIRST
+  bcc battle_entry_notdlg
+  jmp be_dlg_dispatch
+battle_entry_notdlg:
+  .endif
   cmp #BE_TICK
   bne battle_entry_join
   jmp battle_tick
@@ -912,4 +921,7 @@ name_offset_pc_len:
   .include "battleturn.asm"
   .if NAME_ENTRY_ENABLED
   .include "nameentry.asm"
+  .endif
+  .if SW_DLG_BANKED
+  .include "streamdialog.asm"
   .endif

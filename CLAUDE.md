@@ -314,9 +314,10 @@ PRG *and* CHR switching (`rpgCapable()`, `shared/cartridge.js`). Read
 `engine/nameentry.asm` or `main/build/battletables.js`. In brief:
 
 - **`call_battle` in `engine/banks.asm` is the only cross-bank call there may be**, and it ends
-  `jmp set_screen_ptr` — the restore *is* the return (`banked.test.js`). It has nine entry points
-  (`BE_*`, `engine/constants.asm`). `BE_JOIN`'s operand is guarded against `NO_MEMBER` and a stale
-  index.
+  `jmp set_screen_ptr` — the restore *is* the return (`banked.test.js`). It has 22 entry points
+  (`BE_*`, `engine/constants.asm`); the 13 `BE_DLG_*` from `BE_DLG_FIRST` up are the streamed
+  dialogue overlay's, and skip its strip cancel. `BE_JOIN`'s operand is guarded against `NO_MEMBER`
+  and a stale index.
 - In-game naming (`engine/nameentry.asm`) is one source assembled in exactly one of two
   placements — banked on an RPG, kernel on an action project — behind five `name_*` shims in
   `engine/ui.asm`.

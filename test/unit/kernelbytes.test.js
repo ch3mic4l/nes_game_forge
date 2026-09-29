@@ -107,6 +107,10 @@ import {
   streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance,
   STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE,
+  streamworldDialogueBanked,
+  streamworldHiBytesFor,
   STREAMWORLD_DIALOGUE_BOX_BEGIN_KERNEL_ALLOWANCE,
   STREAMWORLD_DIALOGUE_TEXT_TICK_KERNEL_ALLOWANCE,
   STREAMWORLD_DIALOGUE_TEXT_OPEN_ROW_KERNEL_ALLOWANCE,
@@ -174,6 +178,7 @@ import {
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
+import { buildPinching } from '../lib/streamedpinching.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -7646,3 +7651,72 @@ test(
     }
   }
 );
+
+// Phase 2 slice 10b: what the relocation leaves resident and what it removes, against nesasm.
+//
+//  - STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE: the resident shims and the H2 terrain routine
+//    (sw_dlg_shim_start..sw_dlg_shim_end), less the Save bracket already charged by
+//    STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE (sw_dlg17cr_save_check_start/_end, present in
+//    the shim only under a live Save).
+//  - streamworldHiBytesFor as a whole: the real kernel-hi growth between a relocated project and
+//    its resident twin equals the content difference plus the reservation difference -- the named
+//    kernel-hi relationship, taken as a difference so the terms both builds share cancel.
+//  - STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE: call_battle's one skip-the-cancel branch,
+//    the only kernel-lo byte the relocation adds; the real kernel-lo growth between the relocated
+//    project and its twin.
+for (const variant of ['nosave', 'save', 'move']) {
+  test(
+    `phase 2 slice 10b: the relocation's resident kernel-hi and kernel-lo terms equal nesasm, UNROM 512 [${variant}]`,
+    { skip: !hasNesasm && 'nesasm not found on PATH' },
+    async (t) => {
+      const mapper = resolveMapper(30);
+      const { project: real } = buildPinching(variant);
+      const { project: twin } = buildPinching(variant, { twin: true });
+      assert.equal(streamworldDialogueBanked(real, mapper), true);
+      assert.equal(streamworldDialogueBanked(twin, mapper), false);
+
+      const build = async (project) => {
+        const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbank-'));
+        t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+        await saveProject(dir, project);
+        const lines = [];
+        const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+        const usedIn = (bank) => {
+          const line = lines.find((l) => new RegExp(`^BANK\\s+${bank}\\s`).test(l));
+          assert.ok(line, `nesasm's usage table never mentioned bank ${bank}`);
+          return Number(line.match(/(\d+)\/\s*(\d+)\s*$/)[1]);
+        };
+        const { kernelLoBank, kernelHiBank } = prgLayout(mapper);
+        return { symbols: await fsp.readFile(built.symbolPath, 'utf8'), lo: usedIn(kernelLoBank), hi: usedIn(kernelHiBank) };
+      };
+      const r = await build(real);
+      const w = await build(twin);
+
+      const shim = symbolAddr(r.symbols, 'sw_dlg_shim_end') - symbolAddr(r.symbols, 'sw_dlg_shim_start');
+      const saveBracket = /^sw_dlg17cr_save_check_start\s/m.test(r.symbols)
+        ? symbolAddr(r.symbols, 'sw_dlg17cr_save_check_end') - symbolAddr(r.symbols, 'sw_dlg17cr_save_check_start')
+        : 0;
+      assert.equal(
+        shim - saveBracket,
+        STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE,
+        `${variant}: the resident shim span is ${shim} (of which the Save bracket ${saveBracket}) but STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE is ${STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE}`
+      );
+
+      const contentOf = (p) => {
+        const cap = checkCapacity(p);
+        return cap.musicBytes + cap.sfxBytes + cap.textBytes;
+      };
+      assert.equal(
+        r.hi - w.hi,
+        contentOf(real) - contentOf(twin) + (streamworldHiBytesFor(real) - streamworldHiBytesFor(twin)),
+        `${variant}: the real kernel-hi growth must equal the content difference plus the reservation difference`
+      );
+
+      assert.equal(
+        r.lo - w.lo,
+        STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE,
+        `${variant}: the relocation grew kernel-lo by ${r.lo - w.lo} bytes but STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE is ${STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE}`
+      );
+    }
+  );
+}

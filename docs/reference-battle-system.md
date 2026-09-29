@@ -19,10 +19,11 @@ the single writer for that, consulted by the schema, the Build panel and `reconc
 one there may be.** `player.asm` dereferences `mtptr` out of the switchable window every single
 frame, so the trampoline ends with `jmp set_screen_ptr` — the restore *is* the return; forgetting
 it leaves the game reading its map out of the battle system's code, with no crash and no obvious
-banking bug. `banked.test.js` asserts the restore. The trampoline has nine entry points: the
-original four (`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`) plus five more added for in-game
-party-member naming (`BE_NAME_BEGIN`, `BE_NAME_TICK`, `BE_NAME_DRAW`, `BE_NAME_SELECT`,
-`BE_NAME_CANCEL` — `engine/constants.asm:896-900`), below. `BE_JOIN` was the first entry point used
+banking bug. `banked.test.js` asserts the restore. The trampoline has 22 entry points: the
+original four (`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`), five added for in-game party-member
+naming (`BE_NAME_BEGIN`, `BE_NAME_TICK`, `BE_NAME_DRAW`, `BE_NAME_SELECT`, `BE_NAME_CANCEL` —
+`engine/constants.asm:1419-1423`), below, and 13 `BE_DLG_*` for the streamed-world dialogue
+overlay, also below. `BE_JOIN` was the first entry point used
 *on the field* (the script's Join command recruits mid-conversation, so the restore matters most
 there — the frame it ran in still has a map to draw), and is no longer the only one:
 `script_op_join_call` (`engine/script.asm:422`) calls `BE_NAME_BEGIN` right behind it for a named
@@ -48,6 +49,20 @@ A live `{name}` Say token pays no placement cost of its own: `text_type_name`
 (`engine/text.asm`) is kernel-lo on every board and both game types, reading `pc_name_ram` slot 0
 directly.
 
+**The streamed-world dialogue overlay is the battle bank's third occupant, for a pinching project
+only** (`streamworldDialogueBanked`, `docs/reference-kernel-budget.md`). It is one source
+(`engine/streamdialog.asm`) assembled either in kernel-hi (resident) or, under `SW_DLG_BANKED`, in the
+battle bank behind `battle_entry`'s `cmp #BE_DLG_FIRST` → `be_dlg_dispatch`. Its entry points are
+`BE_DLG_OPEN_ROW`..`BE_DLG_CAMRELEASE` (13 more `BE_*` values, `engine/constants.asm:1430-1443`) and
+they ride the same `call_battle` — no second trampoline, no ad hoc bank select in the overlay
+(`streamworlddialoguebanked.test.js`'s source scan). Three rules: `call_battle` skips its
+strip-cancel for `BE_DLG_*` (the overlay only queues `vram_buf` packets; the cancel exists to stop a
+strip racing battle's direct `$2006` writes, and cancelling would kill the strip `PENDING` waits on);
+the glyph/arrow/cursor byte rides in `bt_arg`, which the trampoline never touches; and the terrain
+read the close path ends in (`sw_dlg_terrain_read`, resident) re-selects the battle bank itself after
+`sw_peek_byte` has restored the window to the screen's own bank — invisible on a map-row-0 screen,
+where that bank coincides with the battle bank, and fatal on any other row.
+
 **`BE_JOIN`'s operand is guarded**, matching `party_init`'s own twin guard on the same access:
 `battle_entry_join` (`engine/battle.asm`) does `cpx #PARTY_SIZE` / `bcs battle_entry_join_skip` —
 `rts` back to `call_battle`. `NO_MEMBER = $FF` is defined once per side, beside `NO_ACTOR`/
@@ -69,7 +84,12 @@ rather than beside `kernelCodeBytes`: `generate.js` reaches for `node:fs`, so th
 import it, and the Build panel's meter would need a second copy of the arithmetic — the drift this
 check exists to prevent, one layer out. `battletables.js` imports only from `shared/` and must stay
 that way; `renderer/forges/build/build.js` importing it is the same move
-`renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
+`renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`. The streamed-world dialogue
+overlay is this region's third occupant for a pinching project, so the panel does not call `battleRegionBytes`
+bare: it calls `battleRegionBytesPlaced` (`main/build/streamplacement.js`), which asks the one placement
+predicate (`streamworldDialogueBanked`, which lives in that module) first. That module imports `shared/` plus
+the already-pure `songcompile.js`, `textcompile.js` and `battletables.js`, never a Node builtin
+(`test/unit/streamplacement.test.js` walks the closure).
 
 `BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 3839, MMC1 3839, MMC3 3879), measured
 directly rather than reconstructed from a running fix history — the same mistake

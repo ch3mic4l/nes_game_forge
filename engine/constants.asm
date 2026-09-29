@@ -1421,6 +1421,26 @@ BE_NAME_TICK   = 5          ; one frame of the grid: raise it, or read the D-pad
 BE_NAME_DRAW   = 6          ; the grid's own cursor sprite
 BE_NAME_SELECT = 7          ; the Confirm action, while the grid is up
 BE_NAME_CANCEL = 8          ; the Cancel action, while the grid is up (DEL)
+; The streamed-world dialogue overlay (engine/streamdialog.asm), banked placement
+; only (phase 2 slice 10b): reached through the resident shims in
+; engine/streamworld.asm, never directly. This ORDER is the wire format -- it is
+; the order of be_dlg_table -- and every entry point from BE_DLG_FIRST up skips
+; call_battle's strip cancel (engine/banks.asm). Carriers across the trampoline:
+; a single glyph/tile byte rides in bt_arg (PUT_CHAR, ARROW, CURSOR).
+BE_DLG_OPEN_ROW   = 9       ; text_open_step's border row
+BE_DLG_OPEN_ATTR  = 10      ; one masked attribute band of the open
+BE_DLG_PUT_CHAR   = 11      ; one typed glyph (bt_arg)
+BE_DLG_CLEAR_STEP = 12      ; blank one text row
+BE_DLG_CHOICE_STEP = 13     ; list one choice label
+BE_DLG_CLOSE_ATTR = 14      ; one masked attribute band of the close
+BE_DLG_PENDING    = 15      ; the deferred open: strip-idle wait, camera nudge
+BE_DLG_ARROW      = 16      ; the "more" arrow tile (bt_arg)
+BE_DLG_CURSOR     = 17      ; the choice cursor tile (bt_arg)
+BE_DLG_CLOSE_STEP = 18      ; rebuild one terrain row on close
+BE_DLG_CLOSE_TAIL = 19      ; the close's last frame: hold the camera or close_ui
+BE_DLG_BOX_BEGIN  = 20      ; defer the open (sw_dlg15_state = PENDING)
+BE_DLG_CAMRELEASE = 21      ; the drain-acknowledged camera restore
+BE_DLG_FIRST      = BE_DLG_OPEN_ROW
 
 ; The battle screen, in tile rows. Sky, then ground with the monsters standing
 ; on it, then the box -- FALLEN STAR's geometry, which is what the user asked

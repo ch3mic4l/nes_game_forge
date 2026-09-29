@@ -2883,6 +2883,10 @@ for (const [label, pressButton] of [['B', B], ['A', A], ['Start', START]]) {
 // =================================================================================================
 
 function gitShowEngineFileAt(rev, name) {
+  // A stock file that did not exist yet at `rev` (engine/streamdialog.asm, phase 2 slice 10b) is
+  // overridden by an empty stub: the ancestor's own streamworld.asm never includes it.
+  const known = spawnSync('git', ['cat-file', '-e', `${rev}:engine/${name}`], { cwd: ROOT });
+  if (known.status !== 0) return `; ${name} did not exist at ${rev}\n`;
   const result = spawnSync('git', ['show', `${rev}:engine/${name}`], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(result.status, 0, `git show ${rev}:engine/${name} must succeed: ${result.stderr}`);
   return result.stdout;

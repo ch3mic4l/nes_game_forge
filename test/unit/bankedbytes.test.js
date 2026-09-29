@@ -44,12 +44,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
+import { buildPinching } from '../lib/streamedpinching.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import {
   checkCapacity,
   codeRegionCount,
   kernelCodeBytes,
   kernelTableBytes,
+  streamworldDialogueBanked,
   switchableMappers
 } from '../../main/build/generate.js';
 import {
@@ -71,6 +73,7 @@ import {
   emittedBytes,
   NAME_ENTRY_BATTLE_ALLOWANCE,
   STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE,
   NAME_COPY_BATTLE_ALLOWANCE,
   MAGIC_POWER_BATTLE_ALLOWANCE,
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
@@ -2774,4 +2777,53 @@ test('in-game naming: battleShortfallAdvice never proposes removing naming when 
   const advice = battleShortfallAdvice(project, mapper, Math.max(1, deficit), { exact: false });
   assert.doesNotMatch(advice, /hero naming/, 'an overridden battle system must never offer removing hero naming');
   assert.doesNotMatch(advice, /named Join/, 'an overridden battle system must never offer removing a named Join');
+});
+
+// Phase 2 slice 10b: the streamed dialogue overlay is a third occupant of the battle bank -- after
+// battle and naming -- for a streamed RPG whose music+sfx+text outgrow kernel-hi
+// (streamworldDialogueBanked, the one predicate). UNROM 512 is the only board a streamed map can
+// be on (streamCapableFourScreen), so "per board" is that one board; the equality is asserted for
+// all three shapes that reach the overlay differently -- plain Say/choice, deferred Save, scripted
+// Move.
+//
+// The measurement is a twin: the identical project (same actors, entities, battle tables) with
+// every dialogue line but the observed one shortened until it fits kernel-hi, so the predicate is
+// false and the overlay stays resident. The two assemble the same battle tables, so the real
+// difference in the region's used bytes IS the overlay, and both figures must also equal
+// battleRegionBytes with and without the predicate.
+for (const variant of ['nosave', 'save', 'move']) {
+  test(
+    `phase 2 slice 10b: STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE equals the real banked-region growth of the relocated overlay, UNROM 512 [${variant}]`,
+    { skip: !hasNesasm && 'nesasm not found on PATH' },
+    async (t) => {
+      const mapper = resolveMapper(30);
+      const { project: real } = buildPinching(variant);
+      const { project: twin } = buildPinching(variant, { twin: true });
+      assert.equal(streamworldDialogueBanked(real, mapper), true, 'the committed inventory must relocate');
+      assert.equal(streamworldDialogueBanked(twin, mapper), false, 'its twin must stay resident');
+      const realUsed = await measureRegionForProject(t, real, mapper);
+      const twinUsed = await measureRegionForProject(t, twin, mapper);
+      assert.equal(
+        battleRegionBytes(real, mapper, { streamDialogueBanked: true }),
+        realUsed,
+        `${variant}: battleRegionBytes (with the overlay) must equal nesasm's real usage`
+      );
+      assert.equal(battleRegionBytes(twin, mapper), twinUsed, `${variant}: battleRegionBytes (resident twin) must equal nesasm's real usage`);
+      assert.equal(
+        realUsed - twinUsed,
+        STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE,
+        `${variant}: the relocated overlay grew the region by ${realUsed - twinUsed} bytes but STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE is ${STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE} -- re-measure and correct it`
+      );
+    }
+  );
+}
+
+test('phase 2 slice 10b: battleRegionBytes charges the overlay only when told the overlay is relocated, and the source list walks streamdialog.asm', () => {
+  const { project } = buildPinching('nosave');
+  const mapper = resolveMapper(30);
+  assert.equal(
+    battleRegionBytes(project, mapper, { streamDialogueBanked: true }) - battleRegionBytes(project, mapper),
+    STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE
+  );
+  assert.ok(BATTLE_REGION_SOURCES.includes('streamdialog.asm'), 'a Code Forge override of streamdialog.asm must be treated as overriding the battle region');
 });

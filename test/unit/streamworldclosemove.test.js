@@ -29,6 +29,7 @@ import { createStreamedProject } from '../lib/streamedproject.js';
 import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
 import { fileURLToPath } from 'node:url';
+import { readEngineSource } from '../lib/enginesource.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -397,9 +398,6 @@ test('positive control (A2): an ordinary-map scripted Move in a mixed project ru
 // file with one line changed), never by editing a repository file. One mutation per run.
 // ---------------------------------------------------------------------------------------------
 
-function readEngineSource(name) {
-  return fs.readFileSync(new URL(`../../engine/${name}`, import.meta.url), 'utf8');
-}
 
 function mutateOnce(source, oldLine, newLine, label) {
   const count = source.split(oldLine).length - 1;

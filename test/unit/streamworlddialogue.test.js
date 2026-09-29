@@ -45,6 +45,7 @@ import { BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { nameTiles } from '../../main/build/battletables.js';
 import { charToTile } from '../../shared/font.js';
 import { fileURLToPath } from 'node:url';
+import { readEngineSource } from '../lib/enginesource.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -525,9 +526,6 @@ test('sw_dlg_metatile matches an independent oracle for every box cell, includin
 // engine/streamworld.asm with one line changed), never by editing the repository file.
 // ---------------------------------------------------------------------------------------------
 
-function readEngineSource(name) {
-  return fs.readFileSync(new URL(`../../engine/${name}`, import.meta.url), 'utf8');
-}
 
 function mutateOnce(source, oldLine, newLine, label) {
   const count = source.split(oldLine).length - 1;

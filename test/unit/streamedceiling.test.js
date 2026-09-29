@@ -39,7 +39,7 @@ import {
   applyPlannedProject
 } from '../../shared/project.js';
 import { createSong } from '../../shared/audio.js';
-import { checkCapacity, contentCeilingBytes, streamworldHiBytesFor } from '../../main/build/generate.js';
+import { checkCapacity, contentCeilingBytes, streamworldDialogueBanked, streamworldHiBytesFor } from '../../main/build/generate.js';
 import { encodeString, systemStrings, TITLE_LINE_LIMIT, compileText } from '../../main/build/textcompile.js';
 import { LIBRARY_ENTRIES } from '../../shared/library/index.js';
 import { buildProject } from '../../main/build/pipeline.js';
@@ -48,6 +48,7 @@ import { battleRegionBytes } from '../../main/build/battletables.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { applyBattleTest } from '../../renderer/emulator/battletest.js';
 import { finishNamingIfOpen } from '../lib/naming.js';
+import { growTextExactlyBy, parseCeilingMessage } from '../lib/exactcontent.js';
 import { parseEquates } from '../../shared/enginesyms.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
 
@@ -148,6 +149,15 @@ function recordKernelHiOverhead(label, realUsed, cap, project) {
 // screen cannot discriminate "the right screen's data was read" from "a neighbour's was" after a
 // battle; a per-screen-distinct pattern can, and case 12's post-battle check below depends on it.
 // ---------------------------------------------------------------------------------------------
+
+// Slice 10b: a streamed RPG (a project with a battle bank) whose content outgrows the resident
+// ceiling now relocates the dialogue overlay into that bank instead of being refused
+// (generate.js streamworldDialogueBanked), so "one byte over the resident ceiling is refused"
+// is no longer true of it -- test/unit/streamworlddialoguebanked.test.js owns that step and
+// its own refusal ceiling. It remains true, unchanged, of the game types with no battle bank,
+// which keep the overlay resident and today's refusal; the boundary cases 3 and 5-10 below
+// exercise exactly that, so they build an action project.
+const RESIDENT_CEILING_GAME_TYPE = 'action';
 
 function distinctScreen(col, row) {
   const screen = createScreen();
@@ -482,51 +492,6 @@ function growSfxExactlyByEvenDelta(project, delta) {
   assert.equal(cur, target);
 }
 
-const WORD_CAP = 20; // safely under BOX_COLS=28 (shared/font.js) so no word this helper writes ever wraps-off
-
-function growTextExactlyBy(project, sayCmd, delta) {
-  const cur0 = checkCapacity(project).textBytes;
-  const target = cur0 + delta;
-  let cur = cur0;
-  let text = sayCmd.text || '';
-  let wordLen = /\S+$/.exec(text)?.[0]?.length ?? 0;
-  if (text === '' || /\s$/.test(text) || wordLen === 0) {
-    sayCmd.text = text + (text && !/\s$/.test(text) ? ' ' : '') + 'x';
-    text = sayCmd.text;
-    wordLen = 1;
-    cur = checkCapacity(project).textBytes;
-    assert.ok(cur <= target, `starting a word overshot: ${cur} > ${target}`);
-  }
-  while (target - cur > WORD_CAP + 2) {
-    while (wordLen < WORD_CAP) {
-      sayCmd.text += 'x';
-      wordLen++;
-    }
-    cur = checkCapacity(project).textBytes;
-    assert.ok(cur <= target, `coarse word growth overshot: ${cur} > ${target}`);
-    sayCmd.text += ' x';
-    wordLen = 1;
-    cur = checkCapacity(project).textBytes;
-    assert.ok(cur <= target, `starting a new word overshot: ${cur} > ${target}`);
-  }
-  while (cur < target) {
-    if (wordLen >= WORD_CAP) {
-      const remaining = target - cur;
-      assert.ok(remaining >= 2, `not enough room left to start a new word (${remaining} byte(s) left)`);
-      sayCmd.text += ' x';
-      wordLen = 1;
-      cur = checkCapacity(project).textBytes;
-      continue;
-    }
-    sayCmd.text += 'x';
-    wordLen++;
-    const next = checkCapacity(project).textBytes;
-    assert.equal(next, cur + 1, `a single character must cost exactly 1 byte (was ${next - cur})`);
-    cur = next;
-  }
-  assert.equal(cur, target, `text growth landed on ${cur}, not exact target ${target}`);
-}
-
 // ---------------------------------------------------------------------------------------------
 // R5: real-measurement techniques, kernelbytes.test.js's/bankedbytes.test.js's own (duplicated
 // here rather than imported -- neither is exported, both files are test files, not modules).
@@ -556,32 +521,11 @@ async function measureBattleRegion(t, mapper, project) {
   assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${slot.nesasmBank}`);
   const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
   assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
-  return { dir, used, predicted: battleRegionBytes(project, mapper) };
+  return { dir, used, predicted: battleRegionBytes(project, mapper, { streamDialogueBanked: streamworldDialogueBanked(project, mapper) }) };
 }
 
 function errorMessage(cap, pattern) {
   return cap.problems.find((x) => x.severity === 'error' && pattern.test(x.message));
-}
-
-// Item 4: parses EVERY field of checkCapacity's ceiling-refusal message (generate.js's own
-// template, ~line 3958), not just a handful of substring regexes -- so a printed number that
-// silently drifted from the value checkCapacity actually computed would be caught here even if
-// the message still happened to contain the right words in the right order.
-const CEILING_MSG_RE =
-  /^Music compiles to (\d+) bytes and sound effects to (\d+) bytes \(Sound Forge\), and dialogue compiles to (\d+) bytes \(Map Forge\)(?:; the streaming engine(?: \(including its scripted-Move probe\))? reserves (\d+) bytes of the same bank)?\. Together they must fit in (\d+) bytes of the (\d+)-byte music and text bank -- (\d+) bytes? over\. Shorten a song or effect, or cut some dialogue\.$/;
-
-function parseCeilingMessage(message) {
-  const m = CEILING_MSG_RE.exec(message);
-  assert.ok(m, `ceiling refusal message did not match the expected shape: ${message}`);
-  return {
-    musicBytes: Number(m[1]),
-    sfxBytes: Number(m[2]),
-    textBytes: Number(m[3]),
-    streamworldHiBytes: m[4] !== undefined ? Number(m[4]) : 0,
-    ceiling: Number(m[5]),
-    bankSize: Number(m[6]),
-    overBy: Number(m[7])
-  };
 }
 
 /** Cross-checks every parsed field of a ceiling refusal against ground truth for `project`. */
@@ -757,7 +701,7 @@ test('slice 10 case 2 (R8): an unstreamed project over kernel-hi budget is refus
 // =================================================================================================
 
 test('slice 10 case 3 (R5): content that would fit ignoring streamworldHiBytes must still be refused once it is included', () => {
-  const p = base();
+  const p = base(RESIDENT_CEILING_GAME_TYPE);
   importLibraryContent(p);
   const screen = p.maps[0].screens[0];
   addFillerDialogue(p, screen, 'Welcome, traveler. Rest well before the road ahead.');
@@ -918,7 +862,7 @@ for (const { label, withSave } of BOUNDARY_CONFIGS) {
     `slice 10 cases 5/6 [${label}]: growing music to the exact content ceiling builds; one byte more is refused naming Sound Forge`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async (t) => {
-      const p = base();
+      const p = base(RESIDENT_CEILING_GAME_TYPE);
       importLibraryContent(p);
       const screen = p.maps[0].screens[0];
       addFillerDialogue(p, screen, 'Welcome, traveler. Rest well before the road ahead.', { save: withSave });
@@ -964,10 +908,15 @@ for (const { label, withSave } of BOUNDARY_CONFIGS) {
     `slice 10 cases 7/8 [${label}]: growing sfx to the exact content ceiling builds; one more real sfx step is refused naming Sound Forge`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async (t) => {
-      const p = base();
+      const p = base(RESIDENT_CEILING_GAME_TYPE);
       importLibraryContent(p);
       const screen = p.maps[0].screens[0];
-      addFillerDialogue(p, screen, 'Welcome traveler rest well before the road ahead', { save: withSave });
+      // An action project's dialogue compiles to different byte counts than an RPG's, so the string
+      // that gave an exactly-reachable sfx delta for an RPG does not here (odd delta without Save;
+      // a delta the 2-byte filler quantum overshoots with it). The assertions below say to pick
+      // another string, never to fudge a category, so each configuration carries the shortest
+      // suffix that makes its delta reachable.
+      addFillerDialogue(p, screen, withSave ? 'Welcome traveler rest well before the road ahead!!' : 'Welcome traveler rest well before the road ahead!', { save: withSave });
       const ceiling = contentCeilingBytes(p);
       const capFixed = checkCapacity(p);
       const targetSfxDelta = ceiling - capFixed.musicBytes - capFixed.textBytes - capFixed.sfxBytes;
@@ -1005,7 +954,7 @@ for (const { label, withSave } of BOUNDARY_CONFIGS) {
     `slice 10 cases 9/10 [${label}]: growing text to the exact content ceiling builds; one more character is refused naming Map Forge`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async (t) => {
-      const p = base();
+      const p = base(RESIDENT_CEILING_GAME_TYPE);
       importLibraryContent(p);
       const screen = p.maps[0].screens[0];
       const sayCmd = addFillerDialogue(p, screen, 'Welcome traveler', { save: withSave });

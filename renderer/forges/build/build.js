@@ -9,10 +9,13 @@ import { store } from '../../store.js';
 // import to it.
 import {
   battleCodeOverridden,
-  battleRegionBytes,
   battleRegionCeiling,
   battleRegionPlacementOverridden
 } from '../../../main/build/battletables.js';
+// The region's used-bytes figure comes from main/build/streamplacement.js, which asks the one
+// placement predicate (streamworldDialogueBanked) whether the streamed dialogue overlay is this
+// region's third occupant. Also pure and renderer-safe; see its header.
+import { battleRegionBytesPlaced } from '../../../main/build/streamplacement.js';
 import { el, clear, fill, toast } from '../../ui.js';
 import {
   validateProject,
@@ -657,7 +660,8 @@ export function mount(container, app) {
       // tables battletables.js generates for it. RPG-only, because a project
       // that is not one reserves no such region at all (codeRegionCount).
       //
-      // battleRegionBytes/battleRegionCeiling (main/build/battletables.js) are
+      // battleRegionBytesPlaced (main/build/streamplacement.js, over battleRegionBytes)
+      // and battleRegionCeiling (main/build/battletables.js) are
       // the single expression for this meter, shared with checkCapacity's own
       // refusal and with the test that asserts the two agree -- exactly the
       // projectScreenCeiling arrangement above, for exactly the same reason.
@@ -665,9 +669,10 @@ export function mount(container, app) {
       // to promise room the build then denies.
       //
       // Unlike the Screens meter this one is exact rather than nominal: the
-      // region has only two occupants and battleTableBytes counts the second
-      // off its real emitted output, so what this shows is what nesasm will
-      // report. It reads about half full on an untouched RPG, which is honest
+      // region has two occupants (three, when a pinching streamed world moves its
+      // dialogue overlay in -- battleRegionBytesPlaced asks the one predicate) and
+      // battleTableBytes counts the second off its real emitted output, so what
+      // this shows is what nesasm will report. It reads about half full on an untouched RPG, which is honest
       // -- the engine's own battle code is most of it before an author adds a
       // single monster.
       //
@@ -679,7 +684,7 @@ export function mount(container, app) {
       // ever, and hiding it would leave an RPG author with nothing at all --
       // but it says which it is, the same way this panel labels anything else
       // that is not quite what it appears to be.
-      isRpg ? meter('Battle system', battleRegionBytes(project, mapper), battleRegionCeiling(mapper)) : null,
+      isRpg ? meter('Battle system', battleRegionBytesPlaced(project, mapper), battleRegionCeiling(mapper)) : null,
       isRpg && (battleCodeOverridden(project) || battleRegionPlacementOverridden(project))
         ? el(
             'p.hint',

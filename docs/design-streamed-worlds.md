@@ -230,6 +230,29 @@ session's own code the comment lives in, never whose choice the code encodes.
     the shortfall is independent of dialogue text. It is a measured finding for this fixture's actor
     and roster count, not a universal NPC limit.
 
+  **2026-09-28, slice 10b — the revisit is executed (dialogue overlay relocated for a pinching
+  project); measured on the committed inventory.** `streamworldDialogueBanked(project, mapper)`
+  (`main/build/streamplacement.js:584`, re-exported by `generate.js`) is true for a streamed project with text and a battle bank whose
+  music+sfx+text exceeds the *resident* ceiling; only then does the overlay
+  (`sw_dlg_mapper_start..sw_dlg_relocated_end`, 1,355 bytes of kernel-hi) live in the battle bank
+  (`engine/streamdialog.asm`, reached only through `call_battle`'s `BE_DLG_*` entries), leaving
+  a 113-byte resident shim block in kernel-hi. The ceiling is then `contentCeilingBytes` =
+  8,192 − 64 − (resident streaming package − 1,355 + 113): a flat **+1,242** over the resident one.
+  Measured on UNROM 512 with the committed inventory (music 288 + sfx 84 + text 1,756):
+  **no-Save content 2,128 against a 2,802 ceiling — 674 spare; Save 2,129 against 2,687 — 558 spare;
+  Move 2,132 against 2,681 — 549 spare** (resident ceilings 1,560 / 1,445 / 1,439, which is why the
+  same inventory was 568 / 684 bytes over before). The battle region holds it: 6,350 of its 8,172-byte
+  ceiling (real nesasm usage equals the model, `test/unit/bankedbytes.test.js`). A project whose
+  content still exceeds the relocated ceiling is refused in plain language naming the Sound Forge and
+  the relocated ceiling. **Shortfall against this design's own figure (4,336, dialogue + Move):**
+  **1,534 bytes** (no-Save, 4,336 − 2,802), **1,649** (Save, against 2,687) and **1,655** (Move,
+  against 2,681) — the relocation does not reach the design's estimate. The reason is not the overlay:
+  the resident base (`STREAMWORLD_KERNEL_HI_ALLOWANCE` and the terms measured beside it) grew to
+  5,213 bytes against the design's 2,053, **+3,160**, since the estimate was written; Chris ruled that
+  base out of scope for this slice, so the shortfall is accepted and documented, not closed. Action
+  and mixed projects keep the resident overlay and its refusal (no battle bank to hold it), and every
+  project that does not pinch assembles byte-for-byte as before.
+
   The stale 6,075/4,459/4,336 figures below are an earlier fix round's own measurements and are left
   as history, not restated here; the current ceiling for every reachable action/RPG × text × Move ×
   Save combination — **eight** unique accepted predicate combinations, not eleven, since an action
