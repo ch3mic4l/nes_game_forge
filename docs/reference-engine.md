@@ -20,15 +20,27 @@ flattened into the generated `screen_tileset` table and applied in `redraw_scree
 them:
 
 ```
-$8000-$BFFF  switchable window -- screen data only, one 16 KB bank at a time
+$8000-$BFFF  switchable window -- screen data (and an RPG's battle bank), one 16 KB bank at a time
 $C000-$DFFF  fixed kernel      -- lookup tables, then engine code
-$E000-$FFFF  fixed kernel      -- music and text data, then the CPU vectors
+$E000-$FFFF  fixed kernel      -- music and text data, streaming code (if any), then the CPU vectors
 ```
 
 The kernel is the last 16 KB, which every supported mapper leaves permanently mapped. Anything the
-engine may touch at an arbitrary moment — tables, music, code — lives there; only bulk screen
-data is banked. That is why `set_screen_ptr` is the *single* place a PRG bank is selected, and
-why `redraw_screen` is the single place a CHR bank is. NROM is the degenerate case: one switchable
+engine may touch at an arbitrary moment — tables, music, code — lives there. What is banked is bulk
+screen data and, on an RPG, the battle bank: code reached only through `call_battle`
+(`docs/reference-battle-system.md`). UNROM 512 also keeps its CHR-RAM payload and its flash save
+sector in switchable banks. Mapper bank registers are written only in `engine/banks.asm` —
+`switch_prg_bank`/`switch_chr_bank`, and `write_mapper_reg` for initialization and whole-register
+restores (flash save's `save_media_fetch` and `save_media_commit` restore through it) — plus two
+outside subsystems that write them directly on purpose: MMC3's font split selects register 1 itself,
+from NMI (`split_arm`) and from its scanline IRQ (`engine/split.asm`), and flash save's RAM-resident
+driver writes UNROM 512's `$C000` itself (`engine/flash.asm`). `set_screen_ptr` selects the current
+screen's PRG bank (through `sw_locate_current` on a streamed map) and `redraw_screen` its CHR bank.
+The other `switch_prg_bank` callers are `call_battle`, `save_media_fetch` (flash save),
+`chr_ram_init` (UNROM 512's CHR-RAM fill), and on a streamed map `sw_goto`,
+`sw_read_transaction`, `sw_read_run` and `sw_dlg_terrain_read`; the other `switch_chr_bank` callers
+are boot's starting-tileset select, `chr_ram_init`, `draw_battle_screen` and
+`sw_resolve_owner_streamed`. NROM is the degenerate case: one switchable
 bank, so `screen_bank` is all zeroes and both switch routines are `rts`. The `.bank`/`.org`
 directives are generated (`assets/kernel_*.inc`, `assets/screens.inc`) because which nesasm bank is
 "last" depends on the mapper's PRG size.

@@ -11,14 +11,15 @@
 ; PRG layout. Every cartridge the Forge supports uses the same shape, which is
 ; what lets one template serve a banked ROM and an unbanked one:
 ;
-;   $8000-$BFFF  switchable window -- screen data only, one 16 KB bank at a time
+;   $8000-$BFFF  switchable window -- screen data (and an RPG's battle bank), one 16 KB bank at a time
 ;   $C000-$DFFF  fixed kernel      -- lookup tables, then engine code
-;   $E000-$FFFF  fixed kernel      -- music and text data, then the CPU vectors
+;   $E000-$FFFF  fixed kernel      -- music and text data, streaming code (if any), then the CPU vectors
 ;
 ; The kernel is the LAST 16 KB, which is the bank every one of these mappers
 ; leaves permanently mapped. Anything the engine may touch at an arbitrary moment
-; -- tables, music, code -- therefore lives there; only bulk screen data is
-; banked. That is why `set_screen_ptr` is the single place a PRG bank is selected.
+; -- tables, music, code -- therefore lives there; what is banked is bulk screen
+; data and an RPG's battle bank. Which routines select a bank:
+; docs/reference-engine.md.
 ;
 ; NROM is the degenerate case: its one switchable bank never needs switching, so
 ; the generated screen_bank table is all zeroes and switch_prg_bank is an `rts`.

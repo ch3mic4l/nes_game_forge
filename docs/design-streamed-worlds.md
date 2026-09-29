@@ -159,7 +159,7 @@ session's own code the comment lives in, never whose choice the code encodes.
   player witness the loss at all).
   **Revisit (phase 3, the top polish item):** a handover window for actors near the seam, or
   documented authoring guidance.
-- **[Accepted by Chris for phases 1-2, 2026-09-21; revisit: phase 2/3 actor-identity Move]** A cutscene cannot walk the hero across a
+- **[Accepted by Chris for phases 1-2, 2026-09-21; revisit: phase 3/4 actor-identity Move]** A cutscene cannot walk the hero across a
   screen-*ownership* boundary on a streamed map — a
   scripted `Move` whose mover is the player is bounded by the **natural ownership rectangle** (x
   0-255, y 0-239), not the tighter actor-containment wall (`MAX_X`/`MAX_Y`, 240/224) a patroller
@@ -167,9 +167,13 @@ session's own code the comment lives in, never whose choice the code encodes.
   fringe held movement and Save already admit (§7 corrects the earlier, wrong claim that these two
   bounds were the same edge), but never past it: ownership itself never changes mid-page. An author
   who wants a scripted crossing has to compose it as a `Warp` instead (§5, §6). Dropping the box is settled; the boundary stop is the
-  working assumption. **Revisit (phase 2/3):** address the moved actor by identity rather than by live
+  working assumption. **Revisit (phase 3/4):** address the moved actor by identity rather than by live
   `talk_ent` slot so a `Move` can cross; until then the Map Forge's event editor warns when a
   scripted player `Move` on a streamed map can reach a screen edge.
+  **Scheduled by Chris, 2026-09-28:** phase 2 kept the ownership stop (slice 3 fixed the moved actor's
+  identity addressing and bound math within it); the crossing revisit is phase 3/4, and narrowing the
+  coarse edge warning (it fires whenever a scripted player `Move` *can* reach an edge — it over-fires,
+  never under-fires) is phase 4.
 - **[Accepted by Chris for phases 1-2, 2026-09-21; revisit: phase 2 measured RPG]** A streamed project's own music+SFX+text budget (kernel-hi) drops to 6,075 bytes with no
   dialogue or Move at all, 4,459 with dialogue alone, 4,336 once dialogue AND a scripted Move are
   both live on a streamed map (the fullest, most common case)**, from the ordinary 8,128 — a
@@ -2719,8 +2723,9 @@ From Chris's rulings (§1):
 
 6. **Knockback** (phase 2): model streamed knockback at 1.5 px/frame for 16 frames (24 px); restore
    24 px if it holds. Untested hypothesis.
-7. **Scripted player `Move` boundary** (phase 2/3): address the moved actor by identity, not live
-   `talk_ent` slot; until then the Map Forge event editor warns on a reachable screen edge.
+7. **Scripted player `Move` boundary** (phase 3/4; the warning's narrowing, phase 4): address the
+   moved actor by identity, not live `talk_ent` slot; until then the Map Forge event editor warns on
+   a reachable screen edge.
 8. **Previous screen's actors vanish at a crossing** (phase 3, top polish item): handover window or
    authoring guidance.
 9. **Content ceilings** (phase 2): measure a real streamed RPG's music+sfx+text; if it pinches,

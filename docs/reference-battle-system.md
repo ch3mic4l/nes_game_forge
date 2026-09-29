@@ -198,7 +198,7 @@ Anything relying on this must check, not assume.
 Not everything the battle bank writes needs the bank switched in to *read*: `pc_hp`, `pc_hp_max`
 and `pc_in_party` (`$0398+`) are plain kernel RAM like any other engine array, so `rpg.asm`'s
 `party_heal`/`party_damage` — the field's `Heal`/`Damage` commands, on an RPG build — touch them
-directly rather than growing `call_battle` a fourth entry point for what is, on this side, only a
+directly rather than growing `call_battle` another entry point for what is, on this side, only a
 saturating loop over four bytes.
 
 Three shapes worth keeping:

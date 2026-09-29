@@ -171,17 +171,20 @@ Monster Forge's catalog predicate and level field, map organization — is in
 8 KB CHR bank**. **Every cartridge uses one PRG layout**:
 
 ```
-$8000-$BFFF  switchable window -- screen data only, one 16 KB bank at a time
+$8000-$BFFF  switchable window -- screen data (and an RPG's battle bank), one 16 KB bank at a time
 $C000-$DFFF  fixed kernel      -- lookup tables, then engine code
-$E000-$FFFF  fixed kernel      -- music and text data, then the CPU vectors
+$E000-$FFFF  fixed kernel      -- music and text data, streaming code (if any), then the CPU vectors
 ```
 
 Supported: NROM, CNROM, GxROM, Color Dreams, UxROM, MMC1, MMC3, UNROM 512. Read
 `docs/reference-engine.md` before changing engine code; the rules it holds, in brief:
 
-- `set_screen_ptr` is the *single* place a PRG bank is selected and `redraw_screen` the single
-  place a CHR bank is. `engine/banks.asm` holds one switch routine per mapper *family*, selected by
-  generated flags; a new discrete CHR mapper is a data entry in `shared/cartridge.js`.
+- Mapper bank registers are written only in `engine/banks.asm` — `switch_prg_bank`/`switch_chr_bank`
+  (one routine per mapper *family*, selected by generated flags) and `write_mapper_reg` for
+  initialization and whole-register restores — plus two outside subsystems: MMC3's font split
+  (`engine/split.asm`) and flash save's RAM-resident driver. A new discrete CHR mapper is a data
+  entry in `shared/cartridge.js`. `set_screen_ptr` selects the current screen's PRG bank and
+  `redraw_screen` its CHR bank; the other callers are listed in `docs/reference-engine.md`.
 - `reconcileCartridge()` (`shared/project.js`) must be called in the same commit as any UI change
   to mapper or mirroring, because `store.commit()` never runs `normalizeProject`.
 - `engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays.
