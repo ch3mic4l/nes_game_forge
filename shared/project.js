@@ -6,6 +6,7 @@
 // hand-edited or older project never crashes the UI.
 
 import { BLANK_TILE, TILE_PIXELS, isBlank } from './chr.js';
+import { STREAM_TILE_BOUND, STREAM_TILE_BOUND_WITH_BOUND_TILES } from './streambound.js';
 import { NES_LAB, labDistance } from './nespalette.js';
 import {
   normalizeSong,
@@ -3675,6 +3676,70 @@ export function actorMaxMetaspriteTiles(actor, project) {
     if (count > max) max = count;
   }
   return max;
+}
+
+/**
+ * Phase 3a slice S1: the sprite tiles one streamed screen can put up at once -- the sum, over
+ * the actors placed on it, of each actor's largest drawable pose (actorMaxMetaspriteTiles:
+ * every authored frame of every facing, metasprite 0 for a zero-frame animation, nothing for
+ * NO_ANIM). A placement counts whatever its hideSwitch. This is the figure the frame gate's
+ * tile bound (streamTileBoundFor, shared/streambound.js) is stated in.
+ */
+export function streamTiles(project, screen) {
+  return (screen.entities ?? []).reduce(
+    (total, entity) => total + actorMaxMetaspriteTiles(project.sprites.actors[entity.actorId], project),
+    0
+  );
+}
+
+/**
+ * The sprite-tile bound a streamed screen of this project is held to: STREAM_TILE_BOUND, or the
+ * lower STREAM_TILE_BOUND_WITH_BOUND_TILES when the project has a switch-bound tile
+ * (projectUsesBoundTiles, the predicate that drives BOUND_TILE_ENABLED). The single writer of
+ * which figure applies; both come from shared/streambound.js.
+ */
+export function streamTileBoundFor(project) {
+  return projectUsesBoundTiles(project) ? STREAM_TILE_BOUND_WITH_BOUND_TILES : STREAM_TILE_BOUND;
+}
+
+/**
+ * The Map Forge warning for a streamed screen whose actors can draw more sprite tiles than the
+ * frame gate supports (phase 3a slice S1; plan section 5.5). `tiles` is streamTiles for that
+ * screen and `bound` streamTileBoundFor(project); both are in the text so the author sees the
+ * figure and the limit, and a bound that switch-bound tiles have lowered says so. A timing bound,
+ * distinct from describeScreenSpriteWarning's hardware sprite count.
+ */
+export function describeStreamTileWarning(project, mapIndex, screenIndex, tiles, bound = streamTileBoundFor(project)) {
+  const lowered = bound < STREAM_TILE_BOUND
+    ? ` (the usual limit is ${STREAM_TILE_BOUND}; switch-bound tiles in this project make every streamed frame dearer, so it is held to ${bound})`
+    : '';
+  return (
+    `${screenLabel(project, mapIndex, screenIndex)} places actors whose art can draw up to ${tiles} sprite tiles ` +
+    `at once; streamed screens are supported up to ${bound}${lowered}. Above that the game still runs, but busy moments ` +
+    'slow down (sprites may hold for a frame while scrolling continues). Reduce the number or size of the ' +
+    'actors on this screen.'
+  );
+}
+
+/**
+ * Every metasprite id an actor's draw can read: the frames of the animation each facing
+ * resolves, plus metasprite 0 for a zero-frame animation (the one-byte $00 stub the engine
+ * dereferences), nothing for NO_ANIM. The bounds the streamed projection's inside class is
+ * derived from (streamProjBounds, shared/streamlayout.js) walk exactly this set, and
+ * actorMaxMetaspriteTiles counts exactly its sizes -- one definition of "a pose".
+ */
+export function actorPoseMetaspriteIds(actor, project) {
+  const ids = new Set();
+  if (!actor) return ids;
+  for (const slot of FACING_SLOTS) {
+    const animId = animFor(actor, slot);
+    if (animId === NO_ANIM) continue;
+    const animation = project.sprites.animations[animId];
+    if (!animation) continue;
+    if (!animation.frames.length) ids.add(0);
+    else for (const frame of animation.frames) ids.add(frame.metaspriteId);
+  }
+  return ids;
 }
 
 /**
@@ -7981,6 +8046,13 @@ export function validateProject(project) {
     const budget = screenSpriteBudget(project, screen);
     if (budget.field + budget.overlay > budget.limit) {
       add('warning', 'Map Forge', describeScreenSpriteWarning(project, mapIndex, screenIndex, budget));
+    }
+
+    // Phase 3a slice S1 (plan section 5.5): a timing bound on a STREAMED screen's placed art, not
+    // the hardware sprite count above. One warning per offending screen; nothing is refused.
+    if (project.maps[mapIndex].streamed === true) {
+      const tiles = streamTiles(project, screen);
+      if (tiles > streamTileBoundFor(project)) add('warning', 'Map Forge', describeStreamTileWarning(project, mapIndex, screenIndex, tiles));
     }
 
     const isStartScreen =

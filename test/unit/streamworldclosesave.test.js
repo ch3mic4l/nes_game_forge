@@ -2952,6 +2952,22 @@ function createStreamedNoSaveProject({ gameType = 'action' } = {}) {
   return project;
 }
 
+// Phase 3a slice S1: createStreamedNoSaveProject places its Say on an actor ON the streamed map, and
+// S1 (STREAM_PROJ_ENABLED, projectUsesStreamedActors) replaces draw_one_entity_show_sw with the
+// per-actor projection for exactly such a project -- so the B1 placement and byte-total checks below
+// (which are claims about B1's per-tile routine and its relocation) cannot be made on that shape.
+// This shape is the same streamed no-Save project with the Say on an ordinary map's actor instead:
+// text is still in use, B1 still applies (the project streams), and no actor is placed on a
+// streamed screen, so the shipped per-tile routine assembles.
+function createStreamedNoProjectionProject({ gameType = 'action' } = {}) {
+  const project = createStreamedProject({ gameType, mixed: true });
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  const ordinary = project.maps.find((map) => map.streamed !== true);
+  interactOn(ordinary.screens[0], project, { x: 200, y: 40, commands: [say('Hi.')] });
+  return project;
+}
+
 // fix round 1c, item 2: a flat historicalEngineOverrides('2563ef4') is a true, unreconstructed
 // "2563ef4" comparison (a plain `git show` per file, above) -- honest for the two ordinary shapes,
 // which never touch B1's own relocated code at all. The two streamed shapes instead use
@@ -3094,9 +3110,9 @@ for (const gameType of ['action', 'rpg']) {
     `B1 placement-only check (fix round 1c/2, item 2): ${gameType} -- each pure-relocation routine's code equals its 2563ef4 code (same symbolic targets, addresses may shift) and its data equals byte-for-byte`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async () => {
-      const current = await buildRomAndSymbols(createStreamedNoSaveProject({ gameType }));
+      const current = await buildRomAndSymbols(createStreamedNoProjectionProject({ gameType }));
       const flat = await buildRomAndSymbols(
-        createStreamedNoSaveProject({ gameType }),
+        createStreamedNoProjectionProject({ gameType }),
         { overrides: historicalEngineOverrides('2563ef4') }
       );
       for (const name of B1_RELOCATED_ROUTINES) {
@@ -3210,21 +3226,26 @@ async function measureBankTotals(project, { overrides = null } = {}) {
 
 for (const gameType of ['action', 'rpg']) {
   test(
-    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 27-byte REDUCTION, not equal (lo -501, hi +474)`,
+    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 2-byte REDUCTION, not equal (lo -476, hi +474; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async () => {
-      const current = await measureBankTotals(createStreamedNoSaveProject({ gameType }));
+      const current = await measureBankTotals(createStreamedNoProjectionProject({ gameType }));
       const flat = await measureBankTotals(
-        createStreamedNoSaveProject({ gameType }),
+        createStreamedNoProjectionProject({ gameType }),
         { overrides: historicalEngineOverrides('2563ef4') }
       );
       const loDelta = current.lo - flat.lo;
       const hiDelta = current.hi - flat.hi;
       const totalDelta = (current.lo + current.hi) - (flat.lo + flat.hi);
       console.log(`${gameType}: current lo=${current.lo} hi=${current.hi} total=${current.lo + current.hi}  flat lo=${flat.lo} hi=${flat.hi} total=${flat.lo + flat.hi}  lo_delta=${loDelta} hi_delta=${hiDelta} total_delta=${totalDelta}`);
-      assert.equal(loDelta, -501, `${gameType}: kernel-lo delta must match Item 4's independently derived -501 figure`);
+      // Phase 3a slice S1: B1 alone saves 501 kernel-lo bytes (Item 4's independently derived
+      // figure), and S1's OAM_BUSY flag (engine/boot.asm, gated on the project streaming at all)
+      // adds its 18-byte kernel-lo allowance (OAM_BUSY_KERNEL_LO_ALLOWANCE, main/build/generate.js) to every streamed project, and (a1)'s mover parity gate its 7 (MOVER_PARITY_GATE_KERNEL_ALLOWANCE): -501 + 18 + 7 = -476. This shape places no actor on a
+      // streamed screen (createStreamedNoProjectionProject), so the projection's own 3-byte
+      // kernel-lo setup call is absent and the hi delta is B1's 474 exactly.
+      assert.equal(loDelta, -501 + 18 + 7, `${gameType}: kernel-lo delta must be Item 4's -501 plus S1's 18-byte OAM_BUSY cost and (a1)'s 7-byte mover parity gate`);
       assert.equal(hiDelta, 474, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost`);
-      assert.equal(totalDelta, -27, `${gameType}: total kernel-lo+hi delta is a net 27-byte reduction, NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
+      assert.equal(totalDelta, -27 + 18 + 7, `${gameType}: total kernel-lo+hi delta is a net 2-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
     }
   );
 }

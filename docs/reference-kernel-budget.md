@@ -117,7 +117,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   phase 2 slice 3's `mv_ent` identity capture (docs/design-streamed-worlds.md §7, ruling 7):
   `script_op_move`'s own 5-byte capture plus six call sites each trading a 2-byte `ldx <talk_ent`
   for a 3-byte `ldx mv_ent` — unconditional on `MOVE_ENABLED` itself, paid by every project using
-  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 159` (kernel-lo only, gated
+  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 117` (159 before phase 3a S1 (a1)'s kernel-lo round, which folded the four per-direction copies of the streamed probe stage into one 21-byte body per axis, `move_tick_probe_v_streamed`/`move_tick_probe_h_streamed`, entered by a 4-byte `ldy <tmp`/`bne` per direction: 4 x 25 = 100 -> 58, -42, to pay for `MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7` in a Move project; kernel-lo only, gated
   `usesStreaming && usesMove`) is the streaming-only remainder on top: `move_tick`'s own
   streamed-player bound arms on all four directions and `move_speed_player`'s accumulator dispatch.
   A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 76` (kernel-hi, same gate; down from 80 in fix
@@ -643,10 +643,61 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   Save is never byte-identical to flat 2563ef4 even though it pays none of the seven Save-specific
   terms above. The accepted-boundary figures for how many ordinary 1x1 maps a streamed+camera project
   can still add before capacity refuses (Action Move family: 31; Action Save family: 25; RPG Say
-  family: 44) were re-measured directly against the current tree
+  family: 44) were re-measured directly against the tree at phase 2's close, before phase 3a
   (`handoff-next/s9-fix3-scratch/accepted-boundary-remeasure.mjs`, a path-adjusted copy of round 3's
   own `E3/accepted-boundary.mjs`). The Save and RPG Say figures are unchanged from the round-3
   review's own recorded figures; the Move figure is one lower than round 3's 32 because
   `move_face`'s pose clamp (`FACE_KERNEL_ALLOWANCE` 13 -> 37, +24 bytes) is charged to every
   Move project (31 maps accepted at 8,165 bytes used; the 32nd needs 740 bytes of lookup tables
   with 724 free).
+
+**Phase 3a slice S1 — the streamed entity projection, the OAM-ready flag and the Flash guard.**
+Four named allowances, each equality-asserted in `kernelbytes.test.js` and gated on its own predicate,
+so a project not using the feature assembles byte-for-byte as before:
+
+- `OAM_BUSY_KERNEL_LO_ALLOWANCE = 18` (`main/build/generate.js`) — the inverted `oam_busy` flag's
+  `boot.asm`/`combat.asm` sites, gated on `OAM_BUSY_ENABLED` (any streamed project; paid by Save and
+  non-Save alike).
+- `PROJ_SETUP_KERNEL_LO_ALLOWANCE = 3` — the `jsr sw_ent_setup` call at `draw_entities`, gated on
+  `STREAM_PROJ_ENABLED` (`projectUsesStreamedActors`).
+- `STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE = 395` (`main/build/streamplacement.js`) — the
+  `sw_ent_setup` routine and the cull/inside/straddle projection. It *replaces*
+  `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE` (164) rather than adding to it, so the Move-project
+  arithmetic in `kernelbytes.test.js` carries `395 - 164 = 231`, and an actorless streamed project
+  keeps the 164-byte per-tile routine.
+- `STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE = 10` — the row-strip Flash guard in
+  `sw_win_arm_row` (`lda <flash_left / cmp #FLASH_PENDING / beq / cmp #FLASH_ARM_VALUE-1 / beq`),
+  gated on `FLASH_ENABLED`.
+
+Measured consequences for the author (before → after, S1 with (a1)'s gate on):
+
+| Quantity | Before | After |
+| --- | --- | --- |
+| kernel-hi content ceiling, resident dialogue | 1560 | 1329 |
+| kernel-hi ceiling, relocated dialogue, no Save | 2802 | 2571 |
+| kernel-hi ceiling, relocated dialogue, Save | 2687 | 2456 |
+| kernel-hi ceiling, relocated dialogue, Move | 2681 | 2450 |
+| kernel-lo on a Save project with streamed actors | — | +21 (18 + 3) |
+| maximum placed actors, the Save inventory project | 24 | 21 (8 lookup bytes per actor; 22 actors need 288 against 289 free before (a1)'s gate and 282 after it; `S1_SAVE_ACTORS_DROPPED` = 3, accepted 2026-09-30) |
+| accepted-boundary ordinary maps, Move family | 31 | 31 |
+| accepted-boundary ordinary maps, Save family | 25 | 23 |
+| accepted-boundary ordinary maps, RPG Say family | 44 | 43 |
+
+The accepted-boundary rows were re-measured against the final (a1) tree
+(`handoff-next/s9-fix3-scratch/accepted-boundary-remeasure.mjs`, log `handoff-next/s1-a1/fix6/accepted-boundary.log`; the
+final reviewer's own run gave the same figures): Move 31 maps at 8,151 bytes used (41 free), Save 23 at 8,153 (39 free),
+RPG Say 43 at 8,160 (32 free); the next map is refused in each. Where the figures stood before the gate: with S1's flag
+alone each family lost one map (Move 30 at 8,164 used, Save 24 at 8,169, RPG Say 43 at 8,153, the S1-only tree's
+`handoff-next/s1-defer3/accepted-boundary-s1.log`). The (a1) gate then moved them again: the Move-probe fold (159 -> 117,
+-42 bytes) gives the Move family its map back, the gate's 7 bytes cost the Save family another, and the RPG Say family keeps
+its 43 maps with seven fewer free bytes.
+
+**Phase 3a slice S1 (a1) — the mover parity gate.** `MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7`
+(`main/build/generate.js`): the `txa / eor <frame_cnt / and #1 / bne update_entities_anim` gate in
+`update_entities_behave` (`engine/entities.asm`), kernel-lo only, gated on `usesStreaming` (the same predicate as
+`STREAMING_ENABLED`, so it is charged to every streamed project -- ordinary maps included -- and to no other), flat across
+mappers and game types, equality-asserted in `kernelbytes.test.js`. In a streamed Move project the Move-probe fold
+(`STREAMWORLD_MOVE_KERNEL_ALLOWANCE` 159 -> 117, above) pays for it. The behaviour and the bounds it supports are in
+`docs/reference-engine.md`, "The mover parity gate, and the two bounds"; it also costs the author a placed
+actor of the Save inventory project: S1 had already taken the capacity from 24 to 22 (the flag, the setup call and the
+projection's lookup bytes), and the gate takes it from 22 to 21, so the combined drop is 24 to 21 (table above).

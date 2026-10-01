@@ -20,6 +20,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { streamProjBounds } from '../../shared/streamlayout.js';
 
 const B1_MARKER = '; B1 (phase 2 slice 9 fix round 1b, ROADMAP item 15): kernel-lo -> kernel-hi';
 
@@ -73,6 +74,12 @@ const EXPECTED_B1_LABELS = [
   'spawn_streamed_armed', 'spawn_streamed_next', 'spawn_streamed_done', 'spawn_streamed_end',
   'build_oam_draw_sw', 'build_oam_draw_sw_loop', 'build_oam_draw_sw_park', 'build_oam_draw_sw_next',
   'sw_oam_corner_xoff', 'sw_oam_corner_yoff', 'sw_oam_corner_oam', 'build_oam_draw_sw_end',
+  // Phase 3a slice S1 (`.if STREAM_PROJ_ENABLED`): sw_ent_setup and the per-actor projection sit
+  // inside this block, ahead of B1's own per-tile routine (the `.else` branch, whose labels follow).
+  // Both definitions of draw_one_entity_show_sw are real -- exactly one assembles in a given build.
+  'sw_ent_setup', 'sw_ent_setup_done',
+  'draw_one_entity_show_sw', 'dsw_have_anim', 'dsw_have_count', 'dsw_in_tile', 'dsw_done',
+  'dsw_cull', 'dsw_cull_tile', 'dsw_straddle', 'dsw_st_tile', 'dsw_st_park', 'dsw_st_next',
   'draw_one_entity_show_sw', 'draw_one_entity_sw_have_anim', 'draw_one_entity_sw_have_count',
   'draw_one_entity_sw_tile', 'draw_one_entity_sw_tile_park', 'draw_one_entity_sw_tile_next',
   'draw_one_entity_sw_done', 'draw_one_entity_show_sw_end',
@@ -103,6 +110,10 @@ function definedSymbolsInText(text, names) {
 // this label shape catches these without needing a real build.
 function generatedTableNamesInText(text, names) {
   for (const m of text.matchAll(/`([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/g)) names.add(m[1]);
+  // Phase 3a slice S1: SW_UXMIN..SW_UYMAX are emitted from a computed template
+  // (`SW_U${k.slice(1)} = ...`, one per streamProjBounds key), which the literal-name scan above
+  // cannot see. Derived from the same function generate.js maps over, never a second list.
+  for (const k of Object.keys(streamProjBounds({ maps: [], sprites: { actors: [], metasprites: [] } }))) names.add(`SW_U${k.slice(1)}`);
 }
 
 function definedSymbolsAcrossEngine(root) {
@@ -176,6 +187,21 @@ function referencedSymbols(b1Block) {
   return referenced;
 }
 
+// Phase 3a slice S1's projection branch (inside the B1 block, see EXPECTED_B1_LABELS) reads the
+// zero-page scratch bytes S1 added to engine/constants.asm. The A4 identity tests leave
+// constants.asm at its CURRENT text on both sides (only streamworld.asm is reconstructed), so
+// those names exist in every build being compared even though they did not exist at the ancestor.
+// This is the one exemption to the "defined at the ancestor" rule, and it is scoped: a name is
+// exempt only if it is in this fixed list AND is defined in today's constants.asm (a name that has
+// left constants.asm stops being exempt and fails again).
+const S1_ZERO_PAGE_NAMES = ['sw_cx0_lo', 'sw_cx0_hi', 'sw_cy0_lo', 'sw_cy0_hi', 'sw_dxb_lo', 'sw_dxb_hi', 'sw_dyb_lo'];
+export function s1ZeroPageNames(root) {
+  const constants = fs.readFileSync(path.join(root, 'engine', 'constants.asm'), 'utf8');
+  const names = new Set();
+  definedSymbolsInText(constants, names);
+  return new Set(S1_ZERO_PAGE_NAMES.filter((n) => names.has(n)));
+}
+
 export function validateB1Block(b1Block, root, rev) {
   const labels = [...b1Block.matchAll(/^([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]);
   if (labels.join(',') !== EXPECTED_B1_LABELS.join(',')) {
@@ -211,7 +237,8 @@ export function validateB1Block(b1Block, root, rev) {
   const localNames = new Set(labels);
   const engineNames = rev ? definedSymbolsAcrossEngineAtRev(root, rev) : definedSymbolsAcrossEngine(root);
   const referenced = referencedSymbols(b1Block);
-  const undefined_ = [...referenced].filter((name) => !localNames.has(name) && !engineNames.has(name));
+  const s1Names = rev ? s1ZeroPageNames(root) : new Set();
+  const undefined_ = [...referenced].filter((name) => !localNames.has(name) && !engineNames.has(name) && !s1Names.has(name));
   if (undefined_.length > 0) {
     throw new Error(
       `B1 block references symbol(s) not defined anywhere in engine/*.asm${rev ? ` at ${rev}` : ''} or within the block` +
@@ -231,4 +258,42 @@ export function mergeReconstructEngineFile(root, rev, name, { headRev = 'HEAD' }
   const b1Block = restoreB1Routines(currentText);
   validateB1Block(b1Block, root, rev);
   return `${historicalText.replace(/\n+$/, '')}\n\n${b1Block}`;
+}
+
+// Phase 3a slice S1 added a contiguous block of equates to engine/constants.asm (the projection's
+// zero-page scratch and `oam_busy`), and engine/boot.asm / entities.asm now read them
+// unconditionally under generated `.if` flags. A historical-baseline test that reverts
+// constants.asm to an older commit (while leaving boot.asm and the rest at CURRENT) must carry
+// those equates too, or the baseline fails to assemble on a symbol that has nothing to do with
+// what it is checking. The block is lifted verbatim from today's constants.asm, from its
+// "Phase 3a slice S1" comment through the `oam_busy` equate, so it can never drift from the real
+// definitions; if either anchor moves the helper throws instead of guessing.
+export function appendS1Constants(root, historicalText) {
+  const lines = fs.readFileSync(path.join(root, 'engine', 'constants.asm'), 'utf8').split('\n');
+  const start = lines.findIndex((l) => l.startsWith('; Phase 3a slice S1: the streamed entity projection'));
+  const end = lines.findIndex((l) => /^oam_busy\s*=/.test(l));
+  if (start < 0 || end < start) throw new Error("S1's constants block anchors not found in engine/constants.asm");
+  return `${historicalText.replace(/\n*$/, '\n')}${lines.slice(start, end + 1).join('\n')}\n`;
+}
+
+// Phase 3a slice S1's additions to engine/streamworld.asm, as three anchored regions: the Flash
+// publication guard in sw_win_arm_row (`sw_win_arm_flash_guard:` .. `sw_win_arm_flash_guard_end:`,
+// both inclusive) and the per-actor projection wrapper (`.if STREAM_PROJ_ENABLED` .. its `.else`, and
+// the `.endif` closing the pair just before `draw_one_entity_show_sw_end:`). Removing them gives
+// the file as it stood before S1, so a test that asserts "this file equals commit X" can keep
+// asserting it about everything S1 did not touch. Each anchor must be found; a changed shape throws
+// rather than stripping the wrong lines.
+export function stripS1FromStreamworld(text) {
+  const lines = text.split('\n');
+  const find = (re, from = 0) => { for (let i = from; i < lines.length; i++) if (re.test(lines[i])) return i; return -1; };
+  const gStart = find(/^sw_win_arm_flash_guard:/);
+  const gEnd = find(/^sw_win_arm_flash_guard_end:/, Math.max(gStart, 0));
+  const ifAt = find(/^\s*\.if STREAM_PROJ_ENABLED\s*$/);
+  const elseAt = find(/^\s*\.else\s*$/, Math.max(ifAt, 0));
+  const endLabel = find(/^draw_one_entity_show_sw_end:/);
+  if (gStart < 0 || gEnd < gStart || ifAt < 0 || elseAt < ifAt || endLabel < elseAt) throw new Error("S1's streamworld.asm anchors not found");
+  let endifAt = endLabel - 1;
+  while (endifAt > elseAt && !/^\s*\.endif\s*$/.test(lines[endifAt])) endifAt--;
+  if (endifAt <= elseAt) throw new Error("S1's projection wrapper has no closing .endif");
+  return lines.filter((_, i) => !((i >= gStart && i <= gEnd) || (i >= ifAt && i <= elseAt) || i === endifAt)).join('\n');
 }

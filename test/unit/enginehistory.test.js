@@ -11,9 +11,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { restoreB1Routines, validateB1Block, mergeReconstructEngineFile } from '../lib/enginehistory.js';
+import { restoreB1Routines, validateB1Block, mergeReconstructEngineFile, s1ZeroPageNames } from '../lib/enginehistory.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const currentStreamworld = fs.readFileSync(path.join(ROOT, 'engine', 'streamworld.asm'), 'utf8');
@@ -107,6 +108,18 @@ test('validateB1Block: a reference to a symbol absent at the ancestor but presen
 
 test('validateB1Block: the real block still validates clean against an ancestor rev (its own genuinely-old references predate that ancestor too)', () => {
   assert.doesNotThrow(() => validateB1Block(realB1Block, ROOT, '2563ef4'));
+});
+
+test('validateB1Block: the ancestor-rev exemption for S1 zero-page names is scoped -- each name is defined today, absent at 2563ef4, and an invented name is still rejected', () => {
+  // Slice S1 added sw_cx0_* / sw_cy0_* / sw_dxb_* / sw_dyb_lo to constants.asm; the exemption must
+  // not become a way to hide any other undefined reference.
+  const names = s1ZeroPageNames(ROOT);
+  assert.equal(names.size, 7, 'all seven S1 names must be defined in the current constants.asm');
+  const ancestorConstants = execFileSync('git', ['show', '2563ef4:engine/constants.asm'], { cwd: ROOT, encoding: 'utf8' });
+  for (const n of names) assert.ok(!new RegExp(`^${n}\\b`, 'm').test(ancestorConstants), `${n} must not exist at 2563ef4, or it needs no exemption`);
+  const mutated = realB1Block.replace('sta <sw_cx0_lo', 'sta <sw_cx0_bogus_xyz');
+  assert.notEqual(mutated, realB1Block, 'fixture assumption: the real block must contain this exact store');
+  assert.throws(() => validateB1Block(mutated, ROOT, '2563ef4'), /sw_cx0_bogus_xyz/);
 });
 
 test('validateB1Block: an unlabelled byte appended after the block\'s own final label is caught even though the label list is untouched', () => {

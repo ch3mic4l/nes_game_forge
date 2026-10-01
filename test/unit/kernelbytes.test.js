@@ -141,6 +141,11 @@ import {
   STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
   STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
   STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE,
+  OAM_BUSY_KERNEL_LO_ALLOWANCE,
+  MOVER_PARITY_GATE_KERNEL_ALLOWANCE,
+  PROJ_SETUP_KERNEL_LO_ALLOWANCE,
+  STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE,
   STREAMWORLD_HAZARD_KERNEL_ALLOWANCE,
   STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE,
@@ -150,6 +155,7 @@ import {
   streamworldUpdatePlayerKernelHiAllowance
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
+import { projectUsesStreamedActors } from '../../shared/streamlayout.js';
 import {
   createTileset,
   createProject,
@@ -5476,7 +5482,13 @@ test(
           ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE
           : 0) -
         (projectUsesMove(streamedNoMove) && projectUsesText(streamedNoMove) ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE : 0);
-      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + dlgTerm + oamTerm + closeformoveTerm;
+      // Phase 3a slice S1: the Move event is also what places the first actor on a streamed screen
+      // (streamedNoMove places none), so the with-Move side alone assembles the entity projection's
+      // 3-byte setup call -- a fourth confound of the same shape, only ever on the streamed side.
+      const projTerm =
+        (projectUsesStreamedActors(streamedWithMove) ? PROJ_SETUP_KERNEL_LO_ALLOWANCE : 0) -
+        (projectUsesStreamedActors(streamedNoMove) ? PROJ_SETUP_KERNEL_LO_ALLOWANCE : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + dlgTerm + oamTerm + closeformoveTerm + projTerm;
       // fix round 1, finding 7/verification: printed on every run, pass or
       // fail -- an independent, per-shape figure a report can quote.
       console.log(
@@ -5581,11 +5593,17 @@ test(
       const closeformoveTerm =
         (projectUsesMove(streamedWithMove) && projectUsesText(streamedWithMove) ? closeformoveHiTotal : 0) -
         (projectUsesMove(streamedNoMove) && projectUsesText(streamedNoMove) ? closeformoveHiTotal : 0);
-      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm + closeformoveTerm;
+      // Phase 3a slice S1: the Move event is also what first places an actor on a streamed screen,
+      // which swaps B1's 164-byte per-tile draw_one_entity_show_sw for the 395-byte projection
+      // span on the with-Move side only: +231 that has nothing to do with sw_move_probe.
+      const projTerm =
+        (projectUsesStreamedActors(streamedWithMove) ? STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE - STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE : 0) -
+        (projectUsesStreamedActors(streamedNoMove) ? STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE - STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm + closeformoveTerm + projTerm;
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE supplement ${supplement} ` +
           `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta} -- the text.inc confound, ` +
-          `dialogue-mapper term ${dlgTerm}, close-for-move term ${closeformoveTerm}, expected ${expectedSupplement})`
+          `dialogue-mapper term ${dlgTerm}, close-for-move term ${closeformoveTerm}, projection term ${projTerm}, expected ${expectedSupplement})`
       );
       assert.equal(
         supplement,
@@ -7720,3 +7738,146 @@ for (const variant of ['nosave', 'save', 'move']) {
     }
   );
 }
+
+// Phase 3a slice S1: the four S1 allowances, each equality-asserted against the span nesasm really
+// assembled, on both game types. `S1_FLASH_ACTOR` places one actor whose touch event flashes (so the
+// project streams, places a streamed actor AND uses Flash); `S1_PLAIN_ACTOR` streams and places an actor
+// with no Flash; a bare createStreamedProject streams with neither.
+const S1_FLASH_ACTOR = { moveCommands: [{ op: 'flash' }] };
+const S1_PLAIN_ACTOR = { moveCommands: [{ op: 'say', text: 'Hello.' }] };
+const OAM_BUSY_SPANS = [
+  ['oam_busy_set_ui', 'oam_busy_set_ui_end'],
+  ['oam_busy_set_draw', 'oam_busy_set_draw_end'],
+  ['oam_busy_clear', 'oam_busy_clear_end'],
+  ['oam_busy_nmi', 'oam_busy_nmi_end'],
+  ['oam_busy_init', 'oam_busy_init_end']
+];
+
+test(
+  'phase 3a S1: OAM_BUSY_KERNEL_LO_ALLOWANCE equals the sum of the five oam_busy spans on both game types, and an ordinary-only project assembles none of it',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType });
+      let total = 0;
+      for (const [a, b] of OAM_BUSY_SPANS) total += await measureStreamedSpan(mapper, project, a, b);
+      assert.equal(total, OAM_BUSY_KERNEL_LO_ALLOWANCE, `${gameType}: oam_busy spans total ${total}`);
+      const ordinary = structuredClone(project);
+      for (const map of ordinary.maps) map.streamed = false;
+      let none = 0;
+      for (const [a, b] of OAM_BUSY_SPANS) none += await measureStreamedSpan(mapper, ordinary, a, b);
+      assert.equal(none, 0, `${gameType}: an ordinary-only project must assemble no oam_busy code`);
+    }
+  }
+);
+
+test(
+  'phase 3a S1 (a1) kernel-lo round: the streamed Move probe stage is one 21-byte body per axis, shared by both directions of that axis, and an ordinary project assembles neither',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType, moveCommands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] });
+      const v = await measureStreamedSpan(mapper, project, 'move_tick_probe_v_streamed', 'move_tick_probe_h_streamed');
+      const h = await measureStreamedSpan(mapper, project, 'move_tick_probe_h_streamed', 'move_tick_probe_h_streamed_end');
+      assert.equal(v, 21, `${gameType}: vertical streamed probe body ${v}`);
+      assert.equal(h, 21, `${gameType}: horizontal streamed probe body ${h}`);
+    }
+  }
+);
+
+test(
+  'phase 3a S1 (a1): MOVER_PARITY_GATE_KERNEL_ALLOWANCE equals the gate span on both game types and the mixed shape, and an ordinary-only project assembles none of it',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    for (const [gameType, mixed] of [['action', false], ['rpg', false], ['action', true]]) {
+      const project = createStreamedProject({ gameType, mixed });
+      const span = await measureStreamedSpan(mapper, project, 'mover_parity_gate', 'mover_parity_gate_end');
+      assert.equal(span, MOVER_PARITY_GATE_KERNEL_ALLOWANCE, `${gameType}${mixed ? ' mixed' : ''}: gate span ${span}`);
+      const ordinary = structuredClone(project);
+      for (const map of ordinary.maps) map.streamed = false;
+      assert.equal(await measureStreamedSpan(mapper, ordinary, 'mover_parity_gate', 'mover_parity_gate_end'), 0, `${gameType}: an ordinary-only project must assemble no gate`);
+    }
+  }
+);
+
+test(
+  'phase 3a S1: PROJ_SETUP_KERNEL_LO_ALLOWANCE and STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE equal their real spans on both game types; a streamed project with no actor pays neither',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const withActor = createStreamedProject({ gameType, ...S1_PLAIN_ACTOR });
+      const setup = await measureStreamedSpan(mapper, withActor, 'proj_setup_call', 'proj_setup_call_end');
+      assert.equal(setup, PROJ_SETUP_KERNEL_LO_ALLOWANCE, `${gameType}: proj_setup_call span ${setup}`);
+      const proj = await measureStreamedSpan(mapper, withActor, 'sw_ent_setup', 'draw_one_entity_show_sw_end');
+      assert.equal(proj, STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE, `${gameType}: sw_ent_setup..draw_one_entity_show_sw_end span ${proj}`);
+      const empty = createStreamedProject({ gameType });
+      assert.equal(await measureStreamedSpan(mapper, empty, 'proj_setup_call', 'proj_setup_call_end'), 0, `${gameType}: no streamed actor, no setup call`);
+    }
+  }
+);
+
+test(
+  'phase 3a S1: STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE equals the guard span with Flash, 0 without Flash and 0 on an ordinary project, on both game types; the window term is unchanged around it',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const flashed = createStreamedProject({ gameType, ...S1_FLASH_ACTOR });
+      const guard = await measureStreamedSpan(mapper, flashed, 'sw_win_arm_flash_guard', 'sw_win_arm_flash_guard_end');
+      assert.equal(guard, STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE, `${gameType}: guard span ${guard}`);
+      // the guard sits inside sw_win_col_inc..sw_win_arm_region_end, so the window term is what is left
+      const region = await measureStreamedSpan(mapper, flashed, 'sw_win_col_inc', 'sw_win_arm_region_end');
+      assert.equal(region - guard, STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE, `${gameType}: window span with Flash on, less the guard`);
+      const plain = createStreamedProject({ gameType, ...S1_PLAIN_ACTOR });
+      assert.equal(await measureStreamedSpan(mapper, plain, 'sw_win_arm_flash_guard', 'sw_win_arm_flash_guard_end'), 0, `${gameType}: no Flash, no guard`);
+      const ordinary = structuredClone(flashed);
+      for (const map of ordinary.maps) map.streamed = false;
+      // streamworld.asm is not assembled at all for an ordinary-only project, so the guard's labels do not exist
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamlo-'));
+      try {
+        const built = await buildProject({ dir, project: ordinary, log: () => {} });
+        const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+        assert.doesNotMatch(symbols, /^sw_win_arm_flash_guard\b/m, `${gameType}: an ordinary project has no guard`);
+      } finally {
+        await fsp.rm(dir, { recursive: true, force: true });
+      }
+    }
+  }
+);
+
+test(
+  'phase 3a S1: with Flash and a streamed actor on both game types the whole kernel-lo bank still leaves a margin inside [KERNEL_SLACK, 2*KERNEL_SLACK], and the kernel-hi streaming delta equals its terms plus the projection and the guard',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType, ...S1_FLASH_ACTOR });
+      const margin = await measureWholeBank(t, mapper, project);
+      assert.ok(margin >= KERNEL_SLACK, `${gameType}: whole-bank margin ${margin} is under KERNEL_SLACK`);
+      assert.ok(margin <= KERNEL_SLACK * 2, `${gameType}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
+      const baseline = structuredClone(project);
+      for (const map of baseline.maps) map.streamed = false;
+      const delta = (await measureKernelHiBank(t, mapper, project)) - (await measureKernelHiBank(t, mapper, baseline));
+      const expected =
+        STREAMWORLD_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
+        STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE +
+        (gameType === 'action' ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0) +
+        streamworldUpdatePlayerKernelHiAllowance(project) +
+        STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
+        (projectUsesText(project) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) +
+        (projectUsesText(project) ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project) : 0) +
+        (projectUsesText(project) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0) +
+        STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE;
+      assert.equal(delta, expected, `${gameType}: real kernel-hi delta ${delta} != ${expected}`);
+    }
+  }
+);

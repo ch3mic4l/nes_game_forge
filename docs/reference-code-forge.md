@@ -80,3 +80,20 @@ module-level, never saved.
   `move_left_done`/`move_right_done`/`move_up_done`/`move_down_done` as standalone labels, but they
   survive as zero-byte aliases on `move_horizontal_done`/`move_vertical_done` — a Code Forge user
   file that references any of the four by name still assembles.
+
+- Streamed-world sprite bounds (phase 3a slice S1): on a streamed map the engine projects each
+  placed actor's sprites through a class chosen from bounds *derived from the art* —
+  `streamProjBounds` (`shared/streamlayout.js`) walks every pose an actor's animations can
+  show (each authored frame of every facing, metasprite 0 for a zero-frame animation), and the
+  generated `SW_UXMIN..SW_UYMAX` equates carry them. The tile bound (`STREAM_TILE_BOUND` = 15, or
+  `STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14 when the project has switch-bound tiles; `shared/streambound.js`) is
+  the count of those poses' tiles the frame gate was measured to carry. **The bound also assumes the stock
+  mover parity gate** (`mover_parity_gate` in `engine/entities.asm`: in a streamed project each patroller and
+  chaser steps on half the bodies); a Code Forge override of `entities.asm` that removes or rewrites it moves the
+  frame's cost and voids the supported bound, and nothing in the build can see that. Hand-written 6502 that draws an actor on a pose the animation tables do not define
+  (writing `ent_actor`, `ent_dir` or `ent_frame` to another value before a draw) can put tiles
+  outside the derived bounds, so those bounds and the supported tile bound are no longer promised
+  there; the assembler and the checks cannot see it. The Code Forge capacity warning says so
+  (`STREAMED_BOUNDS_CODE_SENTENCE`, `main/build/generate.js`) exactly when the project carries
+  code **and** streams actors — `test/unit/streamtilewarning.test.js` pins the condition. A
+  project without streamed actors, or without code, is unchanged.

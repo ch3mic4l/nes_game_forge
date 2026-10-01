@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
@@ -715,3 +716,58 @@ test("a horizontal MOVE_SELF Move probes its OWN y, not a reassigned talk_ent's,
   assert.ok(settleMove(nes), 'the Move must still end');
   assert.equal(mem[ENT_X + moverSlot], 32 + 20, "the mover's own probe row (7) is open -- a live-talk_ent move_get_y would probe the decoy's own row (13, painted solid) and block the very first tick instead");
 });
+
+// (a1) kernel-lo round: the two vertical streamed arms share one probe stage (move_tick_probe_v_streamed), whose
+// perpendicular inset is BODY_L (2). identitymatrix.test.js pins its bytes; this is the behavioural discriminator.
+// At x=243 the leading-edge inset lands at 245 -- inside the CURRENT screen's column 15 -- while BODY_R (13) would reach
+// 256, the RIGHT neighbour's column 0. Only that neighbour column is solid, so the correct engine completes the whole
+// 20 px and the wrong inset is blocked on the first tick. (The repros above use x=255, where both insets carry into the
+// same neighbour column and so cannot tell the two apart.)
+{
+  const PROBE_V = 'move_tick_probe_v_streamed:\n  sta <probe_y\n  jsr move_get_x\n  clc\n  adc #';
+  const ENTITIES = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../engine/entities.asm'), 'utf8');
+  const wrongInset = ENTITIES.replace(`${PROBE_V}BODY_L`, `${PROBE_V}BODY_R`);
+  for (const dir of ['down', 'up']) {
+    test(`vertical probe inset: a ${dir} Move at x=243 probes the current screen's column 15 (BODY_L), not the right neighbour's column 0`, boots, async () => {
+      assert.notEqual(wrongInset, ENTITIES, 'the vertical probe stage must carry BODY_L, for the sabotage to change it');
+      const startY = dir === 'down' ? 40 : 60;
+      const expectedY = dir === 'down' ? 60 : 40;
+      const reached = async (override) => {
+        const project = baseMoveProject({ dir, dist: 20, startX: 243, startY });
+        paintSolid(project, 1, 11, columnOffsets(0));
+        if (override) project.code.overrides.push({ name: 'entities.asm', text: override });
+        const { nes, mem } = await buildAndBoot(project);
+        assert.ok(settleMove(nes));
+        return mem[PLAYER_Y];
+      };
+      assert.equal(await reached(), expectedY, `${dir}: the full 20 px on terrain that is open under BODY_L`);
+      assert.equal(await reached(wrongInset), startY, `${dir}, sabotage (BODY_L -> BODY_R): blocked at once by the neighbour's solid column`);
+    });
+  }
+}
+
+// The horizontal arms' shared stage (move_tick_probe_h_streamed) has the same shape of un-discriminated inset: its
+// perpendicular y is BODY_B (15), and the repros above start at y=239, where BODY_T (8) lands in the same neighbour
+// row. At y=225, BODY_B reaches 240 -- the BOTTOM neighbour's row 0, painted solid -- while BODY_T stays at 233 on the
+// open current screen.
+{
+  const PROBE_H = 'move_tick_probe_h_streamed:\n  sta <probe_x\n  lda #0\n  adc #0\n  tay\n  jsr move_get_y\n  clc\n  adc #';
+  const ENTITIES = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../engine/entities.asm'), 'utf8');
+  const wrongInset = ENTITIES.replace(`${PROBE_H}BODY_B`, `${PROBE_H}BODY_T`);
+  for (const dir of ['right', 'left']) {
+    test(`horizontal probe inset: a ${dir} Move at y=225 is blocked by the bottom neighbour's row 0 (BODY_B), and BODY_T would not be`, boots, async () => {
+      assert.notEqual(wrongInset, ENTITIES, 'the horizontal probe stage must carry BODY_B, for the sabotage to change it');
+      const startX = 100;
+      const reached = async (override) => {
+        const project = baseMoveProject({ dir, dist: 20, startX, startY: 225 });
+        paintSolid(project, 3, 10, rowOffsets(0));
+        if (override) project.code.overrides.push({ name: 'entities.asm', text: override });
+        const { nes, mem } = await buildAndBoot(project);
+        assert.ok(settleMove(nes));
+        return mem[PLAYER_X];
+      };
+      assert.equal(await reached(), startX, `${dir}: blocked on the first tick by the neighbour row BODY_B reaches`);
+      assert.equal(await reached(wrongInset), dir === 'right' ? startX + 20 : startX - 20, `${dir}, sabotage (BODY_B -> BODY_T): the open current screen lets the Move complete`);
+    });
+  }
+}

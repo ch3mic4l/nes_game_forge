@@ -1,0 +1,165 @@
+-- Mover parity gate: dispatch cadence, measured in Mesen (phase 3a slice S1, option (a1); review 2's acceptance note).
+-- Instantiated by test/lua/run_sw_cadence.mjs, which fills in the two double-underscore tokens below: the symbol table
+-- (name -> address/value) and the scripted walk.
+--
+-- engine/entities.asm, update_entities_behave: on a streamed build a slot runs its autonomous behaviour only on a body where
+-- (slot xor frame_cnt) & 1 == 0. This script does not infer that from frame_cnt at update_entities entry; it records what the
+-- engine DID, by exec hooks on three addresses:
+--   EOR    mover_parity_gate + 1, the `eor <frame_cnt` of the gate: X is the slot and frame_cnt is the value the gate is about to use
+--          (an NMI cannot land between the opcode fetch and its operand read), so the verdict is what the gate saw, not what
+--          frame_cnt is a few instructions later after an NMI has advanced it;
+--   DISP   mover_parity_gate_end, the first instruction past the gate: reached only by a slot the gate let through (on a streamed
+--          build the `bne` branches around it to update_entities_anim);
+--   BODY   main_loop_body_start: one body.
+-- Every visit is then compared with what followed it:
+--   NOT_DISPATCHED   a visit whose parity matched was not followed by a dispatch (the gate swallowed a slot it owed a body);
+--   WRONG_PARITY     a dispatch where the parity did not match (or one that no visit announced);
+-- and the fairness figure: per slot, the largest wait in BODIES, taken from the start of a continuous run of visits (the run starts
+-- again when the slot was not visited on the previous body: an inactive slot is not starved, it is absent) to its first dispatch, between
+-- two dispatches, and from the last dispatch (or the start of the run, if there was none) to the end of the run or of the walk. A slot
+-- that is visited and never dispatched is therefore a long wait, not an absent one.
+-- LOCK_PARITY is the starvation negative control (run_sw_cadence.mjs --break=starve): it zeroes frame_cnt just before the gate's own read,
+-- so the gate sees a frame_cnt that never advances -- parity locked, the odd slots never run -- while every other hook still sees real PCs.
+local SYM = __SYM__
+local LOCK_PARITY = __LOCK_PARITY__
+local WALK = __FRAMES__ -- { {untilFrame=, held={...}}, ... } counted from the first gameplay frame
+
+local function rd(a) return emu.read(a, emu.memType.nesMemory) end
+
+local frame, started, t0, body = 0, false, 0, 0
+local held = {}
+local pending = nil            -- { slot=, fc=, body=, expected= } the visit awaiting its dispatch
+local visits, dispatches, bodiesCounted = 0, 0, 0
+local lastFc, fcJumps, fcMaxStep = nil, 0, 0
+local lastVisitBody, lastDispatch, maxGap, runStart = {}, {}, {}, {}
+local maxFirst = 0
+local viol, violN = {}, 0
+local slotDispatches, slotVisits = {}, {}
+local gapHist = {}
+
+local function violation(kind, slot, fc)
+  violN = violN + 1
+  if #viol < 8 then viol[#viol + 1] = string.format("%s body=%d slot=%d frame_cnt=%d", kind, body, slot, fc) end
+end
+
+local function note(slot, gap)
+  if gap > (maxGap[slot] or 0) then maxGap[slot] = gap end
+end
+
+-- the wait of a run that has ended: from its last dispatch (or its start) to its last visit
+local function closeRun(slot)
+  local ref = lastDispatch[slot] or runStart[slot]
+  if ref then note(slot, lastVisitBody[slot] - ref) end
+end
+
+local function resolvePending()
+  if pending and pending.expected then violation("NOT_DISPATCHED", pending.slot, pending.fc) end
+  pending = nil
+end
+
+local function onBody()
+  body = body + 1
+  -- the walk is timed from the first BODY that runs in gameplay (the sweep's own start, run_sw_manifest.mjs `waitFor: gameplay`): game_state
+  -- is already ST_GAMEPLAY for about 47 frames of the landing redraw before any body runs
+  if not started and rd(SYM.game_state) == SYM.ST_GAMEPLAY then started = true; t0 = frame end
+  if not started then return end
+  resolvePending()
+  bodiesCounted = bodiesCounted + 1
+  local fc = rd(SYM.frame_cnt)
+  if lastFc then
+    local step = (fc - lastFc) % 256
+    if step ~= 1 then fcJumps = fcJumps + 1 end
+    if step > fcMaxStep then fcMaxStep = step end
+  end
+  lastFc = fc
+end
+
+local function onEor()
+  if not started then return end
+  resolvePending()
+  local st = emu.getState()
+  local slot = st["cpu.x"]
+  if LOCK_PARITY then emu.write(SYM.frame_cnt, 0, emu.memType.nesMemory) end
+  local fc = rd(SYM.frame_cnt)
+  visits = visits + 1
+  slotVisits[slot] = (slotVisits[slot] or 0) + 1
+  local prev = lastVisitBody[slot]
+  if prev ~= body - 1 and prev ~= body then
+    if prev then closeRun(slot) end
+    lastDispatch[slot] = nil
+    runStart[slot] = body
+  end
+  lastVisitBody[slot] = body
+  pending = { slot = slot, fc = fc, expected = ((slot ~ fc) & 1) == 0 }
+end
+
+local function onDispatch()
+  if not started then return end
+  local st = emu.getState()
+  local slot = st["cpu.x"]
+  dispatches = dispatches + 1
+  slotDispatches[slot] = (slotDispatches[slot] or 0) + 1
+  if not pending or pending.slot ~= slot then
+    violation("WRONG_PARITY(unannounced)", slot, rd(SYM.frame_cnt))
+  elseif not pending.expected then
+    violation("WRONG_PARITY", slot, pending.fc)
+  end
+  pending = nil
+  local last = lastDispatch[slot]
+  if last then
+    local gap = body - last
+    gapHist[gap] = (gapHist[gap] or 0) + 1
+    note(slot, gap)
+  elseif runStart[slot] then
+    local first = body - runStart[slot] -- the first dispatch of a run: its wait counts as a gap too
+    if first > maxFirst then maxFirst = first end
+    note(slot, first)
+  end
+  lastDispatch[slot] = body
+end
+
+local function finish()
+  resolvePending()
+  -- the trailing wait: a slot still in its run at the end (or whose run ended) that stopped being dispatched, or never was
+  for slot, rs in pairs(runStart) do
+    local ref = lastDispatch[slot] or rs
+    if lastVisitBody[slot] == body or lastVisitBody[slot] == body - 1 then note(slot, body - ref) else closeRun(slot) end
+  end
+  local overall = 0
+  for _, g in pairs(maxGap) do if g > overall then overall = g end end
+  local per = {}
+  for slot = 0, 7 do per[#per + 1] = string.format("%d:%d/%d/%d", slot, slotVisits[slot] or 0, slotDispatches[slot] or 0, maxGap[slot] or 0) end
+  local hist = {}
+  for g, c in pairs(gapHist) do hist[#hist + 1] = { g, c } end
+  table.sort(hist, function(a, b) return a[1] < b[1] end)
+  local hs = {}
+  for _, e in ipairs(hist) do hs[#hs + 1] = e[1] .. "x" .. e[2] end
+  print(string.format("CADENCE bodies=%d visits=%d dispatches=%d violations=%d maxGap=%d maxFirst=%d fcJumps=%d fcMaxStep=%d span=%d", bodiesCounted, visits, dispatches, violN, overall, maxFirst, fcJumps, fcMaxStep, SYM.mover_parity_gate_end - SYM.mover_parity_gate))
+  print("SLOTS " .. table.concat(per, " "))
+  print("GAPS " .. table.concat(hs, " "))
+  for _, v in ipairs(viol) do print("VIOL " .. v) end
+  print("DONE frames=" .. frame)
+  emu.stop(0)
+end
+
+local function onInput() emu.setInput(held, 0) end
+
+local function onFrame()
+  frame = frame + 1
+  if not started then
+    if frame > 2000 then print("TIMEOUT never reached gameplay"); emu.stop(9) end
+    return
+  end
+  local e = frame - t0
+  local last = WALK[#WALK]
+  if e >= last.untilFrame then finish(); return end
+  for _, seg in ipairs(WALK) do
+    if e < seg.untilFrame then held = seg.held; break end
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onBody, emu.callbackType.exec, SYM.main_loop_body_start)
+emu.addMemoryCallback(onEor, emu.callbackType.exec, SYM.mover_parity_gate + 1)
+emu.addMemoryCallback(onDispatch, emu.callbackType.exec, SYM.mover_parity_gate_end)

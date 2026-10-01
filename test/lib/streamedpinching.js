@@ -51,6 +51,35 @@ function observerCommands(variant) {
   return [say('Hello there, traveler.'), say('Second page of it.'), { op: 'choice', options: [{ text: 'Yes', commands: [] }, { text: 'No', commands: [] }] }];
 }
 
+// Phase 3a slice S1 raised kernel-lo by 21 bytes on every streamed Save project (OAM_BUSY 18 +
+// the projection's setup call 3), and this board's kernel-lo lookup tables were 6 bytes under
+// their ceiling with the committed inventory's 24 placed actors plus Save (8 bytes per actor). With
+// S1 the same inventory needs 304 lookup bytes against 289 free -- the build is refused. Dropping the
+// two highest-numbered placed actors (16 bytes) brings it to 288, the largest inventory that still
+// builds: 22 placed actors with Save, where it was 24 before S1. A real capacity change, measured
+// in handoff-next/s1-defer3/trimsave.mjs (k=1 -> 296 needed, still refused; k=2 -> builds).
+//
+// (a1), the mover parity gate (+7 kernel-lo on every streamed project, MOVER_PARITY_GATE_KERNEL_ALLOWANCE),
+// took the free lookup bytes from 289 to 282 against the same 288 needed: one more placed actor (8 bytes)
+// has to go. 21 placed actors with Save now, 24 before S1. The Move-probe fold of the kernel-lo round
+// (engine/entities.asm, -42) frees nothing here: this inventory places no Move command, so the folded
+// arms are not assembled into it. Chris ruled on 2026-09-30: the trim is accepted (the brief's stop-and-report
+// for a test project that stops fitting was answered), and S1_SAVE_ACTORS_DROPPED stays 3.
+export const S1_SAVE_ACTORS_DROPPED = 3;
+
+function dropActorsForS1KernelLo(p, count) {
+  const placed = [];
+  p.maps[0].screens.forEach((s, si) => (s.entities ?? []).forEach((e) => placed.push({ si, aid: e.actorId })));
+  placed.sort((a, b) => b.aid - a.aid);
+  for (const { si, aid } of placed.slice(0, count)) {
+    const ents = p.maps[0].screens[si].entities;
+    ents.splice(ents.findIndex((e) => e.actorId === aid), 1);
+  }
+  const dropped = new Set(placed.slice(0, count).map((d) => d.aid));
+  // the highest actor ids are the last actors, so popping keeps every remaining id valid
+  for (let i = p.sprites.actors.length - 1; dropped.has(i); i--) p.sprites.actors.pop();
+}
+
 /** The committed inventory + the Observer. `twin` shortens every OTHER say to "Hi.".
  * nosave/move add one placed Observer NPC. save reuses the inventory's own first NPC on the
  * Observer's screen (slot 0) and appends the Save command to its page: a 25th placed actor tips this board's
@@ -69,6 +98,7 @@ export function buildPinching(variant = 'nosave', { twin = false } = {}) {
     screen.entities[slot].y = OBSERVER_Y;
     screen.entities[slot].props.event.pages[0].commands.push({ op: 'save' });
   }
+  if (variant === 'save') dropActorsForS1KernelLo(p, S1_SAVE_ACTORS_DROPPED);
   const observed = variant === 'save' ? screen.entities[0].props.event.pages[0].commands[0] : null;
   if (twin) for (const c of sayCommands) if (c !== observed) c.text = 'Hi.';
   if (variant !== 'save') {

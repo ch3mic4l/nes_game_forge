@@ -38,7 +38,7 @@ import { planStreamedRegions } from '../../main/build/generate.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { callRoutine } from '../lib/callroutine.js';
-import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
+import { mergeReconstructEngineFile, appendS1Constants } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
 import { finishNamingIfOpen, waitForNamingReady, gotoCell, clearName, typeNameAndFinish, nameBytes, tap as namingTap } from '../lib/naming.js';
 import { BUTTON } from '../../renderer/emulator/runcontrol.js';
@@ -2598,6 +2598,57 @@ test('case 7/10 (action) sabotage: forcing nameentry_push to the ordinary ($23xx
 // unverified claim in this comment.
 // ---------------------------------------------------------------------------------------------
 
+const PAD = 0x17; // from engine/constants.asm
+const PAD_NEW = 0x18; // from engine/constants.asm
+const BTN_B = 0x40; // from engine/constants.asm
+
+/**
+ * Put `button` on the controller for exactly one genuine `read_pad` call and report what happened. The
+ * mainline calls read_pad once per body (engine/boot.asm, main_loop_body_start), so "the poll" is that
+ * call: the button goes down as the CPU is about to execute read_pad's first instruction, and comes
+ * back up the instruction the routine returns (its return address is read off the stack at entry, so
+ * this does not depend on what follows the call site). `boundary` is the state at the end of the same
+ * body, `main_loop_ready`. Runs whole frames until that boundary is reached or `maxFrames` pass.
+ */
+function pressThroughRealPoll(nes, mem, addrOf, button, { maxFrames = 4 } = {}) {
+  const READ_PAD = addrOf('read_pad');
+  const READY = addrOf('main_loop_ready');
+  const rec = { entered: false, completed: false, padSeen: 0, padNewSeen: 0, boundary: null, frames: 0 };
+  let returnPc = -1;
+  const original = nes.cpu.emulate.bind(nes.cpu);
+  nes.cpu.emulate = function () {
+    const pc = (nes.cpu.REG_PC + 1) & 0xffff;
+    if (!rec.entered) {
+      if (pc === READ_PAD) {
+        rec.entered = true;
+        const sp = nes.cpu.REG_SP;
+        returnPc = ((((mem[0x100 | ((sp + 2) & 0xff)] << 8) | mem[0x100 | ((sp + 1) & 0xff)]) + 1) & 0xffff);
+        nes.buttonDown(1, button);
+      }
+    } else if (!rec.completed) {
+      if (pc === returnPc) {
+        rec.completed = true;
+        rec.padSeen = mem[PAD];
+        rec.padNewSeen = mem[PAD_NEW];
+        nes.buttonUp(1, button);
+      }
+    } else if (rec.boundary === null && pc === READY) {
+      rec.boundary = { gameState: mem[GAME_STATE], sw15: mem[SW_DLG15_STATE], boxState: mem[BOX_STATE] };
+    }
+    return original();
+  };
+  try {
+    while (rec.boundary === null && rec.frames < maxFrames) {
+      nes.frame();
+      rec.frames++;
+    }
+  } finally {
+    nes.cpu.emulate = original;
+    nes.buttonUp(1, button);
+  }
+  return rec;
+}
+
 const WIN_COL_SCREEN = 0x05b1;
 const WIN_COL_LOCAL = 0x05b2;
 const ST_LEN = 0x05b7;
@@ -2639,7 +2690,21 @@ test('case 8: a genuinely armed real strip (sw_stream_start_col, not a hand-set 
   nes.cpu.setStatus(pausedP);
   nes.mmap.write(0x2000, 0x88 | (mem[CAM_NT] & 3));
 
-  tap(nes, B, 0);
+  // Deliver B through ONE genuine controller poll, found by execution rather than by waiting for the
+  // result: the first `read_pad` the mainline enters after the callRoutine round-trip above (which
+  // resumed mid-body) gets B on the wire for exactly that call, and B is released the instant that
+  // call returns to its caller. The interact must then have happened by the end of the same body
+  // (`main_loop_ready`). A lost or late poll therefore fails here, where a wait loop on
+  // ST_DIALOG would have absorbed it (phase 3a slice S1 fix round 1, F2).
+  const poll = pressThroughRealPoll(nes, mem, addrOf, B);
+  assert.ok(poll.entered, 'a real read_pad must run within a few frames of the resume');
+  assert.ok(poll.completed, 'the read_pad that received B must return to its caller');
+  assert.equal(poll.padSeen & BTN_B, BTN_B, 'that poll must have read B as held (pad)');
+  assert.equal(poll.padNewSeen & BTN_B, BTN_B, 'and as a press this frame (pad_new)');
+  assert.ok(poll.boundary, 'the body that polled B must reach main_loop_ready');
+  assert.equal(poll.boundary.gameState, ST_DIALOG, 'B delivered to poll N must interact in body N: the world is frozen by the end of that body');
+  assert.equal(poll.boundary.sw15, SW_DLG15_PENDING, 'and PENDING holds at that boundary -- the strip armed above is still in flight');
+  assert.equal(poll.boundary.boxState, BOX_CLOSED, 'the box itself has not opened at that boundary');
   assert.equal(mem[GAME_STATE], ST_DIALOG, 'the world must already be frozen -- start_dialog sets game_state before box_begin ever runs');
   assert.equal(mem[BOX_STATE], BOX_CLOSED, 'the box itself must not have opened yet -- box_begin only arms PENDING while streamed');
   assert.equal(mem[SW_DLG15_STATE], SW_DLG15_PENDING, 'PENDING must hold on the very same frame -- the strip armed above is still in flight');
@@ -3784,7 +3849,9 @@ function fixRound1PreLifecycleBaselineOverrides() {
     name,
     text: name === 'streamworld.asm'
       ? mergeReconstructEngineFile(ROOT, '8b4d5a9', name)
-      : execFileSync('git', ['show', `8b4d5a9:engine/${name}`], { encoding: 'utf8' })
+      : name === 'constants.asm'
+        ? appendS1Constants(ROOT, execFileSync('git', ['show', `8b4d5a9:engine/${name}`], { encoding: 'utf8' }))
+        : execFileSync('git', ['show', `8b4d5a9:engine/${name}`], { encoding: 'utf8' })
   }));
 }
 

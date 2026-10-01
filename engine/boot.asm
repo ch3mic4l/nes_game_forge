@@ -373,8 +373,20 @@ settle_owed_none:
   lda #0
   rts
 main_loop_ui:
+oam_busy_set_ui:
+  .if OAM_BUSY_ENABLED
+  lda #1
+  sta <oam_busy
+  .endif
+oam_busy_set_ui_end:
   jsr ui_tick               ; the world is frozen: run the overlay instead
 main_loop_draw:
+oam_busy_set_draw:
+  .if OAM_BUSY_ENABLED
+  lda #1
+  sta <oam_busy
+  .endif
+oam_busy_set_draw_end:
   .if BATTLE_ENABLED
   lda <game_state
   cmp #ST_BATTLE
@@ -387,6 +399,12 @@ main_loop_draw:
   .endif
   jsr draw_ui               ; on top of the frozen world, when one is open
 main_loop_ready:
+oam_busy_clear:
+  .if OAM_BUSY_ENABLED
+  lda #0
+  sta <oam_busy
+  .endif
+oam_busy_clear_end:
   .if SPLIT_ENABLED
   jsr split_select          ; every path through the frame decides its split
   .endif
@@ -529,6 +547,12 @@ nmi_oam_guard_start:
   .endif
   .endif
 nmi_oam_guard_end:
+oam_busy_nmi:
+  .if OAM_BUSY_ENABLED
+  lda <oam_busy
+  bne nmi_oam_skip
+  .endif
+oam_busy_nmi_end:
   lda #$00
   sta $2003
   lda #$02

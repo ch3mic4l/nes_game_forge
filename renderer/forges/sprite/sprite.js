@@ -27,6 +27,7 @@ import {
   metaspriteKernelBytes
 } from '../../../shared/project.js';
 import { resolveMapper } from '../../../shared/cartridge.js';
+import { moverSpeedNote } from '../../../shared/streamlayout.js';
 import { paintMetasprite as paintMetaspriteShared } from '../../widgets/metasprite.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
 import { openLibraryActorImport } from './librarysprite.js';
@@ -1012,6 +1013,7 @@ export function mount(container, app) {
                 })
               )
             ),
+            moverSpeedNote(store.project, actor) ? el('p.hint', null, moverSpeedNote(store.project, actor)) : null,
             el(
               'p.hint',
               { style: { marginBottom: '10px' } },

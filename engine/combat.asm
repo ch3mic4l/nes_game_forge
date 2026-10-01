@@ -67,6 +67,11 @@ init_session:
   sta <inv_sel
   sta <items_used
   sta <paused
+oam_busy_init:
+  .if OAM_BUSY_ENABLED
+  sta <oam_busy
+  .endif
+oam_busy_init_end:
   .if MOVE_ENABLED
   sta <mv_left               ; a new game has nothing mid-walk, whatever the last
                             ; one was doing when it ended

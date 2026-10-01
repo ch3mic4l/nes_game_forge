@@ -40,7 +40,7 @@ import { buildProject } from '../../main/build/pipeline.js';
 import { validateProject } from '../../shared/project.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { callRoutine } from '../lib/callroutine.js';
-import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
+import { mergeReconstructEngineFile, appendS1Constants } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
 import { fileURLToPath } from 'node:url';
 
@@ -676,7 +676,7 @@ test('phase 2 slice 8: an event that both shows text (Say) and moves the player 
 // (zero bytes either way), so a flat revert of that file remains correct.
 function dialogueMapperBaselineOverrides() {
   return [
-    { name: 'constants.asm', text: execFileSync('git', ['show', '506a8ea:engine/constants.asm'], { encoding: 'utf8' }) },
+    { name: 'constants.asm', text: appendS1Constants(ROOT, execFileSync('git', ['show', '506a8ea:engine/constants.asm'], { encoding: 'utf8' })) },
     { name: 'streamworld.asm', text: mergeReconstructEngineFile(ROOT, '506a8ea', 'streamworld.asm') }
   ];
 }

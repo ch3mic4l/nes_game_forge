@@ -340,6 +340,92 @@ Mesen timing, the same "prove the workload, then trust the deadline" shape
 `flash_nmi_timing.lua.template` established. **A fourth independent producer must re-open this
 accounting again, not assume it still holds.**
 
+**The row-arm guard keeps a row strip off a Flash publication body (phase 3a slice S1).** A row arm queues
+a strip whose vblank drawing competes with a Flash packet's 35-byte `vram_buf` publication, and the
+frame gate (29,780 cycles) has no room for both. `sw_win_arm_flash_guard` (`engine/streamworld.asm`,
+inside `sw_win_arm_row`, gated on `FLASH_ENABLED`, 10 bytes) skips the row arm on a body that
+carries **either** publication: the restore (`flash_left == FLASH_PENDING`, set by `flash_tick` on the
+frame it queues the restore) and the Flash-on (`flash_left == FLASH_ARM_VALUE-1` at the guard, i.e.
+the publication body after `flash_tick` has decremented 7 to 6). `$FE` and every other value still
+arm. Nothing has advanced on a skipped body (the window origin is stepped only by
+`sw_win_row_inc/dec` after the guard), so the row arms on **a later body, not necessarily the next**;
+each value is visible on exactly one body per Flash, so a row is deferred at most twice per Flash
+cycle, never repeatedly. **What the guard enforces, exactly:** a row is not armed on a body whose `flash_left`
+reads `FLASH_PENDING` or `FLASH_ARM_VALUE-1` *at the guard*. That is the same set as "a Flash publication
+body" only while nothing rewrites `flash_left` between `flash_tick` and the guard. **The one exception is a
+Flash re-armed after `flash_tick` in the very body of a Flash-on publication** (a script's `Flash` command
+sets `flash_left` to `FLASH_ARM_VALUE` unconditionally): the guard then reads 7, arms, and that body carries
+both. `streamworldflashdefer.test.js` produces it by RAM poke (`allowReArm: true`, labelled SYNTHETIC) and
+pins it as a residual. Exclusion is **not** claimed for authored schedules in general: the authored routes
+swept (touch-Flash npcs 2-16 px apart, a chaser that re-touches on its own, a six-screen populated stretch,
+and `Flash, Wait w, Flash` for w = 1, 2, 3, 6) show no such body, and that is an observation, not a proof
+that no authorable event ordering reaches it. Body order that makes this true: `flash_tick` (`engine/boot.asm:218`) →
+`settle_owed` (`:249`) → `dispatch_input` (`:287`) → `update_player` (`:302`) →
+`sw_frame_camera_window` → `sw_win_arm`; a script re-arm runs after `flash_tick` and is seen as
+`FLASH_ARM_VALUE` itself, which arms. A column arm is decided before the guard and is not covered; a column arm
+with a Flash publication in its body is **not observed in the authored schedules swept** (an idle strip at
+arm time is not an impossibility proof: a Flash can be armed earlier and publish before the column decision).
+The `vram_buf` worst case stays 81 of 256 bytes: the guard removes a competitor for vblank time, it
+adds no producer (`vram_buf` is `$0400`, `@size=256`, `engine/constants.asm:1221`; the strip drawer
+below writes straight from `sbuf`). Measured effect and traces: `handoff-next/streamed-worlds-phase3a-s1-report.md`.
+
+**`oam_busy` is an inverted OAM-ready flag (phase 3a slice S1), and a streamed project's tile bound is
+project-global.** `oam_busy` (`$F8`, `engine/constants.asm`; `OAM_BUSY_ENABLED` = the project streams)
+is nonzero while `build_oam` is filling the shadow OAM, so the NMI's OAM DMA can hold the previous
+frame's sprites instead of a half-built list when the frame runs long — the mechanism that makes an
+over-bound screen "slow down" rather than flicker. It is inverted (0 = ready) so the reset state is
+the safe one. The streamed entity projection's inside class uses bounds derived from *every* placed
+actor's poses (`streamProjBounds`, `SW_UXMIN..SW_UYMAX`), so one wide-art actor placed on **any**
+screen widens the bounds for the whole world and removes the inside fast path everywhere; the
+sprite-tile bound is still stated per screen, and there are two of them (below).
+
+**The mover parity gate, and the two bounds (phase 3a slice S1, option (a1)).** In a project with a streamed map
+(`STREAMING_ENABLED`, i.e. `projectUsesStreaming`) `update_entities_behave` (`engine/entities.asm`,
+`mover_parity_gate` to `mover_parity_gate_end`, `txa / eor <frame_cnt / and #1 / bne update_entities_anim`, 7 bytes of
+kernel-lo, `MOVER_PARITY_GATE_KERNEL_ALLOWANCE`) lets a slot run its autonomous behaviour (patrol, chase, pickup, door)
+only on bodies where `(slot xor frame_cnt) & 1 == 0`. **Every patroller and chaser on every map of such a project, ordinary
+maps included, therefore steps at half its authored rate** (the gate is compiled on the project, not the current map);
+animation still runs every body and scripted `Move` is not gated. The editor says so beside an actor's Speed field
+(`moverSpeedNote`, `shared/streamlayout.js`). What it buys: eight movers' collision probes land on two alternate bodies
+instead of one, which is what lets the frame gate (29,780 cycles) carry the bounds below (the Q1c prototype
+measurements that chose (a1) are `handoff-next/s1-q1c/`). **Fairness, as measured (not a guarantee):** in
+the three scenes `test/lua/run_sw_cadence.mjs` runs, the longest wait of a slot -- from the start of its run of visits to its
+first dispatch, between two dispatches, or from its last dispatch to the end -- is **2 bodies on the walk** (`frame_cnt`
+advances by 1 every body) and **3 on the two overruns** (bound-tile n = 16 and plain n = 17, where `frame_cnt` steps by 2
+once); each scene is pinned at its figure and must show its own `frame_cnt` behaviour. The caveat: the gate looks at `frame_cnt`'s parity, so if `frame_cnt` kept advancing by 2 between bodies the parity would stay
+fixed and one set of slots (every odd slot, or every even one) would never be dispatched, with no bound on the wait. The
+engine makes no such guarantee against that and this document claims none beyond the three scenes. The check
+fails on a wait above the pin, on a slot that is visited and never dispatched, and on a scene that does not show its
+`frame_cnt` behaviour; four negative controls each fail it -- three ROM patches (no `eor`, `bne`->`beq`, no gate), each on a
+WRONG_PARITY/NOT_DISPATCHED violation, and `--break=starve`, which locks `frame_cnt` at the gate's read and fails on
+starvation with no parity violation at all. It hooks the `eor` and the first instruction past the gate, so it records what
+the engine did, not what `frame_cnt` was at body start. A Code Forge override of `entities.asm` that removes or
+rewrites the gate voids the bounds (`docs/reference-code-forge.md`).
+
+The tile bound is the output of the frame gate under the margin policy (Chris, 2026-09-30: **ship one below the
+largest n the sweep certifies**) and there are two figures because switch-bound tiles
+(`projectUsesBoundTiles`, `BOUND_TILE_ENABLED`) make every streamed body dearer: **`STREAM_TILE_BOUND` = 15** (certified
+16; tightest passing row 29,695 cycles, 85 under the gate: action, wide art, P8, 7 blocked chasers, Flash y 212, Flash x
+241) and **`STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14** (certified 15; 29,722, 58 under). `streamTileBoundFor(project)`
+(`shared/project.js`) is the single reader, the validateProject warning and `describeStreamTileWarning` use it, and the
+text says so when bound tiles lowered the figure. Both are derived from `test/fixtures/streambound-curve.json`
+(version 3: 11,534 jobs, 643 of them reused measurements, 2 confirmed failing rows -- plain 17 at 31,741 cycles and
+bound-tile 16), which is evidence for **one engine**: `streamtilebound.test.js` fails when `engine/*.asm` no longer matches
+the recorded fingerprint, and the remedy is re-running `test/lua/sw_bound_sweep.mjs` (stages A, B, C, R, then `plan F` /
+`runF`, then `agg --write`), never editing the fingerprint. The records' generator hash (`c66b2c9b…`) is not the final tree's (`d5d313dc…`): `test/lua/sw_rebuild_check.mjs` rebuilt all 10,893 Mesen-run records on the final tree with no Mesen and every project and ROM hash matched (`test/fixtures/streambound-equivalence.json`), so the measurements stand; a later generator-only change is certified the same way, and any change whose ROMs differ needs a re-sweep. The record is **exhaustive at the certified n of each curve and
+holds one confirmed failing row at the next**; everything else (other n, the partitions of P3/P4/P5/P7, odd k, other Flash
+x, durations and frame counts beyond the presets P0-P8, RPG beyond 500 spot checks at n = 16) is *sampled* and said so in the
+record's `sampling` (provenance in `shared/streambound.js`). The mechanism of the failure is unchanged: an
+`entity_animate` +456-cycle aligned advance on the body that also carries the deferred row arm, and an NMI landing in the
+poll tail. Not measured: the SYNTHETIC forced-Flash stress. The sweep's scene builder asserts, after `normalizeProject`,
+that each scene has the animations and projection bounds it meant to (`test/unit/streamscene.test.js`), and
+`streamgate.test.js` pins the gate's own cost deltas.
+
+**Capacity drop recorded with S1 (a1): 21 placed actors with Save, was 24.** The committed Save inventory project needs 8
+kernel-lo lookup bytes per placed actor; S1's `OAM_BUSY` (+18) and projection setup (+3) and (a1)'s gate (+7) took the
+free lookup bytes on that board from 289 to 282 against 288 needed with 22 actors, so the test project places 21
+(`S1_SAVE_ACTORS_DROPPED` = 3 in `test/lib/streamedpinching.js`, accepted by Chris 2026-09-30).
+
 **The streamed-world strip drawer (phase 2 slice 4a) is a fourth *consumer* of vblank time, not a
 `vram_buf` producer.** `sw_nmi_stream`/`sw_nmi_stream_reduced` (`engine/streamworld.asm`) draw
 straight from `sbuf` via their own `$2006`/`$2007` writes rather than queuing a packet, so they

@@ -26,7 +26,7 @@ import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { validateProject } from '../../shared/project.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
-import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
+import { mergeReconstructEngineFile, appendS1Constants } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
 import { fileURLToPath } from 'node:url';
 import { readEngineSource } from '../lib/enginesource.js';
@@ -1291,7 +1291,7 @@ test('sabotage case 7 (A2): the SAME uninterrupted joint-capture drive, with the
 // diffs directly), so a flat revert of those two remains correct.
 function slice8BaselineOverrides() {
   return [
-    { name: 'constants.asm', text: execFileSync('git', ['show', '0ea504b:engine/constants.asm'], { encoding: 'utf8' }) },
+    { name: 'constants.asm', text: appendS1Constants(ROOT, execFileSync('git', ['show', '0ea504b:engine/constants.asm'], { encoding: 'utf8' })) },
     { name: 'streamworld.asm', text: mergeReconstructEngineFile(ROOT, '0ea504b', 'streamworld.asm') },
     { name: 'ui.asm', text: execFileSync('git', ['show', '0ea504b:engine/ui.asm'], { encoding: 'utf8' }) }
   ];

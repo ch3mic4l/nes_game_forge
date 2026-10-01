@@ -916,7 +916,10 @@ for (const { label, withSave } of BOUNDARY_CONFIGS) {
       // a delta the 2-byte filler quantum overshoots with it). The assertions below say to pick
       // another string, never to fudge a category, so each configuration carries the shortest
       // suffix that makes its delta reachable.
-      addFillerDialogue(p, screen, withSave ? 'Welcome traveler rest well before the road ahead!!' : 'Welcome traveler rest well before the road ahead!', { save: withSave });
+      // Phase 3a slice S1 lowered the content ceiling by an ODD 231 bytes (395-byte projection
+      // replacing the 164-byte per-tile routine), which flipped this delta's parity in both
+      // configurations; each string therefore carries exactly one more '!' than before S1.
+      addFillerDialogue(p, screen, withSave ? 'Welcome traveler rest well before the road ahead!!!' : 'Welcome traveler rest well before the road ahead!!', { save: withSave });
       const ceiling = contentCeilingBytes(p);
       const capFixed = checkCapacity(p);
       const targetSfxDelta = ceiling - capFixed.musicBytes - capFixed.textBytes - capFixed.sfxBytes;

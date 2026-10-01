@@ -11,10 +11,10 @@
 // this file's whole import closure and refuses any `node:` specifier. The allowance constants below
 // moved here verbatim from main/build/generate.js, which re-exports every name it used to export.
 
-import { LIMITS, battleBankEnabled, projectUsesBoundTiles, projectUsesMove, projectUsesSave } from '../../shared/project.js';
+import { LIMITS, battleBankEnabled, projectUsesBoundTiles, projectUsesFlash, projectUsesMove, projectUsesSave } from '../../shared/project.js';
 import { projectUsesText } from '../../shared/font.js';
 import { resolveMapper, saveMediaImplemented } from '../../shared/cartridge.js';
-import { projectUsesStreaming } from '../../shared/streamlayout.js';
+import { projectUsesStreaming, projectUsesStreamedActors } from '../../shared/streamlayout.js';
 import { songTableBytes, compileSfx } from './songcompile.js';
 import { compileText } from './textcompile.js';
 import { battleRegionBytes } from './battletables.js';
@@ -288,6 +288,26 @@ export const STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE = 108;
 // flat across action/rpg/mixed: 164 -- byte-for-byte the same body,
 // unchanged by the move.
 export const STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE = 164;
+
+// Phase 3a slice S1: the cheap streamed entity projection (engine/streamworld.asm) REPLACES
+// draw_one_entity_show_sw's 164 bytes on a project that places an actor on a streamed screen
+// (projectUsesStreamedActors): sw_ent_setup (the per-frame origin, 59) followed by the
+// three-class routine (336), one contiguous span sw_ent_setup..draw_one_entity_show_sw_end.
+// The setup body is inside this term -- its 3-byte call is PROJ_SETUP_KERNEL_LO_ALLOWANCE
+// (generate.js) -- so nothing is charged twice. Measured, flat across action and RPG: 395.
+export const STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE = 395;
+
+// Phase 3a slice S1: the Flash-publication deferral at sw_win_arm_row (engine/streamworld.asm,
+// sw_win_arm_flash_guard..sw_win_arm_flash_guard_end): `lda <flash_left / cmp #FLASH_PENDING /
+// beq sw_win_arm_done / cmp #FLASH_ARM_VALUE-1 / beq sw_win_arm_done`, 2 + 2 + 2 + 2 + 2 -- a row
+// arm is skipped on a body whose flash_left reads the restore publication (FLASH_PENDING) or the Flash-on publication
+// (FLASH_ARM_VALUE-1 at the guard, after flash_tick's decrement); a script re-arm after flash_tick is the exception. Kernel-hi, charged on
+// projectUsesFlash while the project streams (streamworldResidentHiBytes is only reached for a
+// streaming project); a project without Flash or without a streamed map assembles none of it. It
+// sits inside the sw_win_col_inc..sw_win_arm_region_end span, so kernelbytes.test.js measures
+// STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE with this span subtracted. Measured: 10, flat across
+// action and RPG (6 while it covered the restore publication alone).
+export const STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE = 10;
 
 // Fix round 1, finding 2: sw_move_probe/sw_move_probe_solid (engine/
 // streamworld.asm) are the resident half of ruling 7's own probe-crossing
@@ -617,6 +637,7 @@ export function streamworldResidentHiBytes(project, mapper) {
     STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
     streamworldMoveHiBytes +
     STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
+    (projectUsesFlash(project) ? STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE : 0) +
     streamworldKnockbackHiBytes +
     streamworldUpdatePlayerKernelHiAllowance(project) +
     STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
@@ -631,7 +652,9 @@ export function streamworldResidentHiBytes(project, mapper) {
     streamworldSaveResyncHiBytes +
     STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
     STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
-    STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE +
+    (projectUsesStreamedActors(project)
+      ? STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE
+      : STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE) +
     STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE +
     streamworldLandingBoundCacheHiBytes
   );

@@ -4,7 +4,9 @@
 // them into config.inc; test/lib/streamdecoder.js deliberately spells the numbers out again,
 // because a decoder that read this table would prove nothing about it.
 
-import { LIMITS } from './project.js';
+import { LIMITS, actorPoseMetaspriteIds } from './project.js';
+
+export { STREAM_TILE_BOUND, STREAM_TILE_BOUND_WITH_BOUND_TILES } from './streambound.js';
 
 // §3 "The record": 240 bytes of raw terrain, then the entity block, then the bound-tile block.
 export const STREAM_TERRAIN_BYTES = 240;
@@ -61,4 +63,62 @@ export function mapTypeTableBytes(mapCount) {
 // feature.
 export function projectUsesStreaming(project) {
   return project.maps.some((map) => map.streamed === true);
+}
+
+// Phase 3a slice S1 (a1): the engine's mover parity gate (engine/entities.asm, `mover_parity_gate`) is compiled on
+// STREAMING_ENABLED, i.e. on this same predicate, so in a project with a streamed map every patroller and chaser on EVERY
+// map -- ordinary maps included -- steps on half the bodies. The editor says so wherever it shows an actor's speed
+// (renderer/forges/sprite/sprite.js); the wording and the behaviours it applies to are decided here, once.
+export const STREAM_MOVER_SPEED_NOTE = 'Movers run at half speed in projects with a streamed map';
+export function moverSpeedNote(project, actor) {
+  return projectUsesStreaming(project) && (actor?.behavior === 'patroller' || actor?.behavior === 'chaser')
+    ? STREAM_MOVER_SPEED_NOTE
+    : null;
+}
+
+/** Every actor id placed on any screen of any streamed map, ascending. */
+export function placedStreamedActorIds(project) {
+  const ids = new Set();
+  for (const map of project.maps) {
+    if (map.streamed !== true) continue;
+    for (const screen of map.screens) for (const entity of screen.entities ?? []) ids.add(entity.actorId);
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
+// Phase 3a slice S1: does this project place at least one actor on a streamed screen? THE
+// predicate for the cheap streamed entity projection (engine/streamworld.asm,
+// STREAM_PROJ_ENABLED) and its derived bounds. A streaming project with no placed actor keeps
+// the shipped per-tile routine, where it is unreachable.
+export function projectUsesStreamedActors(project) {
+  return projectUsesStreaming(project) && placedStreamedActorIds(project).length > 0;
+}
+
+const signedByte = (value) => ((value & 0xff) << 24) >> 24;
+
+/**
+ * The inside class's four bounds: the smallest and largest signed tile X and Y offset over
+ * every pose (actorPoseMetaspriteIds) of every actor placed on a streamed map. One set for the
+ * whole project -- wide art anywhere removes the inside fast path project-wide, because the
+ * engine draws one routine for every streamed screen. All zero when there is no art to bound.
+ */
+export function streamProjBounds(project) {
+  let xmin = 127;
+  let xmax = -128;
+  let ymin = 127;
+  let ymax = -128;
+  let any = false;
+  for (const id of placedStreamedActorIds(project)) {
+    for (const metaspriteId of actorPoseMetaspriteIds(project.sprites.actors[id], project)) {
+      for (const tile of project.sprites.metasprites[metaspriteId]?.tiles ?? []) {
+        any = true;
+        xmin = Math.min(xmin, signedByte(tile.x));
+        xmax = Math.max(xmax, signedByte(tile.x));
+        ymin = Math.min(ymin, signedByte(tile.y));
+        ymax = Math.max(ymax, signedByte(tile.y));
+      }
+    }
+  }
+  if (!any) xmin = xmax = ymin = ymax = 0;
+  return { OXMIN: xmin, OXMAX: xmax, OYMIN: ymin, OYMAX: ymax };
 }

@@ -39,6 +39,7 @@ import {
 } from '../../main/build/generate.js';
 import { battleRegionBytes, battleRegionCeiling } from '../../main/build/battletables.js';
 import { readEngineSource } from '../lib/enginesource.js';
+import { stripS1FromStreamworld } from '../lib/enginehistory.js';
 import { buildCommittedInventory } from '../lib/streamedinventory.js';
 import {
   BankedReturnError,
@@ -79,7 +80,9 @@ function code(text) {
 test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468, header comment aside', () => {
   const old = spawnSync('git', ['show', '59d4468:engine/streamworld.asm'], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(old.status, 0, `git show must succeed: ${old.stderr}`);
-  const flat = readEngineSource('streamworld.asm');
+  // S1 (phase 3a) added a Flash guard and the projection wrapper to this file; the claim under test
+  // is about what the include flattening does to the REST of it, so those regions come out first.
+  const flat = stripS1FromStreamworld(readEngineSource('streamworld.asm'));
   // The only additions are streamdialog.asm's own header comment (its first `; ===`-free block up
   // to the first blank line) and the blank line at the include's end; nothing else may differ.
   const flatLines = flat.split('\n');

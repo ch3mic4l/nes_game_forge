@@ -142,6 +142,21 @@ update_entities_loop:
   beq update_entities_behave
   dec ent_hurt,x            ; the flash after being struck
 update_entities_behave:
+  ; Mover parity gate (streamed builds only): a slot runs its autonomous behaviour -- patrol, chase,
+  ; pickup, door -- only on bodies where (slot xor frame_cnt) & 1 == 0, so every mover steps at half
+  ; its authored rate and the eight movers' collision probes are spread over two bodies instead of
+  ; landing on one (docs/reference-engine.md, "The streamed entity projection", mover parity gate).
+  ; Animation (update_entities_anim) still runs every body, and scripted Move is not here at all.
+  ; Compiled on STREAMING_ENABLED, not on the current map: in a project with a streamed map the
+  ; movers of EVERY map, ordinary ones included, run at half speed.
+mover_parity_gate:
+  .if STREAMING_ENABLED
+  txa
+  eor <frame_cnt
+  and #1
+  bne update_entities_anim
+  .endif
+mover_parity_gate_end:
   ldy ent_actor,x
   lda actor_behavior,y
   cmp #BEH_PATROL
@@ -584,6 +599,11 @@ entity_animate_done:
 ; Appends to the sprite shadow after build_oam has placed the player, then
 ; parks every sprite slot that is left over.
 draw_entities:
+proj_setup_call:
+  .if STREAM_PROJ_ENABLED
+  jsr sw_ent_setup          ; the streamed projection's per-frame origin, once
+  .endif
+proj_setup_call_end:
   ldx #0
 draw_entities_loop:
   lda ent_active,x
@@ -831,23 +851,7 @@ move_tick_down_bounded:
   adc #BODY_B
   .if STREAMING_ENABLED
   ldy <tmp
-  beq move_tick_down_probe_same
-  ; Finding 1: the probe point can cross EITHER axis regardless of which one
-  ; is moving (down's own perpendicular x, old_x+BODY_L, crosses whenever
-  ; old_x is 254/255) -- sw_move_probe normalizes both, not just the one
-  ; this arm happens to move along.
-  sta <probe_y
-  jsr move_get_x
-  clc
-  adc #BODY_L
-  sta <probe_x
-  lda #0
-  adc #0
-  tay                        ; Y = dx (the x-probe's own carry, captured
-                              ; before anything below can disturb it)
-  jsr sw_move_probe
-  jmp move_tick_v_done
-move_tick_down_probe_same:
+  bne move_tick_probe_v_streamed   ; the shared streamed vertical probe, below move_wall
   .endif
   sta <probe_y
   jmp move_tick_probe_v
@@ -861,18 +865,7 @@ move_tick_up:
   adc #BODY_T
   .if STREAMING_ENABLED
   ldy <tmp
-  beq move_tick_up_probe_same
-  sta <probe_y
-  jsr move_get_x
-  clc
-  adc #BODY_L
-  sta <probe_x
-  lda #0
-  adc #0
-  tay
-  jsr sw_move_probe
-  jmp move_tick_v_done
-move_tick_up_probe_same:
+  bne move_tick_probe_v_streamed
   .endif
   sta <probe_y
 move_tick_probe_v:
@@ -893,6 +886,39 @@ move_tick_v_done:
 ; music.asm hitting.
 move_wall:
   jmp move_blocked
+
+  .if STREAMING_ENABLED
+; The streamed player's probe stage, one copy per axis for both directions of that axis (it was
+; four copies, one per direction, before the Phase 3a S1 (a1) kernel-lo round; same instructions,
+; same order, same flags). Entered with A = the candidate probe coordinate on the MOVING axis.
+; Finding 1: the probe point can cross EITHER axis regardless of which one is moving (down's own
+; perpendicular x, old_x+BODY_L, crosses whenever old_x is 254/255) -- sw_move_probe normalizes
+; both, not just the one the arm moves along. Y = dx/dy, the moving axis's own carry, captured
+; before anything below can disturb it.
+move_tick_probe_v_streamed:
+  sta <probe_y
+  jsr move_get_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  jsr sw_move_probe
+  jmp move_tick_v_done
+move_tick_probe_h_streamed:
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  jsr move_get_y
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_move_probe
+  jmp move_tick_h_done
+move_tick_probe_h_streamed_end:
+  .endif
 
 ; Right's own moving axis (candidate+BODY_R) can carry past the screen's own
 ; 256px width exactly when it reaches the true 255 edge -- the 8-bit add's
@@ -931,18 +957,7 @@ move_tick_right_bounded:
   adc #BODY_R
   .if STREAMING_ENABLED
   ldy <tmp
-  beq move_tick_right_probe_same
-  sta <probe_x
-  lda #0
-  adc #0
-  tay                        ; Y = dx (right's own moving-axis carry)
-  jsr move_get_y
-  clc
-  adc #BODY_B
-  sta <probe_y
-  jsr sw_move_probe
-  jmp move_tick_h_done
-move_tick_right_probe_same:
+  bne move_tick_probe_h_streamed   ; carry = right's own moving-axis carry, read there
   .endif
   sta <probe_x
   jmp move_tick_probe_h
@@ -956,18 +971,7 @@ move_tick_left:
   adc #BODY_L
   .if STREAMING_ENABLED
   ldy <tmp
-  beq move_tick_left_probe_same
-  sta <probe_x
-  lda #0
-  adc #0
-  tay
-  jsr move_get_y
-  clc
-  adc #BODY_B
-  sta <probe_y
-  jsr sw_move_probe
-  jmp move_tick_h_done
-move_tick_left_probe_same:
+  bne move_tick_probe_h_streamed
   .endif
   sta <probe_x
 move_tick_probe_h:

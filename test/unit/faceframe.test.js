@@ -69,11 +69,40 @@ const boots = { skip: !hasNesasm && 'nesasm not found on PATH' };
 
 // ------------------------------------------------------------------ the shipped move_face
 
+// Phase 3a slice S1 put `jsr sw_ent_setup` (the streamed projection's per-frame origin, gated on
+// STREAM_PROJ_ENABLED) at the top of draw_entities. The shipped whole-file override is the
+// 9f0136e entities.asm with ONLY move_face old, so it carries that block too: without it a streamed
+// scene with an actor never gets its projection origin set up and draws garbage, which would make
+// every "shipped engine" comparison below measure S1 instead of the S0 clamp. The block is lifted
+// verbatim from today's file (between the proj_setup_call and proj_setup_call_end labels).
+function withStreamedProjectionCall(historical) {
+  const current = fs.readFileSync(path.join(ROOT, 'engine/entities.asm'), 'utf8');
+  const block = current.match(/^proj_setup_call:\n[\s\S]*?^proj_setup_call_end:\n/m)?.[0];
+  assert.ok(block, 'engine/entities.asm must still carry the proj_setup_call block');
+  const anchor = 'draw_entities:\n  ldx #0\n';
+  assert.equal(historical.split(anchor).length, 2, `${SHIPPED_REV} entities.asm must have draw_entities: directly followed by ldx #0, exactly once`);
+  const withCall = historical.replace(anchor, `draw_entities:\n${block}  ldx #0\n`);
+  // Phase 3a S1 (a1): two more edits that are not move_face. The mover parity gate sits at the top of
+  // update_entities_behave, and move_tick's streamed probe arms were folded into one body per axis (a kernel-lo
+  // byte round: same instructions, same order). Both are lifted verbatim from today's file, so the shipped override
+  // still differs from the current engine in move_face alone.
+  const gate = current.match(/^update_entities_behave:\n[\s\S]*?^mover_parity_gate_end:\n/m)?.[0];
+  assert.ok(gate, 'engine/entities.asm must still carry the mover_parity_gate block');
+  const behave = 'update_entities_behave:\n  ldy ent_actor,x\n';
+  assert.equal(withCall.split(behave).length, 2, `${SHIPPED_REV} entities.asm must have update_entities_behave: directly followed by ldy ent_actor,x, exactly once`);
+  const moveTick = /^move_tick:\n[\s\S]*?^move_advance:\n/m;
+  const currentMove = current.match(moveTick)?.[0];
+  assert.ok(currentMove && withCall.match(moveTick), 'move_tick..move_advance must exist in both files');
+  return withCall.replace(behave, `${gate}  ldy ent_actor,x\n`).replace(moveTick, () => currentMove);
+}
+
 let shippedText;
 function shippedEntities() {
   if (shippedText === undefined) {
     try {
-      shippedText = execFileSync('git', ['show', `${SHIPPED_REV}:engine/entities.asm`], { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+      shippedText = withStreamedProjectionCall(
+        execFileSync('git', ['show', `${SHIPPED_REV}:engine/entities.asm`], { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+      );
     } catch {
       shippedText = null;
     }
@@ -129,8 +158,26 @@ const entityArrays = (mem) => ({
  * that happened within SAY_CAP frames, and `boxSeen` which box states the run went through. Otherwise it
  * runs exactly `frames` frames.
  */
-function drive(sc, { dir = DIR_DOWN, frame = 1, timer = 3, frames = 10, say = false, before } = {}) {
-  const { nes, mem } = bootRom(sc.rom, { streamed: sc.streamed });
+function drive(sc, { dir = DIR_DOWN, frame = 1, timer = 3, frames = 10, say = false, before, countBodies = false, alignBodies = null } = {}) {
+  // `bodies.n` counts main-loop bodies started since power-on: the execution boundary two ROMs of slightly
+  // different timing can be compared at (see the zero-distance/no-talker guard tests below).
+  const bodies = { n: 0 };
+  const hook = countBodies ? (m) => {
+    const original = m.cpu.emulate.bind(m.cpu);
+    m.cpu.emulate = function () {
+      if (((m.cpu.REG_PC + 1) & 0xffff) === sc.syms.main_loop_body_start) bodies.n++;
+      return original();
+    };
+  } : undefined;
+  const { nes, mem } = bootRom(sc.rom, { streamed: sc.streamed, hook });
+  // `alignBodies`: run whole frames on until this many main-loop bodies have started since power-on, so the
+  // injection below lands at the same execution point in two ROMs whose boots differ by a frame.
+  if (alignBodies !== null) {
+    assert.ok(bodies.n <= alignBodies, `this boot is already past body ${alignBodies} (at ${bodies.n}); align the lagging one`);
+    for (let i = 0; bodies.n < alignBodies && i < 5; i++) nes.frame();
+    assert.equal(bodies.n, alignBodies, 'could not reach the requested body count');
+  }
+  const injectedAt = bodies.n;
   if (sc.streamed) {
     assert.deepEqual([...mem.slice(SW_CAM, SW_CAM + 4)], [0, 0, 0, 0], 'the resolver below assumes the camera origin is (0, 0)');
   }
@@ -171,7 +218,7 @@ function drive(sc, { dir = DIR_DOWN, frame = 1, timer = 3, frames = 10, say = fa
     }
   }
   if (pressedAt !== null && !released) nes.buttonUp(1, BUTTON.A);
-  return { nes, mem, records, initial, done, boxSeen };
+  return { nes, mem, records, initial, done, boxSeen, bodies, injectedAt };
 }
 
 /** The Say really ran through its typing, its end-wait and its closing, and the game is back in play. */
@@ -536,9 +583,9 @@ for (const streamed of [false, true]) {
 
   test(`guard path (${where}): a Turn with nobody to be (talk_ent = NO_ENTITY) exits as the shipped engine does, writing nothing`, { ...boots, skip: boots.skip || needsShipped() }, async () => {
     const opts = { streamed, commands: [{ op: 'say', text: 'Hi' }, { op: 'turn', who: 'self', dir: 'up' }, { op: 'say', text: 'Bye' }] };
-    const run = async (shipped) => {
+    const run = async (shipped, alignBodies = null) => {
       const sc = await sceneRom(`nobody:${streamed}`, opts, { shipped });
-      const out = drive(sc, { dir: DIR_DOWN, frame: 1, timer: 3, frames: 40 });
+      const out = drive(sc, { dir: DIR_DOWN, frame: 1, timer: 3, frames: 40, countBodies: true, alignBodies });
       const { nes, mem } = out;
       assert.equal(mem[BOX_STATE], BOX_ENDWAIT, 'the first Say must be waiting for confirm');
       mem[TALK_ENT] = NO_ENTITY;
@@ -549,9 +596,28 @@ for (const streamed of [false, true]) {
       return out;
     };
     const now = await run(false);
-    const was = await run(true);
+    // the shipped build's boot may lag by a frame (see below), so it is brought to the current build's body count BEFORE the scene is injected
+    const was = await run(true, now.injectedAt);
     // (the event ends, so the world runs again and the timer legitimately counts on; the frame does not move)
     assert.deepEqual([now.mem[ENT_DIR], now.mem[ENT_FRAME]], [DIR_DOWN, 1], 'the guarded Turn must write no slot');
+    // The two RAMs are compared at ONE execution boundary, not at one nes.frame() count. Equal frame counts
+    // are not equal execution points for two ROMs whose cold boots differ in cycles: on a streamed map
+    // the current build's boot reaches its first main-loop body one whole frame before the 9f0136e-move_face
+    // build's. Measured from power-on, per-label cycle accounting: the instruction streams are identical
+    // except build_oam+8, a taken `beq build_oam_draw` that crosses a 256-byte page in the current image
+    // ($CCEA -> $CD03; +1 cycle) and not in the shipped one ($CCD2 -> $CCEB), and that one cycle moves the
+    // boot's last mainline arrival across the vblank flag edge, so the shipped build spins in
+    // wait_vblank_poll_loop for one more frame. frame_cnt counts NMIs from power-on, so at equal frame
+    // counts it differs by one; at equal main-loop bodies since power-on (main_loop_body_start) it does not.
+    // So the shipped build is run on, whole frames, to the current build's body count BEFORE the scene is
+    // injected (`alignBodies`; injecting at equal frame counts left slot 0's ent_timer one apart), and again
+    // to a common body count at the end; then EVERY byte outside the stack page is compared, frame_cnt included.
+    const target = Math.max(now.bodies.n, was.bodies.n);
+    assert.ok(target - Math.min(now.bodies.n, was.bodies.n) <= 2, `the two boots must be within a frame or two of each other (bodies ${now.bodies.n} vs ${was.bodies.n})`);
+    for (const out of [now, was]) for (let i = 0; out.bodies.n < target && i < 5; i++) out.nes.frame();
+    assert.equal(now.bodies.n, was.bodies.n, 'both machines must stand at the same main-loop body count');
+    assert.equal(now.mem[FRAME_CNT], was.mem[FRAME_CNT], 'frame_cnt (NMIs since power-on) must agree at equal body counts -- no offset is part of the contract');
+    assert.deepEqual([now.mem[ENT_DIR], now.mem[ENT_FRAME]], [DIR_DOWN, 1], 'still no slot written at the common boundary');
     assert.deepEqual(ramWithoutStack(now.mem), ramWithoutStack(was.mem));
   });
 }

@@ -39,6 +39,7 @@ test/lua/run_sram_check.sh [mesen-path]                             # battery sa
 test/lua/run_sram_check.sh [mesen-path] --break=mmc3-a001            # ...and its negative control
 test/lua/run_flash_check.sh [mesen-path]                            # flash save, UNROM 512
 test/lua/run_flash_check.sh [mesen-path] --break=u512-no-erase       # ...and its negative controls
+node test/lua/run_sw_cadence.mjs [--break=eor|beq|ungate|starve]      # streamed mover parity gate cadence, 3 scenes; --break = negative control
 ```
 
 

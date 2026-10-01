@@ -612,8 +612,8 @@ sw_axis_pref    = $C7      ; 0 = X owns the accumulator, 1 = Y does
 ; and sw_dlg_attr_precompute/sw_dlg_attr_open_band/sw_dlg_attr_close_band
 ; (the masked-attribute code), engine/streamworld.asm. Meaningless while no
 ; box is open; owner: this slice. 36 of the reserved $C8-$F2 (43 bytes) are
-; named here -- $EC-$F2 stay free within this same reservation, nothing in
-; this slice references them.
+; named here. $EC-$F2 are NOT free: phase 3a slice S1 allocated them to the
+; streamed entity projection (sw_cx0_lo..sw_dyb_lo, below the box-working names).
 sw_dlgw_band     = $C8     ; sw_dlg_write_row's own band-relative tile row (0-5)
 sw_dlgw_r        = $C9     ; sw_dlg_write_row's own cam_x_lo>>3 remainder / split flag
 sw_dlgw_count1   = $CA     ; sw_dlg_write_row's own segment-1 length (32-r)
@@ -663,6 +663,19 @@ sw_dlgw_fill     = $E9     ; sw_dlg_write_border's own interior-fill tile id
 sw_dlgw_mtrow    = $EA     ; sw_dlg_close_row's own box-relative metatile row (box row >> 1)
 sw_dlgw_half     = $EB     ; sw_dlg_close_row's own metatile vertical half (box row & 1) --
                             ; selects the tl/tr vs bl/br pair of sw_dlg_metatile's own result
+; Phase 3a slice S1: the streamed entity projection's per-frame origin and per-actor base
+; (sw_ent_setup, draw_one_entity_show_sw -- engine/streamworld.asm), and the OAM-busy flag.
+; oam_busy is stored INVERTED: 0 = the sprite shadow at $0200 is a complete frame (the reset
+; value, so a loop that never touches it behaves as shipped), nonzero = the main loop is
+; rewriting it and the NMI must not DMA it (engine/boot.asm).
+sw_cx0_lo = $EC
+sw_cx0_hi = $ED
+sw_cy0_lo = $EE
+sw_cy0_hi = $EF
+sw_dxb_lo = $F0
+sw_dxb_hi = $F1
+sw_dyb_lo = $F2
+oam_busy  = $F8
 sw_event_freeze = $FD      ; nonzero: an event ran this frame -- update_player's
                             ; streamed branch skips movement entirely
 
@@ -674,7 +687,7 @@ sw_event_freeze = $FD      ; nonzero: an event ran this frame -- update_player's
 ; RAM map") of which this slice's own implementation uses 5: the ordinary
 ; box_state/box_row counters already drive the row/attribute steps once a
 ; transaction is under way, so no separate row/phase counter is needed here.
-; $F8-$FC stay a bare comment -- no code in this commit references them.
+; $F8 is oam_busy (phase 3a slice S1, above); $F9-$FC stay a bare comment -- no code references them.
 sw_dlg15_state      = $F3  ; SW_DLG15_IDLE(0) not waiting; SW_DLG15_PENDING(1)
                             ; box_begin deferred, waiting for st_active to
                             ; idle before the nudge; SW_DLG15_DRAINING(2) the

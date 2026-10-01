@@ -3494,6 +3494,27 @@ sw_win_arm_col_inc:
   jsr sw_win_entering_col_right
   jsr sw_stream_start_col
 sw_win_arm_row:
+sw_win_arm_flash_guard:
+  .if FLASH_ENABLED
+  ; Phase 3a slice S1 (docs/reference-engine.md, "The row-arm guard keeps a row strip off a Flash
+  ; publication body"): a row arm is skipped on a body carrying EITHER Flash publication (except a
+  ; script Flash re-armed after flash_tick in a Flash-on body, see below). The restore:
+  ; flash_tick sets FLASH_PENDING on the very frame it queues the 35-byte restore and the NEXT
+  ; tick's flash_tick_confirm clears it. The Flash-on: flash_tick sees FLASH_ARM_VALUE, runs
+  ; flash_apply_on (a 35-byte packet) and decrements, so this body -- and only this body, the next
+  ; tick decrements again -- reaches here with FLASH_ARM_VALUE-1. (A script re-arm runs after
+  ; flash_tick and is seen as FLASH_ARM_VALUE itself, which arms.) The row arm is skipped for that
+  ; frame and nothing has advanced yet (the window origin is stepped only by sw_win_row_inc/dec,
+  ; below), so a later frame recomputes the desired row and arms it. Each value is seen on one body
+  ; per Flash, so a row is deferred at most twice per Flash cycle, never repeatedly. A column arm is
+  ; decided above, before this point, and is not covered.
+  lda <flash_left
+  cmp #FLASH_PENDING
+  beq sw_win_arm_done
+  cmp #FLASH_ARM_VALUE-1
+  beq sw_win_arm_done
+  .endif
+sw_win_arm_flash_guard_end:
   lda win_row_screen
   cmp sw_fc_desr
   bne sw_win_arm_row_try
@@ -4253,6 +4274,240 @@ build_oam_draw_sw_end:
 ; projection calls below (finding 1 of the same review: an earlier version
 ; read ent_x,x AFTER a call that leaves X=0, silently drawing every
 ; non-slot-0 entity at slot 0's own X).
+  .if STREAM_PROJ_ENABLED
+
+; Phase 3a slice S1 (docs/reference-engine.md, "The streamed entity projection"): the same
+; routine, replaced when the project places an actor on a streamed screen
+; (STREAM_PROJ_ENABLED) by one that classifies the ACTOR once instead of testing every tile.
+; Every class leaves all 256 bytes of OAM and oam_idx exactly as the per-tile routine below
+; does (test/unit/streamproj.test.js, whole-shadow oracle):
+;   cull     -- the base's high byte is neither $00 nor $FF, so no tile of any admitted
+;               metasprite can land on screen: every tile's Y is parked ($FF), oam_idx advances.
+;   inside   -- SW_UXMIN..SW_UYMAX (generated from the real art of every actor placed on a
+;               streamed map, offset + 128) prove every tile lands 0..255 / 0..239: no
+;               per-tile range test.
+;   straddle -- the unbiased 16-bit test per tile, decided on the unbiased Y and only then
+;               decremented for OAM (the shipped order: at Y = 0 the tile is drawn with a Y
+;               byte of $FF).
+; sw_ent_setup, called once per draw_entities, folds the screen's origin and the -128 that
+; turns a signed tile offset into an unsigned one into sw_cx0/sw_cy0; the per-actor base is
+; then two 16-bit adds.
+sw_ent_setup:
+  lda <map_is_streamed
+  beq sw_ent_setup_done
+  lda #$80
+  sec
+  sbc sw_cam_origin_x_lo
+  sta <sw_cx0_lo
+  lda sw_col
+  sbc sw_cam_origin_x_hi
+  sta <sw_cx0_hi
+  dec <sw_cx0_hi
+  lda sw_row
+  jsr sw_oam_rowbase
+  lda sw_tmp
+  sec
+  sbc sw_cam_origin_y_lo
+  sta <sw_cy0_lo
+  lda sw_tmp2
+  sbc sw_cam_origin_y_hi
+  sta <sw_cy0_hi
+  lda <sw_cy0_lo
+  sec
+  sbc #$80
+  sta <sw_cy0_lo
+  lda <sw_cy0_hi
+  sbc #0
+  sta <sw_cy0_hi
+sw_ent_setup_done:
+  rts
+
+draw_one_entity_show_sw:
+  jsr entity_animation
+  cmp #NO_ANIM
+  bne dsw_have_anim
+  jmp draw_one_entity_none
+dsw_have_anim:
+  tay
+  lda anim_ptr_lo,y
+  sta <ptr_lo
+  lda anim_ptr_hi,y
+  sta <ptr_hi
+  lda ent_frame,x
+  asl a
+  tay
+  lda [ptr_lo],y
+  tay
+  lda ms_count,y
+  bne dsw_have_count
+  jmp draw_one_entity_none
+dsw_have_count:
+  sta <de_left
+  lda ms_ptr_lo,y
+  sta <msptr_lo
+  lda ms_ptr_hi,y
+  sta <msptr_hi
+  lda <sw_cx0_lo
+  clc
+  adc ent_x,x
+  sta <sw_dxb_lo
+  lda <sw_cx0_hi
+  adc #0
+  sta <sw_dxb_hi
+  lda <sw_cy0_lo
+  clc
+  adc ent_y,x
+  sta <sw_dyb_lo
+  lda <sw_cy0_hi
+  adc #0
+  sta sw_tmp2
+  txa
+  pha
+  ; --- cull: a base hi byte outside {$00,$FF} puts every tile off screen
+  lda <sw_dxb_hi
+  clc
+  adc #1
+  cmp #2
+  bcs dsw_cull
+  lda sw_tmp2
+  clc
+  adc #1
+  cmp #2
+  bcs dsw_cull
+  ; --- inside: every tile of every pose lands 0..255 / 0..239
+  lda <sw_dxb_lo
+  clc
+  adc #SW_UXMIN
+  lda <sw_dxb_hi
+  adc #0
+  bmi dsw_straddle
+  lda <sw_dxb_lo
+  clc
+  adc #SW_UXMAX
+  lda <sw_dxb_hi
+  adc #0
+  bne dsw_straddle
+  lda <sw_dyb_lo
+  clc
+  adc #SW_UYMIN
+  lda sw_tmp2
+  adc #0
+  bmi dsw_straddle
+  lda <sw_dyb_lo
+  clc
+  adc #SW_UYMAX
+  sta sw_tmp
+  lda sw_tmp2
+  adc #0
+  bne dsw_straddle
+  lda sw_tmp
+  cmp #240
+  bcs dsw_straddle
+  ; ----- inside class: no range test per tile
+  dec <sw_dyb_lo
+  ldx <oam_idx
+  ldy #0
+dsw_in_tile:
+  lda [msptr_lo],y
+  eor #$80
+  clc
+  adc <sw_dyb_lo
+  sta OAM,x
+  iny
+  lda [msptr_lo],y
+  sta OAM+1,x
+  iny
+  lda [msptr_lo],y
+  sta OAM+2,x
+  iny
+  lda [msptr_lo],y
+  eor #$80
+  clc
+  adc <sw_dxb_lo
+  sta OAM+3,x
+  iny
+  inx
+  inx
+  inx
+  inx
+  beq dsw_done
+  dec <de_left
+  bne dsw_in_tile
+dsw_done:
+  stx <oam_idx
+  pla
+  tax
+  rts
+  ; ----- cull class: park every tile
+dsw_cull:
+  ldx <oam_idx
+  lda #$FF
+dsw_cull_tile:
+  sta OAM,x
+  inx
+  inx
+  inx
+  inx
+  beq dsw_done
+  dec <de_left
+  bne dsw_cull_tile
+  jmp dsw_done
+  ; ----- straddle class: unbiased range test per tile, then -1
+dsw_straddle:
+  ldx <oam_idx
+  ldy #0
+dsw_st_tile:
+  lda [msptr_lo],y
+  eor #$80
+  clc
+  adc <sw_dyb_lo
+  sta sw_tmp
+  lda sw_tmp2
+  adc #0
+  sta sw_tmp3
+  iny
+  lda [msptr_lo],y
+  sta sw_tmp4
+  iny
+  lda [msptr_lo],y
+  sta sw_tmp5
+  iny
+  lda [msptr_lo],y
+  iny
+  eor #$80
+  clc
+  adc <sw_dxb_lo
+  sta sw_tmp6
+  lda <sw_dxb_hi
+  adc #0
+  ora sw_tmp3
+  bne dsw_st_park
+  lda sw_tmp
+  cmp #240
+  bcs dsw_st_park
+  adc #$FF
+  sta OAM,x
+  lda sw_tmp4
+  sta OAM+1,x
+  lda sw_tmp5
+  sta OAM+2,x
+  lda sw_tmp6
+  sta OAM+3,x
+  jmp dsw_st_next
+dsw_st_park:
+  lda #$FF
+  sta OAM,x
+dsw_st_next:
+  inx
+  inx
+  inx
+  inx
+  beq dsw_done
+  dec <de_left
+  bne dsw_st_tile
+  jmp dsw_done
+
+  .else
 draw_one_entity_show_sw:
   lda ent_x,x
   sta <de_ex                 ; entity's own BASE LOCAL x/y for the whole
@@ -4361,6 +4616,7 @@ draw_one_entity_sw_done:
   pla
   tax
   rts
+  .endif
 draw_one_entity_show_sw_end:
 
 ; sw_redraw_screen_landing -- relocated from engine/screens.asm's

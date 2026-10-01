@@ -130,7 +130,9 @@ import {
   STREAM_MAP_COLUMN_BYTES,
   STREAM_ENTITY_RECORD,
   STREAM_BOUND_RECORD,
-  projectUsesStreaming
+  projectUsesStreaming,
+  projectUsesStreamedActors,
+  streamProjBounds
 } from '../../shared/streamlayout.js';
 import { emitStreamedLayout } from './streamed.js';
 import {
@@ -156,6 +158,8 @@ export {
   STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE,
@@ -1535,6 +1539,24 @@ export const STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE = 0;
 // before that path ever runs, and it runs exactly once, so the reset there
 // would be unreachable dead weight, not a real fix.
 export const STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE = 8;
+// Phase 3a slice S1: the OAM-ready flag (engine/boot.asm oam_busy_*, engine/combat.asm
+// oam_busy_init). Charged on projectUsesStreaming alone, on both game types: the NMI's
+// `lda <oam_busy / bne nmi_oam_skip` (4), the two main-loop sets (4 + 4), the clear at
+// main_loop_ready (4) and init_session's clear (2 -- it reuses the A that zeroed
+// `paused`). An ordinary-only project assembles none of it (identity test S1-I1).
+// Measured as the sum of the five labelled spans, flat across action and RPG: 18.
+export const OAM_BUSY_KERNEL_LO_ALLOWANCE = 18;
+// Phase 3a slice S1, option (a1): the mover parity gate at update_entities_behave (engine/entities.asm,
+// mover_parity_gate..mover_parity_gate_end: txa / eor <frame_cnt / and #1 / bne). Charged on
+// projectUsesStreaming alone -- it is compiled on STREAMING_ENABLED, never on the current map, so a
+// project with one streamed map pays it and halves its movers on every map. Seven bytes, flat across
+// game types; an ordinary-only project assembles none of it.
+export const MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7;
+// Phase 3a slice S1: draw_entities' one `jsr sw_ent_setup` (engine/entities.asm,
+// proj_setup_call..proj_setup_call_end), charged on projectUsesStreamedActors -- the call
+// site is kernel-lo, its body (STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE) kernel-hi.
+// Measured, flat across action and RPG: 3.
+export const PROJ_SETUP_KERNEL_LO_ALLOWANCE = 3;
 // Fix round 1, finding 5: engine/script.asm's tile_switch_changed carries a
 // SECOND streamed guard of its own, distinct from
 // STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE's rebuild_bound_cache guard above
@@ -1614,7 +1636,15 @@ export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 17;
 // 1's probe-normalization arms (all four directions, not just right/down)
 // were added in the same pass -- both changes re-measured together, never
 // derived by adding one fix's own byte count to the prior figure by hand.
-export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 159;
+// Phase 3a S1 (a1) kernel-lo round: the four per-direction copies of the streamed probe stage (25 bytes
+// each: ldy/beq, the probe stores, dx/dy capture, jsr sw_move_probe, jmp) became one shared body per axis
+// (move_tick_probe_v_streamed, move_tick_probe_h_streamed, 21 bytes each) entered by a 4-byte
+// `ldy <tmp / bne` per direction: 4*25 = 100 -> 4*4 + 2*21 = 58, so 159 -> 117 (-42, re-measured). That is the
+// ISOLATED allowance: kernelbytes.test.js subtracts the dialogue/OAM/close-for-move/projection terms from the raw
+// kernel-lo Move supplement (now 211 on action and the action mixed shape, 120 on RPG; 42 more before the fold) before
+// comparing. Same instructions in the same order, same flags; it paid for
+// MOVER_PARITY_GATE_KERNEL_ALLOWANCE's 7 bytes in a streamed Move project (docs/reference-kernel-budget.md).
+export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 117;
 // Phase 2 slice 4b (docs/design-streamed-worlds.md §5, the continuous
 // movement driver): engine/player.asm's update_player_knock own streamed
 // dispatch branch -- `lda <map_is_streamed / bne` into the capped (1px,
@@ -2034,6 +2064,7 @@ export function kernelCodeBytes(project, mapper) {
   // file is `.if BATTLE_ENABLED` -- and usesBoundTiles for
   // rebuild_bound_cache, `.if BOUND_TILE_ENABLED`).
   const usesStreaming = projectUsesStreaming(project);
+  const streamedActors = projectUsesStreamedActors(project);
   return (
     baseKernelCodeBytes(mapper) +
     (usesBattleBase ? battleKernelAllowance(mapper) : 0) +
@@ -2089,6 +2120,9 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_NMI_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesPaletteFx ? STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_PROJECT_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? OAM_BUSY_KERNEL_LO_ALLOWANCE : 0) +
+    (usesStreaming ? MOVER_PARITY_GATE_KERNEL_ALLOWANCE : 0) +
+    (streamedActors ? PROJ_SETUP_KERNEL_LO_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_HAZARD_KERNEL_ALLOWANCE : 0) +
@@ -2761,6 +2795,13 @@ function padTable(tiles) {
  * assembler is the capacity check for hand-written code, and its overflow error
  * names the file and line, which the Code Forge opens directly.
  */
+// Exported so test/unit/streamtilewarning.test.js asserts the sentence appears exactly when it should.
+export const STREAMED_BOUNDS_CODE_SENTENCE =
+  ' On a streamed map the sprite projection is derived from the art: every drawn actor must stay on a pose its ' +
+  'animation defines (an authored frame, or metasprite 0 of a zero-frame animation). Code that writes ent_actor, ' +
+  'ent_dir or ent_frame to any other pose can draw tiles outside the derived bounds, and the supported tile bound ' +
+  'is then not promised (docs/reference-code-forge.md, "Streamed-world sprite bounds").';
+
 function checkCode(project) {
   const problems = [];
   const code = project.code ?? { overrides: [], files: [] };
@@ -2794,7 +2835,10 @@ function checkCode(project) {
       where: 'Code Forge',
       message:
         'This project contains hand-written engine code, which the capacity check above does not measure. ' +
-        'The assembler enforces the bank limits; any overflow names the file and line.'
+        'The assembler enforces the bank limits; any overflow names the file and line.' +
+        // Phase 3a slice S1 (plan section 7 S0, "Custom code contract"): the streamed sprite projection is
+        // derived from the art's own poses, so code that draws an unauthored pose voids its bounds.
+        (projectUsesStreamedActors(project) ? STREAMED_BOUNDS_CODE_SENTENCE : '')
     });
   }
   // design-tile.md §11, finding 13, §12 test 18: esptr_lo/esptr_hi's shared-
@@ -3973,6 +4017,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // exists, and identical to it -- byte for byte, including row order -- when none does.
   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
   const hasStreamed = streamedPlan !== null;
+  const projA = projectUsesStreamedActors(project);
   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
 
   // The title screen, if the project names one: a map screen of its own with two
@@ -4207,6 +4252,14 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // slice 2a. A project with no streamed map assembles with the file
     // absent: ROM byte-identical.
     `STREAMING_ENABLED = ${hasStreamed ? 1 : 0}`,
+    // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on
+    // projectUsesStreaming alone. STREAM_PROJ_ENABLED: the cheap streamed entity projection,
+    // gated on projectUsesStreamedActors (a streaming project with no placed actor keeps the
+    // shipped routine). SW_U*: its inside-class bounds, offset + 128, from
+    // streamProjBounds (shared/streamlayout.js) -- emitted only when the routine is.
+    `OAM_BUSY_ENABLED = ${hasStreamed ? 1 : 0}`,
+    `STREAM_PROJ_ENABLED = ${projA ? 1 : 0}`,
+    ...(projA ? Object.entries(streamProjBounds(project)).map(([k, v]) => `SW_U${k.slice(1)} = ${v + 128}`) : []),
     // OP_TURN and OP_WAIT, the same shape as MOVE_ENABLED and each other --
     // see projectUsesTurn/projectUsesWait (shared/project.js). FACE_ENABLED
     // gates move_face (engine/entities.asm) on its own: both Move and Turn

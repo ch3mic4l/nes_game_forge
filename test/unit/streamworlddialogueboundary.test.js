@@ -40,10 +40,18 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 // Authored totals (bytes of music + sfx + dialogue). resident = the ceiling with the overlay in
 // kernel-hi; relocated = the ceiling once it moved into the battle bank. Only the no-Save resident
 // edge is a named row (the predicate does not depend on the variant), so only it is pinned.
+//
+// Phase 3a slice S1 moved every one of these DOWN by exactly 231 bytes (before -> after: no-Save
+// resident 1560 -> 1329, relocated 2802 -> 2571; Save relocated 2687 -> 2456; Move relocated
+// 2681 -> 2450). Cause: a project that places an actor on a streamed screen (every project here)
+// now assembles the per-actor projection, whose kernel-hi cost STREAMWORLD_ENTITY_PROJ_KERNEL_HI_
+// ALLOWANCE (395) replaces the 164 bytes of B1's per-tile draw_one_entity_show_sw it displaces:
+// 395 - 164 = 231 fewer bytes of music + sfx + dialogue fit beside the resident set. The Flash guard
+// (10 bytes) does not appear here: these projects have no Flash.
 const CEILINGS = {
-  nosave: { resident: 1560, relocated: 2802 },
-  save: { relocated: 2687 },
-  move: { relocated: 2681 }
+  nosave: { resident: 1329, relocated: 2571 },
+  save: { relocated: 2456 },
+  move: { relocated: 2450 }
 };
 const VARIANT_NAME = { nosave: 'no-Save', save: 'Save', move: 'Move' };
 
@@ -65,7 +73,24 @@ function authorContent(variant, { twin, total }) {
   const page = project.maps[0].screens[OBSERVER_SCREEN].entities[slot].props.event.pages[0];
   const filler = { op: 'say', text: 'Filler' };
   page.commands.push(filler);
-  growTextExactlyBy(project, filler, total - contentOf(project));
+  // growTextExactlyBy grows in words capped at WORD_CAP, so a target whose remaining distance comes out as
+  // exactly 1 byte with the last word already full cannot be reached from that starting word. A different
+  // opening (more short words before the grown one) moves where the last word ends; try a few and keep the first that lands (each lands EXACTLY or
+  // throws -- the assertion below it is unchanged). Which one lands depends on the starting inventory's own size,
+  // which a kernel-lo change (and so a trimmed placed-actor count) moves.
+  let landed = false;
+  let lastError;
+  for (const opening of ['Filler', 'Filler a', 'Filler a b', 'Filler a b c', 'Filler a b c d']) {
+    filler.text = opening;
+    try {
+      growTextExactlyBy(project, filler, total - contentOf(project));
+      landed = true;
+      break;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  if (!landed) throw lastError;
   assert.equal(contentOf(project), total, `${variant}: authored content must be exactly ${total} before any build`);
   return project;
 }
@@ -84,7 +109,7 @@ const report = (row, variant, project, extra = '') =>
 
 // ---- rows 1-2: the resident edge (no-Save) --------------------------------------------------
 
-test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1560) stays resident and builds', { skip }, async () => {
+test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1329) stays resident and builds', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), false, 'content == the resident ceiling fits it: the overlay must stay resident');
@@ -95,7 +120,7 @@ test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1560) stays r
   report(1, 'nosave', project, ' -> stays resident, builds');
 });
 
-test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1561) relocates and builds under the relocated ceiling', { skip }, async () => {
+test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1330) relocates and builds under the relocated ceiling', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident + 1 });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), true, 'content one byte over the resident ceiling must relocate');

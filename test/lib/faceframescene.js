@@ -109,10 +109,11 @@ export async function buildRom(project) {
   }
 }
 
-/** A fresh emulator on `rom`, run to gameplay with the NPC spawned and settled. */
-export function bootRom(rom, { streamed = false } = {}) {
+/** A fresh emulator on `rom`, run to gameplay with the NPC spawned and settled. `hook(nes)`, if given, runs before the first frame (so it sees the whole boot from power-on). */
+export function bootRom(rom, { streamed = false, hook } = {}) {
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
   nes.loadROM(rom);
+  if (hook) hook(nes);
   const mem = nes.cpu.mem;
   let n = 0;
   while ((mem[GAME_STATE] !== ST_GAMEPLAY || (streamed && mem[MAP_IS_STREAMED] !== 1)) && n++ < 200) nes.frame();
