@@ -159,6 +159,10 @@ session's own code the comment lives in, never whose choice the code encodes.
   player witness the loss at all).
   **Revisit (phase 3, the top polish item):** a handover window for actors near the seam, or
   documented authoring guidance.
+  **Update, shelved 2026-10-01:** the handover window was built as phase 3a slice S2, measured, and
+  does not fit (crossing frames over the 29,780-cycle gate on both game types; no kernel-hi room on an
+  action project with text). It did not ship; the vanishing stands. See
+  `docs/design-streamed-worlds-phase3a.md`.
 - **[Accepted by Chris for phases 1-2, 2026-09-21; revisit: phase 3/4 actor-identity Move]** A cutscene cannot walk the hero across a
   screen-*ownership* boundary on a streamed map — a
   scripted `Move` whose mover is the player is bounded by the **natural ownership rectangle** (x
@@ -2728,6 +2732,8 @@ From Chris's rulings (§1):
    a reachable screen edge.
 8. **Previous screen's actors vanish at a crossing** (phase 3, top polish item): handover window or
    authoring guidance.
+   *Shelved 2026-10-01: the handover window was built, measured and does not fit; see
+   `docs/design-streamed-worlds-phase3a.md`.*
 9. **Content ceilings** (phase 2): measure a real streamed RPG's music+sfx+text; if it pinches,
    relocate the dialogue overlay to a switchable bank where room exists; `checkCapacity` reports
    overflow naming the Sound Forge / text.

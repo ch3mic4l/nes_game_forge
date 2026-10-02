@@ -171,11 +171,11 @@ function applyBreak(source, mode) {
     // forcing the bit on is the smallest edit that actually takes the chip away
     // on this board. What the mask defends against -- a future MMC1 entry with
     // more than 16 PRG units -- has no ROM to observe it in today.
-    const needle = 'switch_prg_bank:\n  and #$0F                  ; hold PRG-RAM enabled -- see the comment above\n  sta mmc_tmp';
+    const needle = 'switch_prg_bank:\n  and #$0F                  ; hold PRG-RAM enabled -- see the comment above\n  sta <mmc_tmp';
     if (!source.includes(needle)) throw new Error('mmc1-disable break: pattern not found in engine/banks.asm');
     return source.replace(
       needle,
-      'switch_prg_bank:\n  ora #$10                  ; mmc1-disable break: PRG-RAM off on every switch\n  sta mmc_tmp'
+      'switch_prg_bank:\n  ora #$10                  ; mmc1-disable break: PRG-RAM off on every switch\n  sta <mmc_tmp'
     );
   }
   if (mode === 'mmc1-restore-disable') {
@@ -198,18 +198,18 @@ function applyBreak(source, mode) {
     // RPG-only: mmc1 and mmc3 are unaffected -- an action build has no
     // call_battle assembled at all (.if BATTLE_ENABLED, engine/banks.asm), so
     // bt_call is never written, let alone read as BE_RESTORE.
-    const needle = 'switch_prg_bank:\n  and #$0F                  ; hold PRG-RAM enabled -- see the comment above\n  sta mmc_tmp';
+    const needle = 'switch_prg_bank:\n  and #$0F                  ; hold PRG-RAM enabled -- see the comment above\n  sta <mmc_tmp';
     if (!source.includes(needle)) throw new Error('mmc1-restore-disable break: pattern not found in engine/banks.asm');
     return source.replace(
       needle,
       'switch_prg_bank:\n' +
         '  and #$0F                  ; mmc1-restore-disable break: PRG-RAM off once bt_call was BE_RESTORE\n' +
-        '  ldx bt_call\n' +
+        '  ldx <bt_call\n' +
         '  cpx #BE_RESTORE\n' +
         '  bne mmc1_restore_disable_skip\n' +
         '  ora #$10\n' +
         'mmc1_restore_disable_skip:\n' +
-        '  sta mmc_tmp'
+        '  sta <mmc_tmp'
     );
   }
   if (mode === 'mmc3-no-write') {
