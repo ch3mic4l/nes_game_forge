@@ -717,57 +717,64 @@ test("a horizontal MOVE_SELF Move probes its OWN y, not a reassigned talk_ent's,
   assert.equal(mem[ENT_X + moverSlot], 32 + 20, "the mover's own probe row (7) is open -- a live-talk_ent move_get_y would probe the decoy's own row (13, painted solid) and block the very first tick instead");
 });
 
-// (a1) kernel-lo round: the two vertical streamed arms share one probe stage (move_tick_probe_v_streamed), whose
-// perpendicular inset is BODY_L (2). identitymatrix.test.js pins its bytes; this is the behavioural discriminator.
-// At x=243 the leading-edge inset lands at 245 -- inside the CURRENT screen's column 15 -- while BODY_R (13) would reach
-// 256, the RIGHT neighbour's column 0. Only that neighbour column is solid, so the correct engine completes the whole
-// 20 px and the wrong inset is blocked on the first tick. (The repros above use x=255, where both insets carry into the
-// same neighbour column and so cannot tell the two apart.)
+// Phase 3a S3a (Chris's ruling, option A): a streamed player Move collides exactly as walking does -- the shared sw_pstep_* driver's
+// two-corner rule, both leading corners probed (a vertical step at BODY_L and BODY_R, a horizontal step at BODY_T and BODY_B). The retired
+// private probe stage checked one perpendicular inset. The four tests below were the discriminators for that inset; they now pin the shared
+// rule, and each one's negative control mutates the SHARED driver (engine/streamworld.asm) -- the second corner's perpendicular inset -- and
+// must see the opposite outcome.
+//
+// Vertical: at x=243 the right corner 243+BODY_R(13) = 256 is the RIGHT neighbour's column 0. Only that column is solid. The walking rule
+// probes it, so the Move is blocked on the first tick; the mutation makes the second probe use BODY_L as well, which stays on the open
+// current screen, and the Move completes. (x=242 completes under the real rule too: see streamedmovestep.test.js T5b.)
+// Horizontal (behaviourally UNCHANGED from the retired probe): at y=225 BODY_B reaches 240 -- the BOTTOM neighbour's row 0, painted solid --
+// while BODY_T stays at 233 on the open current screen; the mutation makes the second probe use BODY_T.
 {
-  const PROBE_V = 'move_tick_probe_v_streamed:\n  sta <probe_y\n  jsr move_get_x\n  clc\n  adc #';
-  const ENTITIES = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../engine/entities.asm'), 'utf8');
-  const wrongInset = ENTITIES.replace(`${PROBE_V}BODY_L`, `${PROBE_V}BODY_R`);
+  const STREAMWORLD = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../engine/streamworld.asm'), 'utf8');
+  /** Replaces the first `from` after `label:` -- the second-corner probe of one direction's sw_pstep_* arm. */
+  const mutateAfter = (label, from, to) => {
+    const at = STREAMWORLD.indexOf(`\n${label}:\n`);
+    assert.notEqual(at, -1, `${label} must exist in streamworld.asm`);
+    const hit = STREAMWORLD.indexOf(from, at);
+    assert.ok(hit !== -1 && hit - at < 400, `${from.trim()} must follow ${label} (the second corner's probe)`);
+    const out = STREAMWORLD.slice(0, hit) + to + STREAMWORLD.slice(hit + from.length);
+    assert.notEqual(out, STREAMWORLD);
+    return out;
+  };
+  const VERTICAL = {
+    down: { label: 'sw_pd_c1', startY: 40, expectedY: 60 },
+    up: { label: 'sw_pu_c3', startY: 60, expectedY: 40 }
+  };
   for (const dir of ['down', 'up']) {
-    test(`vertical probe inset: a ${dir} Move at x=243 probes the current screen's column 15 (BODY_L), not the right neighbour's column 0`, boots, async () => {
-      assert.notEqual(wrongInset, ENTITIES, 'the vertical probe stage must carry BODY_L, for the sabotage to change it');
-      const startY = dir === 'down' ? 40 : 60;
-      const expectedY = dir === 'down' ? 60 : 40;
+    const { label, startY, expectedY } = VERTICAL[dir];
+    test(`vertical probe inset: a ${dir} Move at x=243 is blocked on the first tick by the right neighbour's solid column 0 (both corners probed, BODY_R reaches 256)`, boots, async () => {
+      const wrongRule = mutateAfter(label, 'adc #BODY_R', 'adc #BODY_L');
       const reached = async (override) => {
         const project = baseMoveProject({ dir, dist: 20, startX: 243, startY });
         paintSolid(project, 1, 11, columnOffsets(0));
-        if (override) project.code.overrides.push({ name: 'entities.asm', text: override });
+        if (override) project.code.overrides.push({ name: 'streamworld.asm', text: override });
         const { nes, mem } = await buildAndBoot(project);
         assert.ok(settleMove(nes));
         return mem[PLAYER_Y];
       };
-      assert.equal(await reached(), expectedY, `${dir}: the full 20 px on terrain that is open under BODY_L`);
-      assert.equal(await reached(wrongInset), startY, `${dir}, sabotage (BODY_L -> BODY_R): blocked at once by the neighbour's solid column`);
+      assert.equal(await reached(), startY, `${dir}: the walking rule's second corner reaches the neighbour's column and refuses the first step`);
+      assert.equal(await reached(wrongRule), expectedY, `${dir}, control (second corner BODY_R -> BODY_L in the shared driver): only BODY_L is probed, so the full 20 px completes`);
     });
   }
-}
-
-// The horizontal arms' shared stage (move_tick_probe_h_streamed) has the same shape of un-discriminated inset: its
-// perpendicular y is BODY_B (15), and the repros above start at y=239, where BODY_T (8) lands in the same neighbour
-// row. At y=225, BODY_B reaches 240 -- the BOTTOM neighbour's row 0, painted solid -- while BODY_T stays at 233 on the
-// open current screen.
-{
-  const PROBE_H = 'move_tick_probe_h_streamed:\n  sta <probe_x\n  lda #0\n  adc #0\n  tay\n  jsr move_get_y\n  clc\n  adc #';
-  const ENTITIES = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../engine/entities.asm'), 'utf8');
-  const wrongInset = ENTITIES.replace(`${PROBE_H}BODY_B`, `${PROBE_H}BODY_T`);
+  const HORIZONTAL = { right: 'sw_pr_c1', left: 'sw_pl_c1' };
   for (const dir of ['right', 'left']) {
     test(`horizontal probe inset: a ${dir} Move at y=225 is blocked by the bottom neighbour's row 0 (BODY_B), and BODY_T would not be`, boots, async () => {
-      assert.notEqual(wrongInset, ENTITIES, 'the horizontal probe stage must carry BODY_B, for the sabotage to change it');
+      const wrongRule = mutateAfter(HORIZONTAL[dir], 'adc #BODY_B', 'adc #BODY_T');
       const startX = 100;
       const reached = async (override) => {
         const project = baseMoveProject({ dir, dist: 20, startX, startY: 225 });
         paintSolid(project, 3, 10, rowOffsets(0));
-        if (override) project.code.overrides.push({ name: 'entities.asm', text: override });
+        if (override) project.code.overrides.push({ name: 'streamworld.asm', text: override });
         const { nes, mem } = await buildAndBoot(project);
         assert.ok(settleMove(nes));
         return mem[PLAYER_X];
       };
       assert.equal(await reached(), startX, `${dir}: blocked on the first tick by the neighbour row BODY_B reaches`);
-      assert.equal(await reached(wrongInset), dir === 'right' ? startX + 20 : startX - 20, `${dir}, sabotage (BODY_B -> BODY_T): the open current screen lets the Move complete`);
+      assert.equal(await reached(wrongRule), dir === 'right' ? startX + 20 : startX - 20, `${dir}, control (second corner BODY_B -> BODY_T in the shared driver): the open current screen lets the Move complete`);
     });
   }
 }

@@ -395,8 +395,8 @@ player_hazard:
   ; straddle the current streamed screen's own edge, unlike held movement's
   ; tighter MAX_X/MAX_Y wall. Y must carry dx (whether the add above just
   ; crossed past 255) all the way to sw_hazard_probe_type below, so it is
-  ; captured here, immediately after the add, the same convention
-  ; sw_move_probe's own header documents.
+  ; captured here, immediately after the add, the convention every player
+  ; probe follows.
   .if STREAMING_ENABLED
 player_hazard_dx_capture:
   lda #0

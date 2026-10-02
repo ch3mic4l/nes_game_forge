@@ -3,26 +3,35 @@
 // PARENT commit builds for the same shape (test/fixtures/identity/<slice>.json, made by
 // test/lib/build_identity_baseline.mjs from a `git worktree` of that commit).
 //
-// This file asserts slice S1's identity (parent 99d4156). S0's own file and tests (S0-I, against
-// 9f0136e) are retired with it -- §6.4: slice N+1's commit replaces the baseline; what S0-I proved
-// is the parent's own behaviour now, and S1-I1 holds every ordinary-only ROM byte-identical to it.
-//   S1-I1  ordinary-only (both game types, every Text/Save/Turn/Visible toggle): ROM == parent,
-//          and no S1 symbol.
-//   S1-I2  streaming with no placed actor (U, not A): the OAM-busy flag's spans are the ONLY
-//          delta, structurally -- the symbol names differ by exactly the flag's labels,
-//          draw_one_entity_show_sw's normalised instructions/relocations and span are unchanged,
-//          the kernel-lo region grew by OAM_BUSY_KERNEL_LO_ALLOWANCE and kernel-hi did not move.
-//   S1-I3  streaming with an actor (A): measured span changes plus structure -- the old per-tile
-//          body's labels are gone, the projection's are present, kernel-lo grew by the two
-//          allowances and kernel-hi by exactly the projection's growth over the 164 bytes it
-//          replaced. Never "identical outside the changed spans" (R2.6-6).
+// This file asserts slice S3a's identity (parent 3313b62; S2 is shelved, so there is no handover
+// axis). S1's own file (S1-I1..I3, against 99d4156) is retired with it -- §6.4: slice N+1's commit
+// replaces the baseline, and what S1-I proved is the parent's own behaviour now.
+//   S3a-I  M false, or M and not U (no streamed map): ROM == the parent's, byte for byte. This
+//          includes every streamed project with no Move at all (it assembles no move_tick and no
+//          guard) and every ordinary-only project that uses Move (the ordinary arms are unchanged).
+//   S3a-D  U and M (a streamed map AND a Move anywhere in the project, NPC/self-only or player):
+//          the delegation. Structural, never "identical outside the changed spans" (R2.6-6): the
+//          symbol diff is exactly the added/removed label set below, nothing named sw_move_probe*
+//          survives, kernel-lo and kernel-hi each moved by (new allowance - the parent's), the
+//          delegation span is the measured one, and its bytes -- one jsr per direction of the
+//          shared driver, one jsr sw_frame_camera_window, the nocross inc/dec pair, and the four
+//          nocross guards inside sw_pstep_<dir> branching to their own refuse label -- are
+//          hand-assembled here.
 //
 // The expected outcome of every shape is the hand-written TRUTH table below. It is deliberately not
-// computed from projectUsesStreaming/projectUsesStreamedActors or any generator predicate (a
-// predicate bug must not agree with its own oracle); the last test cross-checks it against the
-// parent's own assembled symbol table instead. S2 adds the handover-flag axis and its rows.
+// computed from projectUsesStreaming/projectUsesMove or any generator predicate (a predicate bug
+// must not agree with its own oracle): a shape the table calls identical that the generator makes
+// delegate fails the ROM comparison, and one the table calls a delegation that the generator does
+// not make fails the label assertions.
+//
+// Which S1 assertions went where: KEPT -- move_face keeps S0's clamp (checked in place on every
+// shape), the truth-table/shape coverage and baseline-key checks, ordinary-only byte identity (now
+// every non-delegating shape). REPLACED -- the OAM-busy / projection / gate / probe-body deltas
+// (S1-I2, S1-I3) became byte identity, because the parent now contains them. RETIRED -- the S1
+// label sets, MOVE_PROBE_SAVING and the 21-byte probe bodies (the bodies no longer exist), and the
+// cross-check against the parent's showSw (the baseline no longer needs it).
 
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -31,77 +40,69 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import {
-  MOVER_PARITY_GATE_KERNEL_ALLOWANCE,
-  OAM_BUSY_KERNEL_LO_ALLOWANCE,
-  PROJ_SETUP_KERNEL_LO_ALLOWANCE
-} from '../../main/build/generate.js';
-import {
-  STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE,
-  STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE
-} from '../../main/build/streamplacement.js';
+import { STREAMWORLD_MOVE_KERNEL_ALLOWANCE } from '../../main/build/generate.js';
+import { STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE } from '../../main/build/streamplacement.js';
 import { SHAPES, buildShapeProject } from '../lib/identityshapes.js';
-import { sha256, parseFns, namesHash, normalizeSpan, kernelFileOffset, expectedClamp, CLAMP_BYTES } from '../lib/identitycompare.js';
+import { sha256, parseFns, namesHash, kernelFileOffset, expectedClamp, CLAMP_BYTES } from '../lib/identitycompare.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
-const baseline = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/identity/S1.json'), 'utf8'));
+const baseline = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/identity/S3a.json'), 'utf8'));
+const started = Date.now();
+let built = 0;
 
-// Hand-written. 'identical' = ordinary-only (no streamed map); 'busy' = a streamed map, no actor
-// placed on it (U, not A); 'proj' = a streamed map with a placed actor (U and A). Same rows for
-// both game types.
+// Hand-written. 'identical' = ROM == the parent's; 'delegate' = a streamed map AND a Move somewhere.
+// Same rows for both game types.
 const TRUTH = {
   'base': 'identical',
-  'U-noA': 'busy',
-  'U-A': 'proj',
+  'U-noA': 'identical',
+  'U-A': 'identical',
   'move-npc': 'identical',
-  'move-player-ord': 'proj',
-  'move-player-str': 'proj',
+  'move-player-ord': 'delegate',
+  'move-player-str': 'delegate',
   'text': 'identical',
   'save': 'identical',
   'turn': 'identical',
   'visible': 'identical',
   'turn+move-npc': 'identical',
-  'U-noA+turn': 'busy',
-  'U-A+turn': 'proj',
-  'U-A+move-npc+text': 'proj',
-  'U-noA+move-npc': 'busy',
+  'U-noA+turn': 'identical',
+  'U-A+turn': 'identical',
+  'U-A+move-npc+text': 'delegate',
+  'U-noA+move-npc': 'delegate',
   'all-toggles+move-npc': 'identical',
-  'U-A+text+visible': 'proj',
-  'U-noA+text+save+visible': 'busy',
-  'move-player-ord+turn+text': 'proj',
-  'move-player-str+turn+text+visible': 'proj'
+  'U-A+text+visible': 'identical',
+  'U-noA+text+save+visible': 'identical',
+  'move-player-ord+turn+text': 'delegate',
+  'move-player-str+turn+text+visible': 'delegate'
 };
 const truthFor = (id) => TRUTH[id.slice(id.indexOf(':') + 1)];
-const moveStreamed = (id) => MOVE_STREAMED.has(id.slice(id.indexOf(':') + 1));
 
-// Hand-written label sets of the slice's own edit (engine/boot.asm, combat.asm, entities.asm,
-// streamworld.asm). Every label the slice adds or removes, and no other.
-const BUSY_LABELS = [
-  'oam_busy_set_ui', 'oam_busy_set_ui_end', 'oam_busy_set_draw', 'oam_busy_set_draw_end',
-  'oam_busy_clear', 'oam_busy_clear_end', 'oam_busy_nmi', 'oam_busy_nmi_end', 'oam_busy_init', 'oam_busy_init_end'
+// Hand-written label sets of the slice's own edit (engine/entities.asm, engine/streamworld.asm): every
+// label a delegating build gains or loses, and no other.
+const ADDED = [
+  'move_tick_streamed', 'move_tick_s_up', 'move_tick_s_horizontal', 'move_tick_s_left', 'move_tick_s_done', 'move_tick_ordinary',
+  'sw_pr_refuse', 'sw_pl_refuse', 'sw_pd_refuse', 'sw_pu_refuse'
 ];
-// entities.asm's call-site span labels sit outside their `.if`, so they exist (zero-size) in every build.
-// (a1): the mover parity gate's pair is one of them -- update_entities_behave's first instructions on a streamed build.
-const CALL_LABELS = ['proj_setup_call', 'proj_setup_call_end', 'mover_parity_gate', 'mover_parity_gate_end'];
-// (a1) kernel-lo round: a project that streams AND uses Move assembles the shared streamed probe bodies instead of four
-// per-direction copies (engine/entities.asm move_tick). Hand-written, like TRUTH: rows that stream and use Move.
-const MOVE_STREAMED = new Set(['move-player-ord', 'move-player-str', 'U-A+move-npc+text', 'U-noA+move-npc', 'move-player-ord+turn+text', 'move-player-str+turn+text+visible']);
-const MOVE_ADDED = ['move_tick_probe_v_streamed', 'move_tick_probe_h_streamed', 'move_tick_probe_h_streamed_end'];
-const MOVE_REMOVED = ['move_tick_down_probe_same', 'move_tick_up_probe_same', 'move_tick_right_probe_same', 'move_tick_left_probe_same'];
-// 4 copies of 25 bytes (100) became 4 x 4 (ldy/bne) + 2 x 21 = 58: hand-written, not read from any allowance
-const MOVE_PROBE_SAVING = 42;
-// engine/streamworld.asm's Flash-deferral labels (sw_win_arm_flash_guard..._end) sit outside their `.if`, so a
-// streaming build carries them zero-size when it uses no Flash; an ordinary-only build never assembles that file
-const GUARD_LABELS = ['sw_win_arm_flash_guard', 'sw_win_arm_flash_guard_end'];
-const PROJ_ADDED = [
-  'sw_ent_setup', 'sw_ent_setup_done', 'dsw_have_anim', 'dsw_have_count',
-  'dsw_in_tile', 'dsw_done', 'dsw_cull', 'dsw_cull_tile', 'dsw_straddle', 'dsw_st_tile', 'dsw_st_park', 'dsw_st_next'
+const REMOVED = [
+  'move_tick_bound_done', 'move_tick_vertical', 'move_tick_down_streamed', 'move_tick_down_bounded',
+  'move_tick_right_streamed', 'move_tick_right_bounded', 'move_tick_probe_v_streamed', 'move_tick_probe_h_streamed',
+  'move_tick_probe_h_streamed_end', 'sw_move_probe', 'sw_move_probe_cross', 'sw_move_probe_have_dy',
+  'sw_move_probe_no_dy', 'sw_move_probe_same', 'sw_move_probe_solid', 'sw_move_probe_solid_done'
 ];
-const PROJ_REMOVED = [
-  'draw_one_entity_sw_have_anim', 'draw_one_entity_sw_have_count', 'draw_one_entity_sw_tile',
-  'draw_one_entity_sw_tile_park', 'draw_one_entity_sw_tile_next', 'draw_one_entity_sw_done'
-];
+// The PARENT's (3313b62) own ledger terms for the Move, hand-written: kernel-lo 117 and kernel-hi 76. The new ones are
+// imported, so a re-measured allowance moves the expected growth with it -- and kernelbytes.test.js holds each to nesasm.
+const PARENT_MOVE_KL = 117;
+const PARENT_MOVE_KH = 76;
+// engine/entities.asm move_tick_streamed..move_tick_ordinary, measured in place (kernelbytes.test.js asserts it too)
+const DELEGATION_SPAN = 67;
+
+// 6502 opcodes the delegation is written in; engine/constants.asm: sw_step_nocross = $077F.
+const JSR = 0x20;
+const INC_ABS = 0xee;
+const DEC_ABS = 0xce;
+const LDA_ABS = 0xad;
+const BNE = 0xd0;
+const NOCROSS = [0x7f, 0x07];
 
 const boots = { skip: !hasNesasm && 'nesasm not found on PATH' };
 
@@ -110,15 +111,20 @@ async function build(shape) {
   try {
     const project = buildShapeProject(shape.desc);
     await saveProject(dir, project);
-    const built = await buildProject({ dir, project, log: () => {} });
+    const result = await buildProject({ dir, project, log: () => {} });
+    built++;
     return {
-      rom: new Uint8Array(fs.readFileSync(built.romPath)),
+      rom: new Uint8Array(fs.readFileSync(result.romPath)),
       syms: parseFns(fs.readFileSync(path.join(dir, 'build/game.fns'), 'utf8'))
     };
   } finally {
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
 }
+
+after(() => {
+  console.log(`identity matrix S3a: ${built} shapes built and compared in ${((Date.now() - started) / 1000).toFixed(1)} s (${SHAPES.length} shapes, 2 game types)`);
+});
 
 test('the truth table and the generated shapes cover exactly the same rows, and the baseline has every one', () => {
   const ids = SHAPES.map((s) => s.id);
@@ -130,30 +136,19 @@ test('the truth table and the generated shapes cover exactly the same rows, and 
     'the truth table has a row no shape builds'
   );
   assert.deepEqual(Object.keys(baseline.shapes).sort(), [...ids].sort());
-  assert.equal(baseline.parentRev, '99d4156c884efb4d60cb283a6580fbff23eebaf5');
+  assert.equal(baseline.parentRev, '3313b6257dfdc1332916436c030a5e803aa2cc8c');
+  assert.equal(ids.filter((id) => truthFor(id) === 'delegate').length, 12, 'six delegating rows per game type');
 });
 
-test('the hand-written truth table agrees with what the parent commit itself assembled', () => {
-  // independent of every generator predicate: only a streaming project assembled the streamed
-  // routine (draw_one_entity_show_sw) in the parent, and the parent had no oam_busy label at all
-  for (const shape of SHAPES) {
-    const streaming = baseline.shapes[shape.id].showSw !== undefined;
-    assert.equal(streaming, truthFor(shape.id) !== 'identical', `${shape.id}: the parent ${streaming ? 'assembled' : 'did not assemble'} the streamed routine`);
-    if (streaming) {
-      assert.equal(baseline.shapes[shape.id].showSw.size, STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE, `${shape.id}: the parent's per-tile routine is the 164 bytes the ledger replaced`);
-    }
-  }
-});
-
-test('the two label sets the slice adds are pairwise disjoint from what it removes', () => {
-  const all = [...BUSY_LABELS, ...CALL_LABELS, ...PROJ_ADDED, ...PROJ_REMOVED, ...MOVE_ADDED, ...MOVE_REMOVED];
+test('the label sets the slice adds are pairwise disjoint from what it removes', () => {
+  const all = [...ADDED, ...REMOVED];
   assert.equal(new Set(all).size, all.length);
 });
 
 for (const shape of SHAPES) {
   const truth = truthFor(shape.id);
-  const title = { identical: 'ordinary-only: byte-identical to the parent', busy: 'streaming, no actor: the OAM-busy spans alone', proj: 'streaming + actor: the projection replaces the per-tile routine' }[truth];
-  test(`S1-I ${shape.id}: ${title}`, boots, async () => {
+  const title = truth === 'identical' ? 'M false or no streamed map: byte-identical to the parent' : 'streamed map and a Move: the delegation spans';
+  test(`S3a-I ${shape.id}: ${title}`, boots, async () => {
     const old = baseline.shapes[shape.id];
     const { rom, syms } = await build(shape);
     // S0's clamp is still there wherever move_face is (its bytes are the parent's, unchanged)
@@ -161,82 +156,63 @@ for (const shape of SHAPES) {
       const at = kernelFileOffset(rom, syms.move_face_done - CLAMP_BYTES);
       assert.deepEqual([...rom.slice(at, at + CLAMP_BYTES)], [...expectedClamp(syms)], 'move_face keeps S0\'s clamp');
     }
-    const spans = [['oam_busy_set_ui', 'oam_busy_set_ui_end'], ['oam_busy_set_draw', 'oam_busy_set_draw_end'], ['oam_busy_clear', 'oam_busy_clear_end'], ['oam_busy_nmi', 'oam_busy_nmi_end'], ['oam_busy_init', 'oam_busy_init_end']];
-    const busyBytes = spans.reduce((n, [a, b]) => n + syms[b] - syms[a], 0);
+    const retired = Object.keys(syms).filter((n) => /^sw_move_probe/.test(n) || REMOVED.includes(n));
+    const added = ADDED.filter((n) => syms[n] !== undefined);
+
     if (truth === 'identical') {
       assert.equal(rom.length, old.size);
-      assert.equal(sha256(rom), old.romSha, 'S1-I1: an ordinary-only ROM must be byte-identical to the parent build');
-      assert.equal(busyBytes, 0, 'the OAM-busy spans are empty without a streamed map');
-      const restoredOrd = Object.fromEntries(Object.keys(syms).filter((n) => ![...BUSY_LABELS, ...CALL_LABELS].includes(n)).map((n) => [n, 0]));
-      assert.equal(namesHash(restoredOrd), old.namesSha, 'the only new symbols are the zero-size span labels');
-      assert.equal(syms.proj_setup_call_end - syms.proj_setup_call, 0);
-      assert.equal(syms.mover_parity_gate_end - syms.mover_parity_gate, 0, 'no mover parity gate without a streamed map');
-      for (const name of MOVE_ADDED) assert.equal(syms[name], undefined, `${name} may not exist without a streamed map`);
-      for (const name of [...PROJ_ADDED, 'draw_one_entity_show_sw']) assert.equal(syms[name], undefined, `${name} may not exist without a streamed map`);
+      assert.equal(sha256(rom), old.romSha, 'S3a-I: the ROM must be byte-identical to the parent build');
+      assert.equal(namesHash(syms), old.namesSha, 'and so is its symbol table');
+      assert.deepEqual(added, [], 'no S3a label may exist');
+      for (const name of ['move_tick_streamed', 'move_tick_ordinary']) assert.equal(syms[name], undefined, `${name}: no delegation`);
       return;
     }
+
+    // ---- S3a-D: U and M
     assert.equal(rom.length, old.size, 'the cartridge stays the same size');
-    const names = new Set(Object.keys(syms));
+    assert.deepEqual(retired, [], 'nothing of the retired Move probe may be assembled');
+    assert.deepEqual(added.sort(), [...ADDED].sort(), 'every label the slice adds is assembled');
     // the symbol diff is exactly the expected added/removed set: undo it and the parent's names come back
-    const mv = moveStreamed(shape.id);
-    const added = [...BUSY_LABELS, ...CALL_LABELS, ...GUARD_LABELS, ...(truth === 'busy' ? [] : PROJ_ADDED), ...(mv ? MOVE_ADDED : [])];
-    const removed = [...(truth === 'busy' ? [] : PROJ_REMOVED), ...(mv ? MOVE_REMOVED : [])];
-    for (const name of added) assert.ok(names.has(name), `${name} must be assembled`);
-    for (const name of removed) assert.ok(!names.has(name), `${name} must be gone`);
-    const restored = Object.fromEntries(Object.keys(syms).filter((n) => !added.includes(n)).map((n) => [n, 0]));
-    for (const name of removed) restored[name] = 0;
+    const restored = Object.fromEntries(Object.keys(syms).filter((n) => !ADDED.includes(n)).map((n) => [n, 0]));
+    for (const name of REMOVED) restored[name] = 0;
     assert.equal(namesHash(restored), old.namesSha, 'the symbol names must be the parent\'s plus/minus exactly the slice\'s own labels');
-    // kernel-lo grew by the flag (and, with an actor, the setup call); kernel-hi by the projection alone
-    const klGrowth = syms.music_tick_loop - old.klAnchor;
-    assert.equal(klGrowth, OAM_BUSY_KERNEL_LO_ALLOWANCE + (truth === 'proj' ? PROJ_SETUP_KERNEL_LO_ALLOWANCE : 0) + MOVER_PARITY_GATE_KERNEL_ALLOWANCE - (mv ? MOVE_PROBE_SAVING : 0), 'kernel-lo growth');
-    // (a1): the gate is exactly txa / eor <frame_cnt / and #1 / bne update_entities_anim, at the top of update_entities_behave
-    assert.equal(syms.mover_parity_gate_end - syms.mover_parity_gate, MOVER_PARITY_GATE_KERNEL_ALLOWANCE, 'the gate span is its allowance');
-    const gateAt = kernelFileOffset(rom, syms.mover_parity_gate);
-    const rel = (syms.update_entities_anim - syms.mover_parity_gate_end) & 0xff;
-    assert.deepEqual([...rom.slice(gateAt, gateAt + 7)], [0x8a, 0x45, 0x1b /* frame_cnt, engine/constants.asm */, 0x29, 0x01, 0xd0, rel], 'the gate bytes');
-    assert.equal(syms.move_tick_probe_h_streamed_end !== undefined, mv, 'the shared streamed probe bodies exist exactly on a streamed Move project');
-    if (mv) {
-      // (a1) kernel-lo round: the two shared probe bodies, byte for byte, written out by hand (sta / jsr / clc / adc / ...,
-      // BODY_L = 2, BODY_B = 15, probe_x = $08, probe_y = $09, tmp = $06 from engine/constants.asm), and exactly two
-      // `ldy <tmp / bne` entries into each -- one per direction of that axis -- inside move_tick.
-      const lo = (a) => a & 0xff;
-      const hi = (a) => a >> 8;
-      const bodyV = [0x85, 0x09, 0x20, lo(syms.move_get_x), hi(syms.move_get_x), 0x18, 0x69, 2, 0x85, 0x08, 0xa9, 0, 0x69, 0, 0xa8, 0x20, lo(syms.sw_move_probe), hi(syms.sw_move_probe), 0x4c, lo(syms.move_tick_v_done), hi(syms.move_tick_v_done)];
-      const bodyH = [0x85, 0x08, 0xa9, 0, 0x69, 0, 0xa8, 0x20, lo(syms.move_get_y), hi(syms.move_get_y), 0x18, 0x69, 15, 0x85, 0x09, 0x20, lo(syms.sw_move_probe), hi(syms.sw_move_probe), 0x4c, lo(syms.move_tick_h_done), hi(syms.move_tick_h_done)];
-      const at = (label) => kernelFileOffset(rom, syms[label]);
-      assert.deepEqual([...rom.slice(at('move_tick_probe_v_streamed'), at('move_tick_probe_v_streamed') + 21)], bodyV, 'the vertical streamed probe body');
-      assert.deepEqual([...rom.slice(at('move_tick_probe_h_streamed'), at('move_tick_probe_h_streamed') + 21)], bodyH, 'the horizontal streamed probe body');
-      const from = at('move_tick');
-      const region = [...rom.slice(from, at('move_advance'))];
-      const entries = (target) => {
-        let n = 0;
-        for (let i = 0; i + 3 < region.length; i++) {
-          if (region[i] !== 0xa4 || region[i + 1] !== 0x06 || region[i + 2] !== 0xd0) continue;
-          const dest = syms.move_tick + i + 4 + ((region[i + 3] << 24) >> 24);
-          if (dest === target) n++;
-        }
-        return n;
-      };
-      assert.equal(entries(syms.move_tick_probe_v_streamed), 2, 'down and up enter the vertical body');
-      assert.equal(entries(syms.move_tick_probe_h_streamed), 2, 'right and left enter the horizontal body');
+    // each region moved by (new allowance - the parent's): kernel-lo by -34, kernel-hi by -56 at the time of writing
+    assert.equal(syms.music_tick_loop - old.klAnchor, STREAMWORLD_MOVE_KERNEL_ALLOWANCE - PARENT_MOVE_KL, 'kernel-lo growth');
+    assert.equal(syms.sw_redraw_screen_landing_end - old.khAnchor, STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE - PARENT_MOVE_KH, 'kernel-hi growth');
+
+    // the delegation span: its size, and its bytes counted from the ROM
+    assert.equal(syms.move_tick_ordinary - syms.move_tick_streamed, DELEGATION_SPAN, 'the delegation span');
+    const lo = (a) => a & 0xff;
+    const hi = (a) => a >> 8;
+    const from = kernelFileOffset(rom, syms.move_tick_streamed);
+    const span = [...rom.slice(from, from + DELEGATION_SPAN)];
+    const count = (...bytes) => {
+      let n = 0;
+      for (let i = 0; i + bytes.length <= span.length; i++) if (bytes.every((b, k) => span[i + k] === b)) n++;
+      return n;
+    };
+    for (const dir of ['down', 'up', 'left', 'right']) {
+      assert.equal(count(JSR, lo(syms[`sw_pstep_${dir}`]), hi(syms[`sw_pstep_${dir}`])), 1, `exactly one jsr sw_pstep_${dir}`);
     }
-    const khGrowth = syms.sw_redraw_screen_landing_end - old.khAnchor;
-    // the routine's own span: unchanged without an actor; setup + three classes with one
-    const span = syms.draw_one_entity_show_sw_end - syms.draw_one_entity_show_sw;
-    const ignore = [...added, ...removed];
-    const norm = sha256(normalizeSpan(rom, syms, 'draw_one_entity_show_sw', 'draw_one_entity_show_sw_end', ignore).join('\n'));
-    if (truth === 'busy') {
-      assert.equal(khGrowth, 0, 'kernel-hi must not move without an actor');
-      assert.equal(span, old.showSw.size, 'the per-tile routine\'s span is unchanged');
-      assert.equal(norm, old.showSw.normSha, 'S1-I2: draw_one_entity_show_sw\'s normalised instructions and relocations are unchanged');
-      assert.equal(syms.sw_ent_setup, undefined);
-      assert.equal(syms.proj_setup_call_end - syms.proj_setup_call, 0, 'no setup call without an actor');
-    } else {
-      assert.equal(khGrowth, STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE - STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE, 'kernel-hi growth equals the allowance delta');
-      assert.equal(syms.draw_one_entity_show_sw_end - syms.sw_ent_setup, STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE, 'the projection span is its allowance');
-      assert.equal(syms.proj_setup_call_end - syms.proj_setup_call, PROJ_SETUP_KERNEL_LO_ALLOWANCE);
-      assert.notEqual(norm, old.showSw.normSha, 'the routine really is a different one');
+    assert.equal(count(JSR, lo(syms.sw_frame_camera_window), hi(syms.sw_frame_camera_window)), 1, 'exactly one jsr sw_frame_camera_window');
+    assert.equal(count(INC_ABS, ...NOCROSS), 1, 'sw_step_nocross is raised once');
+    assert.equal(count(DEC_ABS, ...NOCROSS), 1, 'and lowered once');
+    // the four guards: inside each sw_pstep_<dir>, one `lda sw_step_nocross / bne <its own refuse label>`
+    const refuse = { right: 'sw_pr_refuse', left: 'sw_pl_refuse', down: 'sw_pd_refuse', up: 'sw_pu_refuse' };
+    for (const [dir, label] of Object.entries(refuse)) {
+      const start = kernelFileOffset(rom, syms[`sw_pstep_${dir}`]);
+      const end = kernelFileOffset(rom, syms[label]) + 1;
+      assert.ok(end > start, `${label} lies after sw_pstep_${dir}`);
+      const hits = [];
+      for (let i = start; i + 4 < end; i++) {
+        if (rom[i] === LDA_ABS && rom[i + 1] === NOCROSS[0] && rom[i + 2] === NOCROSS[1]) hits.push(i);
+      }
+      assert.equal(hits.length, 1, `exactly one guard in sw_pstep_${dir}`);
+      const at = hits[0];
+      assert.equal(rom[at + 3], BNE, `${dir}: the guard is a bne`);
+      const target = syms[`sw_pstep_${dir}`] + (at - start) + 5 + ((rom[at + 4] << 24) >> 24);
+      assert.equal(target, syms[label], `${dir}: the guard branches to ${label}`);
+      assert.equal(rom[kernelFileOffset(rom, syms[label])], 0x60, `${label} is an rts`);
     }
-    assert.equal(busyBytes, OAM_BUSY_KERNEL_LO_ALLOWANCE, 'the five OAM-busy spans sum to their allowance');
   });
 }

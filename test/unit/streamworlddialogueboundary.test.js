@@ -48,10 +48,14 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 // ALLOWANCE (395) replaces the 164 bytes of B1's per-tile draw_one_entity_show_sw it displaces:
 // 395 - 164 = 231 fewer bytes of music + sfx + dialogue fit beside the resident set. The Flash guard
 // (10 bytes) does not appear here: these projects have no Flash.
+//
+// Phase 3a slice S3a moved ONLY the Move row UP by exactly 56 bytes (relocated 2450 -> 2506): the Move's
+// kernel-hi allowance STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE went 76 -> 20 when the Move's private probe pair
+// was deleted for the shared sw_pstep_* driver. The no-Move rows carry no such allowance and do not move.
 const CEILINGS = {
   nosave: { resident: 1329, relocated: 2571 },
   save: { relocated: 2456 },
-  move: { relocated: 2450 }
+  move: { relocated: 2506 }
 };
 const VARIANT_NAME = { nosave: 'no-Save', save: 'Save', move: 'Move' };
 

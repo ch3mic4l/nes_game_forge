@@ -321,7 +321,12 @@ export const STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE = 10;
 // contribution is 0 -- an ordinary project's Move code never touches the
 // $E000 bank at all, only its own compiled event bytes live there), flat
 // across action, RPG and the mixed shape.
-export const STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 76;
+//
+// Phase 3a S3a: sw_move_probe/sw_move_probe_solid are DELETED (the Move takes the shared sw_pstep_<dir>, which
+// probes through sw_hazard_probe_solid, a routine every player step already pays for). What remains of this term is
+// the four sw_step_nocross guards, one per sw_pstep_<dir> (`lda sw_step_nocross / bne`, 3 + 2 = 5 bytes each),
+// gated `.if MOVE_ENABLED` like the pair they replace: 76 -> 20 (-56, re-measured, flat across action, RPG and mixed).
+export const STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 20;
 
 // Phase 2 slice 8: engine/streamworld.asm's sw_dlg_closeformove_start..end,
 // the release half of the mechanism -- sw_dlg17_camrelease's own draw-down

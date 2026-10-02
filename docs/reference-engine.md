@@ -237,18 +237,27 @@ held movement will use cannot roll back a fractional step it never separately co
 clears all of `$0300+` (`engine/boot.asm`), so `sw_walk_acc_x/y` (`engine/constants.asm`) both start
 at 0 the first time any Move or held-movement step ever runs.
 
-A step whose BODY-inset probe point crosses the current screen's own edge reads the neighbour's
-terrain through `sw_move_probe`/`sw_move_probe_solid` (`engine/streamworld.asm`, gated
-`.if MOVE_ENABLED`) rather than `probe_solid`'s own current-screen-only table — one collision
-policy, not two. Fix round 1, finding 1: EITHER probe coordinate can leave the current screen
-regardless of which axis is moving — not only right/down's own moving axis, but every direction's
-own PERPENDICULAR axis too (the unchanged old_x/old_y, offset by the leading-edge BODY_* constant,
-can itself already sit near its own edge) — so `sw_move_probe` normalizes both coordinates before
-every probe, in all four arms: an X add that carries selects `screenCol+1` with the wrapped low
-byte as the offset; a Y at or past 240 selects `screenRow+1` with `y-240` as the offset; a corner
-selects both. Only when neither crosses does the probe stay the plain, current-screen-only
-`probe_solid`. The true player position itself never crosses; ownership does not change mid-Move (a
-Warp is still required to change screen). `script_op_move` (`engine/script.asm`) captures
+A streamed player Move takes its step through the SHARED driver, `sw_pstep_left/right/up/down`
+(`engine/streamworld.asm`) -- the routine held walking and knockback already use (phase 3a S3a;
+before it a Move had a private probe pair, `sw_move_probe`/`sw_move_probe_solid`, deleted in that
+slice). `move_tick` (`engine/entities.asm`) clips the raw step against what is left
+(`mv_step = min(raw, mv_left)`; the accumulator advanced exactly once, in `move_speed_player`),
+sets `cur_speed = mv_step`, clears `moving`, and calls the one `sw_pstep_<dir>`; `moving` is set
+only by a GRANTED step, so a blocked step reads as `moving == 0` and takes `move_wall`; a granted
+one calls `sw_frame_camera_window` (the camera origin, scroll and strip arming now follow a frozen-
+world Move exactly as they follow a walk -- before S3a nothing advanced them) and `move_advance`,
+which subtracts the CLIPPED step from `mv_left`. The driver probes both leading corners of the
+body (`BODY_L`=2, `BODY_R`=13, `BODY_T`=8, `BODY_B`=15), so a vertical Move at x=243 is now blocked by
+the right neighbour's solid column 0 (x=242 completes), the walk's own rule; the retired private
+probe had probed one corner. EITHER probe coordinate can leave the current screen regardless of
+which axis is moving, and the driver normalizes both before each probe (`screenCol+1` on an X
+carry, `screenRow+1` for a Y at or past 240, both for a corner). The true player position itself
+never crosses: `sw_step_nocross` (`engine/constants.asm`, `$077F`, charged as a 5-byte guard in
+each `sw_pstep_*`'s crossing branch, `.if MOVE_ENABLED`) is raised by `move_tick` around its one call
+and makes the driver refuse any crossing before it commits anything -- the shipped ownership stop,
+reproduced; slice S3b deletes the flag and enables crossings. Ownership does not change mid-Move
+(a Warp is still required to change screen). The pin for all of this is
+`test/unit/streamedmovestep.test.js` (T3-T6) and `streamedmovecamera.test.js` (T1/T1v). `script_op_move` (`engine/script.asm`) captures
 `talk_ent` into `mv_ent` once, at Move start; `move_get_*`/`move_set_*`/`move_speed`'s NPC
 branch/`move_animate`'s NPC branch read `mv_ent` from then on, never live `talk_ent` again, so a
 self-Move keeps its own mover even were `talk_ent` reassigned mid-flight (unreachable in

@@ -85,3 +85,158 @@ assume held actors exist.
 - The recorded-curve consumer (`streamtilebound.test.js`) was extended in the archive to accept a ROM-identity certificate; that
   version had an early return on an exact engine fingerprint that never consulted the generator. The shipped test is HEAD's exact-fingerprint check.
 - The held tile bound was never derived; no user-facing text may quote one.
+
+---
+
+# Slice S3a: a streamed player `Move` tracks the camera and takes the shared step
+
+S3a's parent is `3313b62` (S1 shipped, S2 shelved). It is a code slice with one defect and one deletion.
+
+## Goal
+
+Before S3a, nothing advanced the camera window while the world was frozen for a player `Move` on a streamed map (finding F6): a 200-pixel
+`Move` left `sw_cam_origin_x` at 0 and the PPU scroll at 0 for the whole walk, no strip was ever armed, and the first unfrozen frame
+paid for it with a full redraw -- one body of **~1.08 million cycles** on the parent in every Move scene measured below. The `Move`
+also carried a private copy of the walk's collision probe (`sw_move_probe`/`sw_move_probe_solid`), which would have had to be taught the
+crossing the next slice enables. S3a makes `move_tick` call the **shared** `sw_pstep_left/right/up/down` driver the held walk and
+knockback already use, and calls `sw_frame_camera_window` after each granted step. The F6 redraw is a **stale-camera / large-Move** defect: it appears when a Move moves
+the player far enough that the unfrozen frame finds the camera window behind it (the 200-pixel scenes measured below), not "after every Move".
+
+## What was built
+
+- **`move_tick`** (`engine/entities.asm`, `move_tick_streamed`..`move_tick_ordinary`): the clip prefix is unchanged
+  (`mv_step = min(raw, mv_left)`, the accumulator advanced exactly once in `move_speed_player`); then `cur_speed = mv_step`, `moving = 0`,
+  `inc sw_step_nocross`, `jsr sw_pstep_<dir>`, `dec sw_step_nocross`; `moving == 0` is a blocked step (`move_wall`), anything else calls
+  `sw_frame_camera_window` and `move_advance`, which subtracts the CLIPPED step. The shared labels `move_wall`/`move_advance`/
+  `move_blocked`/`move_finish` are kept, so the ordinary-map path is byte-identical.
+- **The ownership stop** stays, through one new byte: `sw_step_nocross` (`$077F`, `engine/constants.asm`). Each `sw_pstep_*` tests it at its
+  crossing branch and refuses before any commit (`.if MOVE_ENABLED`, 5 bytes each). Slice S3b deletes the flag and enables crossings;
+  S3a promises the shipped stop and `streamedmove*.test.js` / `streamworldclosemove.test.js` still assert it **unmodified**.
+- **Deleted:** `sw_move_probe`, `sw_move_probe_solid` and their `_cross`/`_same`/`_no_dy`/`_have_dy`/`_solid_done` labels.
+  `sw_terrain_or_fill_solid_type` stays (`sw_hazard_probe_cross` inlines it).
+- **A behaviour change, recorded as a finding.** The shared driver probes both leading corners of the body (`BODY_L`=2, `BODY_R`=13,
+  `BODY_T`=8, `BODY_B`=15); the retired private probe probed one. A vertical Move at x=243 is now blocked by the right neighbour's solid
+  column 0 (x=242 completes). **The two horizontal cases (y=225) are behaviourally unchanged**: the retired probe and the shared rule both stop
+  them at the bottom neighbour's row 0; the S3a report's "red" for them came only from needles that mutated code which no longer exists. Chris
+  ruled (2026-10-02, option A) that a streamed `Move` collides exactly as walking does. Fix round 1 therefore edited the four shipped
+  "vertical/horizontal probe inset" tests in `streamedmove.test.js` and nothing else in the `streamedmove*`/`streamworldclosemove` files: the
+  vertical expectations follow the walking rule, and all four now mutate the shared driver itself (`sw_pd_c1`/`sw_pu_c3` `adc #BODY_R` ->
+  `#BODY_L`, `sw_pr_c1`/`sw_pl_c1` `adc #BODY_B` -> `#BODY_T`), each shown failing on that real mutation.
+
+## Ledger
+
+| Term | Before | After | Note |
+| --- | --- | --- | --- |
+| `STREAMWORLD_MOVE_KERNEL_ALLOWANCE` (kernel-lo) | 117 | **83** | the 67-byte delegation span + the 16-byte streamed branch of `move_speed_player` |
+| `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` (kernel-hi) | 76 | **20** | the four `sw_step_nocross` guards, 5 bytes each |
+| `contentCeilingBytes`, action, Move | 1151 | **1207** | +56; no-Move shapes unchanged (2861 action, 1560 rpg) |
+| `contentCeilingBytes`, rpg, Move | 1208 | **1264** | |
+| relocated-dialogue ceiling, Move (`streamworlddialogueboundary.test.js`) | 2450 | **2506** | the authored figure moved with the term |
+
+Both allowances stay equality-asserted against nesasm by `kernelbytes.test.js` on action, rpg and action-mixed (the delegation-span test replaced
+S1's probe-stage test).
+
+## The measured frames (manifest row M11, Mesen full-system, gate `G <= 29,780`)
+
+`test/lua/run_sw_move_manifest.mjs` (one cell), `run_sw_move_sweep.mjs` (a campaign), their one shared policy `sw_move_policy.mjs` (options, cell
+identity, composition, the gate) and the compaction pair `sw_compact_actors.mjs`/`sw_compact_root.mjs` reuse the shipped manifest harness unchanged
+and are **not** in `sw_provenance.mjs`'s `HARNESS_FILES` (`streambound-curve.json` pins that hash), so the recorded curve's provenance is untouched.
+The scene is the shipped walk scene at the tile bound (15, wide and tight art, both game types, eight live actors) with the touch actor moved onto
+the Down target and its event replaced by `[lead] + Move player down <dist> + [tail]`; bodies are classed by execution marks (`move_tick`,
+`move_finish`), not by frame number.
+
+**Three different bodies of evidence, kept apart.**
+
+1. *The first sweep (S3a, before the fix rounds).* 752 cells (distance 150..165 so the final step meets every strip-arm phase, plus 200 and 240;
+   tails none/Say/Flash/switch/second Move; the live tree and the parent beside it), 8.4 minutes, 0 bad: **one population, no bound tile**, no
+   composition assertions. Its table is below; it is not the campaign.
+2. *The saved campaign (fix round 1).* Fail closed, 16 jobs, ~45 minutes, five stages, **6,232 cells**: the strip-arm phase sweep (640), the seven
+   measured Flash-lead arrangements of the final-body coincidence (280), populations of exactly 15 tiles (many-small, few-large 1-4 with seven
+   zero-tile actors' overhead, front, back) and the same at 14 with the switch-bound tile (5,040), the P8 mixed-animation preset (240), and the Say
+   lead (32). Table: `handoff-next/s3a/fix2/m11-table-saved-campaign.md` (the fix-1 table omitted the Say-lead rows). **Its `pops` stage holds 999
+   capacity refusals: 481 new-engine and 518 parent.** 37 new-engine RPG bound-tile/Flash cells *succeeded* while their parent counterparts were refused,
+   so "the parent beside every cell" is true of every cell except those 518: there is **no measured parent baseline** for them, and the "8.7-13.5k"
+   parent figures are not a baseline for them.
+3. *Fix round 2.* The refusals were not a property of the workload: they described one encoding of the scene (below). Round 2 adds the compaction, the
+   5-, 6- and 7-actor distributions and the fail-closed policy; its measurements are listed under "Round 2": the `pops` stage re-run in one go (7,200 cells, 4,004 reused and
+   re-validated, **3,196 measured in 958 s**, 0 problems over 7,052 gated rows).
+
+**Maxima of the saved campaign (round 1, before round 2's additional cells; margins to 29,780).** Without a Say lead: M11a **action 23,113**
+(`new/action/wide/back/P8/plain/tail-say/d159`), **rpg 19,366** (`wide/back/P8/plain/tail-flash/d159`); M11b **action 25,248** (`tight/many-small/P1/
+tail-move2/d164`), **rpg 20,326** (`tight/many-small/P8/tail-move2/d164`). A Say lead's own step and final bodies are M11 rows too (only its pre-Move
+close bodies are `before.*`) and reach **25,428** (action step, tight/many-small/P1/d200) and 16,113 (action final); rpg 20,504 and 13,549. **All-M11
+maxima: action step 25,428 (margin 4,352), final 25,248 (4,532); rpg step 20,504 (9,276), final 20,326 (9,454).** No new-engine cell exceeds the gate.
+(The first version of this paragraph quoted 22,702 / 18,946 for the no-Say-lead M11a maxima; the saved campaign holds the higher numbers above.)
+The final-body coincidence is reachable only with a Flash LEAD (a Flash tail publishes a body late; a Say tail's 38-byte packet drains at the next NMI,
+and a Say lead is closed before the Move by the close-for-Move barrier); three compositions are asserted per cell (`strip`: a 1..35-byte queue drained
+with a strip already in flight in a reduced chunk, `arm`: the same drain on the body that arms the strip -- the heaviest -- and `pub`: the final body
+publishes Flash's packet). The per-population table is `handoff-next/s3a/fix2/m11-table-saved-campaign.md`.
+
+First sweep (round 0), one population, no bound tile:
+
+| Row | action (wide / tight) | rpg (wide / tight) | parent, same scenes |
+| --- | --- | --- | --- |
+| **M11a** max mid-Move step | 25,264 / 25,462 | 20,330 / 20,534 | 10.2-10.7k / 10.0-10.5k |
+| **M11b** final frame, Move alone | 21,081 / 21,285 | 17,338 / 17,542 | 8.4-8.9k |
+| M11b + `Say` | 21,416 / 21,617 | 17,635 / 17,826 | |
+| M11b + `Flash` | 21,251 / 21,453 | 17,515 / 17,719 | |
+| M11b + switch effect | 21,304 / 21,508 | 17,561 / 17,762 | |
+| M11b + second `Move` | 25,047 / 25,248 | 20,123 / 20,327 | |
+| every body of the phase, worst | 28,860 | 23,962 | |
+
+(Its M11a 25,264 / 25,462 are higher than the saved campaign's no-Say-lead step maxima; the first sweep included distances 200 and 240, which the
+campaign's strip-arm phase set (150..165) does not -- the cause of the difference was not isolated. Both are under the gate.) The step frame is ~15k heavier than the parent's because the parent ran nothing the camera needed; that work
+is exactly what F6 had omitted.
+
+**Round 2 measurements (new this round, `handoff-next/s3a/fix2/m11-table-fresh.md`):** the 1,524 new-engine cells and 1,191 parent cells measured now,
+including the few-large-5/-6/-7 populations (1,080 new-engine cells). Worst new-engine bodies among them: M11a **22,465** (action, wide, few-large-7,
+margin 7,315), M11b **25,107** (action, tight, few-large-7, margin 4,673); RPG M11a **19,278** (margin 10,502; `new/rpg/wide/back/P1/bound/lead-none/tail-flash/d150/y60/compact`, whose parent is refused, 132 needed / 126 free, so it has no paired parent G or delta) and M11b 20,182. The wide few-large-7 row alone is RPG M11a 18,709 (parent 12,436; delta 6,273; margin 11,071). Parent worst beside them: 12,921 (M11a),
+13,121 (M11b). Every one is under the gate, and **none exceeds the saved campaign's maxima, so the campaign maxima above stand**: action M11a 23,113
+(25,428 with a Say lead), M11b 25,248; rpg M11a 19,366 (20,504), M11b 20,326. Deltas to the parent are 9.7k-10.1k (M11a) and 11.9k-12.9k (M11b) on
+action, 6.2k-8.5k and 7.3k-10.5k on rpg. The full table of the whole campaign, in one place: `m11-table-final.md`. Parent baselines exist only for the
+cells the parent could build: e.g. rpg wide bound few-large-5/-6 has 8 of its 45 cells measured on the parent.
+
+**Round 2 (review 2): coverage, one policy.**
+
+- *The RPG + bound tile + Flash scenes are buildable.* The scene builder gave each placed entity its own actor definition and defined a ninth,
+  never-placed `DamageNpc`; every definition costs 8 lookup-table bytes. `sw_compact_actors.mjs` drops unplaced definitions and shares identical ones,
+  and **proves** (`assertPreserved`) that every placed entity's actor body, tile count, position, trigger and script, and everything else in the
+  project, is unchanged. `sw_compact_root.mjs` applies it at the build seam (the scene's own art assertions run first, on the uncompacted project; the
+  harness files are untouched). The reviewer's RPG tight/P1/bound/few-large-2 Flash-lead scene (161 bytes of 160 uncompacted) builds on both engines and
+  measures **identically to the reviewer's own run: new final 12,679, parent final 9,086** (q=35, st0=2, st1=2). Cells of an RPG project with a bound
+  tile and a Flash command are identified `.../compact`.
+- *Residue, ruled by Chris (2026-10-02).* Of the 3,196 cells the plan had to measure, 2,715 build and were measured (1,524 new-engine, 1,191 parent);
+  **481 are still refused by the generator** even compacted: 74 new-engine refusals and 407 parent refusals: 74 matching partners plus 333 parent-only refusals. The 74 are RPG, wide art, a switch-bound tile, a
+  Flash command, P1 animations, few-large-1 (165 table bytes of 160 free) and few-large-3 (163 of 160); the parent refuses the same 74 (it has 126 free).
+  The bytes are the art itself, so no content-only change helps (neither does grid size: `handoff-next/s3a/fix2/grid-probe.mjs`, `tables-probe.mjs`).
+  **Ruling: accepted as unreachable exclusions**, by one explicit rule (`UNREACHABLE_ARRANGEMENTS` / `acceptedUnreachable` in
+  `run_sw_move_sweep.mjs`: that exact shape, population, byte figure on both engines, new engine at 160 free and parent below it), pinned by tests to
+  exactly those 74 planned cells. They stay visible in the verdict (`accepted`, with `excluded`) and are never counted as measurements. Every other
+  new-engine refusal is still a problem; the 333 further parent-only refusals are `parentUnavailable` (no parent baseline, recorded, none invented).
+  The verdict of the re-run: `ok`, 0 problems.
+- *Populations.* `populations()` now also has few-large-5, -6 and -7, so every actor-count distribution 1..8 (and front/back) is planned at 15 and 14
+  tiles on all four project shapes.
+- *One policy, fail closed.* `sw_move_policy.mjs` is the only definition of the options, the cell's identity, its required composition and which rows
+  are gated; the campaign (`verdict`) and the standalone command (`run_sw_move_manifest.mjs`, now exit 2 on any unknown or malformed option or a full
+  machine, exit 1 on an unsound or over-gate cell) both use it. **A Say lead's step and final bodies are gated**; only its pre-Move close bodies
+  (`before.*`) are diagnostic. A new-engine refusal fails unless it is one of the explicitly approved 74 cells with its matching parent refusal. `--reuse` re-validates saved results under the
+  current policy, `<out>.partial` makes a long run resumable, and `--only` (an unverifiable subset) is gone.
+
+**A pre-existing failure the sweep found, not caused by S3a (known, out of scope).** A `Say` *before* the `Move` (the close-for-Move barrier) on
+an **action** project has six consecutive bodies of ~38.6k cycles (`main` ~37.2k, the box's close packets draining at 35 bytes) -- the same six
+frames, to within 15 cycles, on the parent (38,646 against 38,633). The RPG rows pass. Review 1's attribution: the close span is **29,227
+cycles** and contains **16 `sw_peek_byte` reads**, i.e. the dialogue-restoration path re-reading the streamed world while it restores the
+screen under the box. It is a **dialogue-restoration performance issue**, outside M11(a) (a mid-Move step) and M11(b) (the final Move frame),
+which `run_sw_move_sweep.mjs` classes separately (`before.*`, the pre-Move close bodies, are the only exempt ones; the same cell's own step and final bodies are gated). The text-box Move is behaviourally unchanged
+(`streamworldclosemove.test.js` is green and unmodified); its frame cost is a shipped property that S3a neither created nor changes.
+
+## Tests
+
+T1/T1v (`streamedmovecamera.test.js`): 12 tests, all 12 fail on the unfixed engine (the first divergence is frame 14 on screen 0 and frame 1 on
+screen 1 and in the vertical case: the origin stays at 0 while the player ends at x=254; the vertical case stays at 138 against an expected 358). T3-T6 and T5b (`streamedmovestep.test.js`, 41): the clipped step, the single
+accumulator advance, blocked detection, the inset scenes and an executed-path trace that no PC of a Move falls in a probe of its own. T8
+(`streamedmovevram.test.js`, 10): the final-frame VRAM envelope -- a strip alone takes full chunks of 3, Flash's 35-byte packet shares the vblank
+with a 2-chunk reduced strip, and Say's 38-byte packet takes the exclusive drain only after the strip has finished. The identity matrix
+(`identitymatrix.test.js`) covers 40 shapes, and a rewritten certifier (`test/lua/sw_identity_cert.mjs`) re-derived every recorded sweep job's
+ROM (10,893 matched, 643 resolved reuses, 0 mismatches) so the bound curve stays valid for the S3a engine; its certificate is
+`test/fixtures/identity-cert/s3a.json`. **Consequence:** any later engine or generator edit now needs re-certification (about 90 s).

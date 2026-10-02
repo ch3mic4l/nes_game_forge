@@ -1335,6 +1335,14 @@ sw_fc_desrl   = $078B   ; this frame's desired window localRow
 sw_kb_timer   = $078C   ; frames left in a streamed knockback (0 = none in flight)
 sw_kb_acc     = $078D   ; sw_walk_step_x/y's own WHOLE_STEP+overflow accumulator shape, this axis's own copy
 
+; Phase 3a S3a's own claim: one byte in the confirmed-free gap just before sw_fc_wy_lo (save_flash_buf
+; ends $077E, sw_fc_wy_lo is $0780). Nonzero ONLY while a scripted player Move's step is inside
+; sw_pstep_* (entities.asm move_tick raises and lowers it around the call): each sw_pstep_<dir> then
+; refuses a step that would cross into the next screen, exactly as it refuses a missing grid
+; neighbour, before any commit -- the ownership stop the shipped Move had. S3b deletes the flag and
+; its byte. Not zero page (full): absolute addressing, no `<` prefix (zeropage.test.js).
+sw_step_nocross = $077F
+
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0
 BEH_PATROL  = 1

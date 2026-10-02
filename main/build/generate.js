@@ -1644,7 +1644,13 @@ export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 17;
 // kernel-lo Move supplement (now 211 on action and the action mixed shape, 120 on RPG; 42 more before the fold) before
 // comparing. Same instructions in the same order, same flags; it paid for
 // MOVER_PARITY_GATE_KERNEL_ALLOWANCE's 7 bytes in a streamed Move project (docs/reference-kernel-budget.md).
-export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 117;
+// Phase 3a S3a (docs/design-streamed-worlds-phase3a.md): the streamed player Move no longer carries its own
+// bound arms and probe stages. move_tick's streamed branch is the shared-driver delegation (clip kept; cur_speed,
+// the moving flag, sw_step_nocross raised and lowered around one of four `jsr sw_pstep_<dir>`, the blocked test,
+// `jsr sw_frame_camera_window`) -- and the ordinary arms below it are the ones an NPC and an ordinary map already
+// use. Re-measured (no direction precommitted): 117 -> 83 (-34), flat across action, RPG and the mixed shape;
+// kernelbytes.test.js subtracts the same dialogue/OAM/close-for-move/projection terms as before.
+export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 83;
 // Phase 2 slice 4b (docs/design-streamed-worlds.md §5, the continuous
 // movement driver): engine/player.asm's update_player_knock own streamed
 // dispatch branch -- `lda <map_is_streamed / bne` into the capped (1px,

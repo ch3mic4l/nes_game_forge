@@ -275,8 +275,8 @@ sw_tof_fill:
 ; collision type is whatever the project's tileset says, open by default),
 ; so routing a collision probe through sw_terrain_or_fill lets an off-grid
 ; probe stay passable on open fill (ruling L's named "outer-edge" defect) --
-; the two callers below (sw_move_probe_solid, sw_hazard_probe_cross's own
-; tail) need an off-grid probe to be unconditionally solid, independent of
+; the callers below (sw_hazard_probe_cross's own tail -- the one every
+; player step reaches, held and scripted alike) need an off-grid probe to be unconditionally solid, independent of
 ; fill, and to never reach sw_peek_byte's own bank switch. sw_terrain_or_
 ; fill itself is untouched (test/unit/streamworldresident.test.js's own
 ; direct-call test still exercises its documented fill behaviour) -- this
@@ -304,135 +304,6 @@ sw_tofst_solid:
   rts
 
 ; ==========================================================================
-; sw_move_probe_solid -- a scripted Move's leading-edge probe once it has
-; crossed the CURRENT streamed screen's own edge (docs/design-streamed-
-; worlds.md §7, ruling 7). probe_type/probe_solid (engine/player.asm) only
-; ever answer for the current screen ([mtptr_lo],y); a probe point that has
-; crossed reads through sw_terrain_or_fill instead, then applies the
-; IDENTICAL mt_collision/COL_DAMAGE threshold probe_solid does -- one
-; collision policy, not a second one for the seam.
-;
-; In: A = target screenCol, X = target screenRow, probe_x/probe_y = the
-;     ALREADY-WRAPPED local pixel point on that target screen (the caller's
-;     own per-direction crossing arithmetic, engine/entities.asm's
-;     move_tick). mt_collision and COL_DAMAGE are both kernel-lo, reachable
-;     from this resident kernel-hi routine with no bank switch -- kernel-lo
-;     and kernel-hi are both always mapped, the same reason this file
-;     already calls sw_adv_offset/sw_locate_current the other way.
-; Out: A = 0 passable, nonzero blocked -- probe_solid's own convention.
-; Clobbers X, Y (as sw_terrain_or_fill's real-read case does) and <tmp>
-; (mainline scratch, the identical reuse probe_type itself makes).
-;
-; Gated on MOVE_ENABLED, not merely living inside this already-STREAMING_
-; ENABLED-gated file: move_tick (engine/entities.asm) is this routine's only
-; caller, and move_tick itself only exists when MOVE_ENABLED is on -- a
-; streamed project with no live Move command must not pay kernel-hi for a
-; routine nothing could ever call (phase 2 slice 3, Part D).
-; ==========================================================================
-  .if MOVE_ENABLED
-sw_move_probe_solid:
-  pha                        ; stash target screenCol
-  lda <probe_y
-  and #$F0
-  sta <tmp
-  lda <probe_x
-  lsr a
-  lsr a
-  lsr a
-  lsr a
-  clc
-  adc <tmp
-  tay                        ; Y = offset within the target screen (0-239)
-  pla                        ; A = target screenCol, restored; X (target
-                              ; screenRow) was never touched above
-  jsr sw_terrain_or_fill_solid_type
-  cmp #COL_DAMAGE
-  bcc sw_move_probe_solid_done
-  lda #0
-sw_move_probe_solid_done:
-  cmp #0
-  rts
-
-; ==========================================================================
-; sw_move_probe -- normalizes a scripted Move's own leading-edge probe point
-; before dispatching it (fix round 1, finding 1): EITHER coordinate of
-; (probe_x,probe_y) can leave the CURRENT streamed screen regardless of
-; which axis is actually moving -- right/down's own moving axis, but also
-; left/up/right/down's own PERPENDICULAR axis (old_x/old_y unchanged by the
-; move, offset by the leading-edge BODY_* constant) whenever that unchanged
-; coordinate already sits near its own edge. A corner needs both at once.
-; This is the one place both are checked, not four copies duplicating the
-; same two comparisons.
-;
-; In: <probe_x> = the raw candidate probe x, already 8-bit-wrapped by the
-;     caller's own `adc #BODY_L/R` the same way the screen's own 256px width
-;     wraps; <probe_y> = the raw candidate probe y (0-254, never wraps -- a
-;     screen is 240px tall, well under 256, so no information is lost the
-;     way an 8-bit x wrap would lose it). Y = 1 if the caller's own add that
-;     produced probe_x carried past 255 (screenCol+1), 0 otherwise --
-;     captured by the caller immediately after that add (`lda #0 / adc #0 /
-;     tay`), before this jsr, since the 8-bit wraparound itself throws the
-;     carry away and move_get_x/move_get_y (the caller's own next steps)
-;     touch only A and X, never Y, so it survives untouched.
-; Out: A = 0 passable, nonzero blocked (probe_solid's own convention), Z set
-;     to match. <probe_y> is normalized in place (-240) when it crossed;
-;     <probe_x>'s own wrapped value already IS the correct local x on the
-;     neighbour screen, needing no further adjustment.
-; Clobbers A, X, Y, <tmp> (sw_move_probe_solid's own reuse, the one path
-; that reaches it); sw_col/sw_row are read, never written.
-;
-; Phase 2 slice "landing": this used to add dx/dy to win_col_screen/win_row_
-; screen (the camera window's own origin) instead of sw_col/sw_row (the
-; player's own current screen) -- flagged, not fixed, by phase 2 slice 4b's
-; own progress notes as a latent quirk masked only because a landing back
-; then always pinned win_col_screen/win_row_screen to the entered screen
-; itself. This fix's own sw_camera_window_install ends that coincidence --
-; a landing's window is now the real, player-centred, clamped origin, which
-; a corner (or any edge) landing puts a whole screen away from sw_col/sw_row
-; -- so a scripted Move issued before the first real crossing could resolve
-; its leading-edge probe against the WRONG neighbour screen, letting an
-; off-grid crossing read real (passable) terrain instead of being refused
-; outright. sw_hazard_probe_type (below) already uses sw_col/sw_row for the
-; identical reason its own header gives; this brings sw_move_probe in line
-; with it rather than leaving two probes disagreeing on which screen is
-; "current".
-; ==========================================================================
-sw_move_probe:
-  tya
-  pha                         ; stash dx (Y) across the y-crossing check below
-  lda <probe_y
-  cmp #240
-  bcc sw_move_probe_no_dy
-  sec
-  sbc #240
-  sta <probe_y
-  ldy #1
-  jmp sw_move_probe_have_dy
-sw_move_probe_no_dy:
-  ldy #0
-sw_move_probe_have_dy:
-  pla                         ; A = dx, Z set from it
-  bne sw_move_probe_cross
-  cpy #0
-  beq sw_move_probe_same
-sw_move_probe_cross:
-  ; A = dx, Y = dy here (dx=0 falls through from the cpy/beq above with A
-  ; still holding the 0 pla just set).
-  clc
-  adc sw_col                  ; A = target screenCol
-  pha
-  tya
-  clc
-  adc sw_row                  ; A = target screenRow
-  tax
-  pla
-  jsr sw_move_probe_solid
-  rts
-sw_move_probe_same:
-  jmp probe_solid
-  .endif
-
-; ==========================================================================
 ; sw_hazard_probe_type -- engine/combat.asm's player_hazard, straddling case
 ; (phase 2 slice 4b, orchestrator ruling 9). docs/design-streamed-worlds.md
 ; §6's "natural ownership rectangle" lets a SCRIPTED player Move reach x up
@@ -443,7 +314,9 @@ sw_move_probe_same:
 ; (an entity itself never reaches this: entity_contact's own
 ; entity_touching_player never leaves the entity's spawn screen).
 ;
-; Same dx/dy normalization shape as sw_move_probe (above), against sw_col/
+; The dx/dy normalization every player step shares (a scripted Move's own
+; copy, sw_move_probe, was retired in phase 3a S3a once the Move took
+; sw_pstep_* below), against sw_col/
 ; sw_row: sw_col/sw_row is the player's own CURRENT screen, the identity
 ; sw_locate_current/sw_enter_screen are built around and sw_cross_left/
 ; right/up/down keep live every frame. win_col_screen/win_row_screen is the
@@ -452,23 +325,20 @@ sw_move_probe_same:
 ; screen's own lag behind sw_col/sw_row while the window arms, and phase 2
 ; slice "landing" made a landing's own window generally differ from the
 ; entered screen too -- reusing that tracker here would misresolve the
-; target screen. (sw_move_probe used win_col_screen/win_row_screen until
-; the "landing" fix exposed the same misresolution there; both probes now
-; agree on sw_col/sw_row as "current screen".)
+; target screen. (The Move's own probe used win_col_screen/win_row_screen
+; until the "landing" fix exposed the same misresolution there; both probes
+; agreed on sw_col/sw_row as "current screen" until that copy was retired.)
 ;
-; Unlike sw_move_probe_solid, this does not collapse the result to a solid/
-; passable boolean -- player_hazard needs the RAW mt_collision type (an
-; exact COL_DAMAGE match, probe_type's own convention), a distinction a
-; wall and a damage tile would otherwise lose. Kept as its own routine
-; rather than a shared refactor of sw_move_probe_solid, matching this
-; file's own established precedent (sw_peek_byte's header) of keeping
-; separate bank-safe read contracts as separate named routines.
+; This does not collapse the result to a solid/passable boolean --
+; player_hazard needs the RAW mt_collision type (an exact COL_DAMAGE match,
+; probe_type's own convention), a distinction a wall and a damage tile would
+; otherwise lose; the collapse lives in sw_hazard_probe_solid below.
 ;
 ; In: <probe_x> = the raw candidate probe x, already 8-bit-wrapped by the
 ;     caller's own `adc #8`; <probe_y> = the raw candidate probe y (0-254,
 ;     never wraps). Y = 1 if the caller's own add that produced probe_x
 ;     carried past 255, 0 otherwise -- captured by the caller immediately
-;     after that add, sw_move_probe's own convention.
+;     after that add (the convention every player probe here follows).
 ; Out: A = the metatile's own raw collision type (probe_type's own
 ;     convention, not probe_solid's collapse). <probe_y> normalized in
 ;     place (-240) when it crossed; <probe_x>'s own wrapped value already
@@ -583,8 +453,7 @@ sw_hazard_probe_solid_done:
 ; Each body-corner probe re-derives <probe_x>/<probe_y> and its own dx/dy
 ; fresh: a resting position near the 256/240 edge (legally reachable via the
 ; wide 0-255/0-239 ownership rectangle, docs/design-streamed-worlds.md §6 --
-; wider than the MAX_X/MAX_Y wall a scripted Move's sw_move_probe/
-; sw_move_probe_solid still use) plus a small BODY_* offset can overflow a
+; wider than the MAX_X/MAX_Y wall the ordinary walk uses) plus a small BODY_* offset can overflow a
 ; SECOND time on top of the step's own crossing; the two carries are summed
 ; (`lda sw_tmp2 / adc #0`), not assumed independent, so a probe corner that
 ; reaches a screen the step itself has not yet reached still resolves
@@ -606,6 +475,13 @@ sw_hazard_probe_solid_done:
 ; player_x/player_y/cur_speed alone, which never change mid-routine, so a
 ; recompute always reproduces the exact same value -- this is not a second,
 ; independent calculation that could disagree with the first.
+;
+; Phase 3a S3a: a scripted player Move calls these too (entities.asm's
+; move_tick) with sw_step_nocross raised, and each routine tests it at the
+; one place it would take its crossing branch -- a step that would cross
+; refuses exactly as a missing grid neighbour does, before any commit. That
+; keeps the Move's ownership stop for S3a; S3b deletes the flag. Gated on
+; MOVE_ENABLED: a streamed project with no Move assembles none of it.
 ;
 ; Refuses outright (leaves player_x/y and every crossed/committed field
 ; untouched) when blocked by collision or when the grid has no neighbour in
@@ -638,11 +514,18 @@ sw_pstep_right:
   jsr sw_pr_calc
   lda sw_tmp2
   beq sw_pr_gok
+  .if MOVE_ENABLED
+  lda sw_step_nocross
+  bne sw_pr_refuse
+  .endif
   lda sw_col
   clc
   adc #1
   cmp sw_grid_w
   bcc sw_pr_gok
+  .if MOVE_ENABLED
+sw_pr_refuse:
+  .endif
   rts
 sw_pr_gok:
   lda sw_tmp
@@ -706,8 +589,15 @@ sw_pstep_left:
   jsr sw_pl_calc
   lda sw_tmp2
   beq sw_pl_gok
+  .if MOVE_ENABLED
+  lda sw_step_nocross
+  bne sw_pl_refuse
+  .endif
   lda sw_col
   bne sw_pl_gok
+  .if MOVE_ENABLED
+sw_pl_refuse:
+  .endif
   rts
 sw_pl_gok:
   lda sw_tmp
@@ -815,11 +705,18 @@ sw_pd_c2:
   inc <moving
   rts
 sw_pd_cross:
+  .if MOVE_ENABLED
+  lda sw_step_nocross
+  bne sw_pd_refuse
+  .endif
   lda sw_row
   clc
   adc #1
   cmp sw_grid_h
   bcc sw_pd_cok
+  .if MOVE_ENABLED
+sw_pd_refuse:
+  .endif
   rts
 sw_pd_cok:
   jsr sw_pd_calc_b
@@ -898,8 +795,15 @@ sw_pstep_up:
 ; are +/-128 bytes; long dispatch chains need jmp").
   jmp sw_pu_noborrow              ; carry set = no borrow = no crossing (far)
 sw_pu_borrowed:
+  .if MOVE_ENABLED
+  lda sw_step_nocross
+  bne sw_pu_refuse
+  .endif
   lda sw_row
   bne sw_pu_gok
+  .if MOVE_ENABLED
+sw_pu_refuse:
+  .endif
   rts
 sw_pu_gok:
   jsr sw_pu_calc_b

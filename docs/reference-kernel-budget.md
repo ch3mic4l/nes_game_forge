@@ -117,27 +117,25 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   phase 2 slice 3's `mv_ent` identity capture (docs/design-streamed-worlds.md §7, ruling 7):
   `script_op_move`'s own 5-byte capture plus six call sites each trading a 2-byte `ldx <talk_ent`
   for a 3-byte `ldx mv_ent` — unconditional on `MOVE_ENABLED` itself, paid by every project using
-  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 117` (159 before phase 3a S1 (a1)'s kernel-lo round, which folded the four per-direction copies of the streamed probe stage into one 21-byte body per axis, `move_tick_probe_v_streamed`/`move_tick_probe_h_streamed`, entered by a 4-byte `ldy <tmp`/`bne` per direction: 4 x 25 = 100 -> 58, -42, to pay for `MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7` in a Move project; kernel-lo only, gated
-  `usesStreaming && usesMove`) is the streaming-only remainder on top: `move_tick`'s own
-  streamed-player bound arms on all four directions and `move_speed_player`'s accumulator dispatch.
-  A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 76` (kernel-hi, same gate; down from 80 in fix
-  round 2, finding C: `sw_move_probe_solid`'s own tail shrank by 4 bytes when it switched to
-  `sw_terrain_or_fill_solid_type`) charges the shared crossing-probe routine, `sw_move_probe`/
-  `sw_move_probe_solid` (`engine/streamworld.asm`, gated `.if MOVE_ENABLED` there so a streamed
-  project with no live Move pays nothing extra in kernel-hi either). Fix round 1 (`handoff-next/streamed-worlds-phase2-s3-review1.md` findings 1 and 4)
-  replaced round 1's own clamp-to-the-exact-edge bound arms — which changed the wall's selected
-  semantics rather than just its accounting — with the ordinary wall's own shape at a wider bound:
-  an 8-bit carry is itself the wall for RIGHT (255 is the byte range's own maximum), a `cmp
-  #240`/`bcs` is the wall for DOWN, and a borrow is the wall for LEFT/UP, identical to the ordinary
-  wall and needing no streamed-specific arm at all. A step whose parity does not land exactly on
-  the edge stops short of it, the same way the ordinary wall already stops short of `MAX_X`/`MAX_Y`
-  on an off-parity step; this lowered kernel-lo from 172 to 159 (kernel-lo alone went down, since
-  the clamp arms cost more than the wider-bound checks they replaced), and moved the crossing
-  probe's own normalization — now one shared routine used by all four arms instead of a
-  right/down-only special case — into kernel-hi as a separate, independently measured 80-byte term.
-  Fix round 2: kernel-lo and kernel-hi are two different regions of the ROM, never added into one
-  combined figure — 159+80=239 is not a decrease from 172, it is 159 down in kernel-lo alongside a
-  new, separately charged 80 in kernel-hi.
+  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 83` (117 before phase 3a S3a, 159 before S1 (a1); kernel-lo only, gated
+  `usesStreaming && usesMove`) is the streaming-only remainder on top. Since S3a it is exactly two measured
+  pieces: the 67-byte DELEGATION span of `move_tick` (`move_tick_streamed` .. `move_tick_ordinary`: the
+  `cur_speed`/`moving` setup, the `sw_step_nocross` raise and drop, the four `jsr sw_pstep_<dir>` arms and the
+  camera call) and the 16-byte streamed branch of `move_speed_player`'s accumulator dispatch. Before S3a it paid
+  for a private probe stage (the four per-direction copies, then S1 (a1)'s fold into `move_tick_probe_v_streamed`/
+  `move_tick_probe_h_streamed`, 4 x 25 = 100 -> 58, which paid for `MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7`);
+  that stage and its kernel-hi twin are deleted. A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 20`
+  (`main/build/streamplacement.js`; kernel-hi, same gate; 76 before S3a, 80 before fix round 2) is now the four
+  `sw_step_nocross` guards in `sw_pstep_right/left/down/up`, 5 bytes each (`lda abs` + `bne`), gated
+  `.if MOVE_ENABLED` so a streamed project with no live Move pays nothing extra. Both are equality-asserted
+  against nesasm's own usage by `kernelbytes.test.js` on action, rpg and action-mixed (the delegation-span test replaced
+  S1's probe-stage test). The deleted `sw_move_probe`/`sw_move_probe_solid` pair is recorded in the history
+  below (fix round 1 findings 1 and 4 replaced the clamp-to-the-edge bound arms with the ordinary wall's shape at a wider bound:
+  an 8-bit carry is the wall for RIGHT, `cmp #240`/`bcs` for DOWN, a borrow for LEFT/UP; fix round 2 shrank the
+  kernel-hi probe from 80 to 76 by `sw_terrain_or_fill_solid_type`, which `sw_hazard_probe_cross` still inlines).
+  Kernel-lo and kernel-hi are two different regions of the ROM, never added into one figure: S3a's -34 and -56 are
+  separate decreases. Content ceilings after S3a (`contentCeilingBytes`, Move shapes): action 1151 -> 1207, rpg 1208 -> 1264
+  (+56, the kernel-hi term); the no-Move shapes are unchanged (2861 action, 1560 rpg).
 - `SPLIT_KERNEL_ALLOWANCE = 151`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — including a project whose only live event is a Move or a Sting, not just dialogue.
   Pinned by a text-on/off isolation on a fresh action project, plus a zero-delta control on every
@@ -304,6 +302,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   | rpg | on | on | off | 1439 |
   | rpg | on | on | on | — (refused by kernel-lo, not this ceiling) |
 
+  (This table is the 2026-09-28 record, before phase 3a: S1 moved every streamed-actors row down by 231 and S3a moved the Move rows up by 56 -- the current figures are in the S1 and S3a notes below and in `test/unit/streamedceiling.test.js`.)
   (RPG's `text` is always on — `projectUsesText` hardcodes true for `gameType === 'rpg'`,
   `shared/font.js` — so "RPG + text off" does not exist, matching the "reachable" framing above.)
   **2026-09-28, fix round 1 (item 2):** the real per-category byte model
@@ -379,7 +378,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE` 613 (`:1407`) +
   `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520 (`:1439-1442`, `:1446`) +
   `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222 (`:1475`) = **1355**; Move
-  `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
+  `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`; 20 since phase 3a S3a, which lifts this table row's Move figures by 56) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
   14 (`:2053`) + `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`:2065`) = **121**. Sum
   5213+1355+121 = 6689; `contentCeilingBytes` = `BANK_SIZE`(8192, `:231`) − 64 − 6689 = **1439**,
   matching the table row exactly. Save's own four terms (not charged in this row, since Save is not
@@ -676,7 +675,7 @@ Measured consequences for the author (before → after, S1 with (a1)'s gate on):
 | kernel-hi content ceiling, resident dialogue | 1560 | 1329 |
 | kernel-hi ceiling, relocated dialogue, no Save | 2802 | 2571 |
 | kernel-hi ceiling, relocated dialogue, Save | 2687 | 2456 |
-| kernel-hi ceiling, relocated dialogue, Move | 2681 | 2450 |
+| kernel-hi ceiling, relocated dialogue, Move | 2681 | 2450 (2506 after S3a, which deleted the private Move probe: `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 -> 20) |
 | kernel-lo on a Save project with streamed actors | — | +21 (18 + 3) |
 | maximum placed actors, the Save inventory project | 24 | 21 (8 lookup bytes per actor; 22 actors need 288 against 289 free before (a1)'s gate and 282 after it; `S1_SAVE_ACTORS_DROPPED` = 3, accepted 2026-09-30) |
 | accepted-boundary ordinary maps, Move family | 31 | 31 |

@@ -39,7 +39,7 @@ import {
 } from '../../main/build/generate.js';
 import { battleRegionBytes, battleRegionCeiling } from '../../main/build/battletables.js';
 import { readEngineSource } from '../lib/enginesource.js';
-import { stripS1FromStreamworld } from '../lib/enginehistory.js';
+import { stripS1FromStreamworld, stripS3aFromStreamworld, dropS3aRetiredFromOld } from '../lib/enginehistory.js';
 import { buildCommittedInventory } from '../lib/streamedinventory.js';
 import {
   BankedReturnError,
@@ -77,29 +77,22 @@ function code(text) {
 // The resident-placement flattening (test/lib/enginesource.js) equals the pre-slice text.
 // ---------------------------------------------------------------------------------------------
 
-test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468, header comment aside', () => {
+test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 in every code line, S1 and S3a aside', () => {
   const old = spawnSync('git', ['show', '59d4468:engine/streamworld.asm'], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(old.status, 0, `git show must succeed: ${old.stderr}`);
-  // S1 (phase 3a) added a Flash guard and the projection wrapper to this file; the claim under test
-  // is about what the include flattening does to the REST of it, so those regions come out first.
-  const flat = stripS1FromStreamworld(readEngineSource('streamworld.asm'));
-  // The only additions are streamdialog.asm's own header comment (its first `; ===`-free block up
-  // to the first blank line) and the blank line at the include's end; nothing else may differ.
-  const flatLines = flat.split('\n');
-  const start = flatLines.findIndex((l) => l.startsWith('; streamdialog.asm --'));
-  assert.ok(start > 0, 'the flattened text must carry streamdialog.asm’s header comment');
-  let end = start;
-  while (flatLines[end] !== '') end++;
-  const stripped = [...flatLines.slice(0, start), ...flatLines.slice(end + 1)];
-  const oldLines = old.stdout.split('\n');
-  // ...and the one blank line the included file ends with, wherever the two first diverge.
-  let i = 0;
-  while (i < oldLines.length && stripped[i] === oldLines[i]) i++;
-  assert.equal(stripped[i], '', `the only other addition must be a single blank line (first divergence at line ${i + 1})`);
-  stripped.splice(i, 1);
-  assert.equal(stripped.length, oldLines.length, 'flattening must not add or drop any other line');
+  // S1 (phase 3a) added a Flash guard and the projection wrapper to this file, and S3a added four
+  // sw_step_nocross guards and deleted the scripted Move's probe pair; the claim under test is about
+  // what the include flattening does to the REST of it, so those regions come out first. What is
+  // compared is every CODE line, in order: comment-only and blank lines are ignored, because S3a
+  // retired the prose that described the deleted routines (and streamdialog.asm's own header comment
+  // and the blank line at its include's end were always the only other additions).
+  const flat = stripS3aFromStreamworld(stripS1FromStreamworld(readEngineSource('streamworld.asm')));
+  const codeLines = (text) => text.split('\n').filter((l) => l.trim() !== '' && !/^\s*;/.test(l));
+  const stripped = codeLines(flat);
+  const oldLines = codeLines(dropS3aRetiredFromOld(old.stdout));
   const bad = stripped.findIndex((l, k) => l !== oldLines[k]);
-  assert.equal(bad, -1, `flattening must reproduce the pre-slice engine/streamworld.asm exactly (first difference at line ${bad + 1})`);
+  assert.equal(bad, -1, `flattening must reproduce the pre-slice engine/streamworld.asm code exactly (first difference at code line ${bad + 1}: ${JSON.stringify(stripped[bad])} vs ${JSON.stringify(oldLines[bad])})`);
+  assert.equal(stripped.length, oldLines.length, 'flattening must not add or drop any other code line');
 });
 
 // ---------------------------------------------------------------------------------------------

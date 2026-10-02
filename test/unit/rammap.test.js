@@ -469,3 +469,29 @@ test(
     );
   }
 );
+
+test(
+  'phase 3a S3a: sw_step_nocross is the single byte at $077F -- free before it, ending the gap before sw_fc_wy_lo at $0780 -- and moving it onto a neighbour is caught',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // Hand-written from the S3a design (handoff-next/streamed-worlds-phase3a-plan.md section 2.3's RAM table), not
+    // read from the file under test: $077F is the one confirmed-free byte between the save-flash buffer's end ($077E)
+    // and sw_fc_wy_lo ($0780). The generic audit above already proves it overlaps nothing; this pins WHERE.
+    const stock = await buildAndRead(t);
+    const pending = new Map();
+    scanEquates(stock.constantsText, pending);
+    scanEquates(stock.configText, pending);
+    const symbols = new Map();
+    resolveEquates(pending, symbols);
+    assert.equal(symbols.get('sw_step_nocross'), 0x077f, 'sw_step_nocross must stay at $077F');
+    assert.equal(symbols.get('sw_fc_wy_lo'), 0x0780, 'its upper neighbour');
+    assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText));
+
+    // negative control: the same byte moved onto its upper neighbour is a collision the audit names
+    const stockText = await fs.readFile(path.join(ROOT, 'engine', 'constants.asm'), 'utf8');
+    const moved = stockText.replace(/^sw_step_nocross(\s*)= \$077F/m, 'sw_step_nocross$1= $0780 ; TEST OVERRIDE');
+    assert.notEqual(moved, stockText, 'the sw_step_nocross line to replace was not found');
+    const broken = await buildAndRead(t, moved);
+    assert.throws(() => auditRamMap(broken.constantsText, broken.configText), /sw_step_nocross.*sw_fc_wy_lo|sw_fc_wy_lo.*sw_step_nocross/, 'a collision with sw_fc_wy_lo must be reported');
+  }
+);

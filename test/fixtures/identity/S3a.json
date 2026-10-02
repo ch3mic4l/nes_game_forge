@@ -1,0 +1,414 @@
+{
+  "slice": "S3a",
+  "parentRev": "3313b6257dfdc1332916436c030a5e803aa2cc8c",
+  "shapes": {
+    "action:base": {
+      "romSha": "1026212533344f3ac70bcfe18eaa0dc7360a203af41d353c511086e9001a61cf",
+      "size": 40976,
+      "namesSha": "b2733f560dff33a682311623b9b3547c1df8d7f26368199b9f7c5280655406dd",
+      "klAnchor": 54608
+    },
+    "action:U-noA": {
+      "romSha": "24c4ef4d3228925cf6be5333246188ec3947ae060edc1bf5eb63af00efed524e",
+      "size": 524304,
+      "namesSha": "1da86a8195ccdb2fa901db6d5cff8b29ebae19c42dd89d7ba36e37bb1ed3c073",
+      "klAnchor": 55599,
+      "khAnchor": 62868,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      }
+    },
+    "action:U-A": {
+      "romSha": "6bea578d48a6a7836ce6e2234e90177f3f6cbc964178dec93e1f798156193edb",
+      "size": 524304,
+      "namesSha": "e0f8a816d7d2b5ed8b025366618e8c2bad28425cf181d5a7d100ab511d394650",
+      "klAnchor": 55480,
+      "khAnchor": 63099,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      }
+    },
+    "action:move-npc": {
+      "romSha": "864e8b046908a017c6498bc814d3f61c047fe278ee3a2579b2ce58605b6a98e8",
+      "size": 40976,
+      "namesSha": "24627b03b304dd0c0fb863e86bfc179987afb966d1824a8189926add4ac5d0b9",
+      "klAnchor": 54980,
+      "moveFace": 51789
+    },
+    "action:move-player-ord": {
+      "romSha": "c5621c4e524ca0f473c8125e9aca0b9e5421a1bae21d345a94112cdae23a68da",
+      "size": 524304,
+      "namesSha": "f30301307afad2a804e7b6834083b506c8d067217048691aa215d1d9894e0b43",
+      "klAnchor": 56190,
+      "khAnchor": 64587,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52844
+    },
+    "action:move-player-str": {
+      "romSha": "881cf286b9b11cc95ce7d6b435926fbfb483ebf9730e161eb5a419e5e89f8db8",
+      "size": 524304,
+      "namesSha": "c13431199618d0ff2ddd990dc3dceadf9b9829398ab75128a02a4803f61829a4",
+      "klAnchor": 56060,
+      "khAnchor": 64587,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52714
+    },
+    "action:text": {
+      "romSha": "8da25120a65ad5f61c9b8250f57f80c23e69daad92b6e449efa566fb8723e700",
+      "size": 40976,
+      "namesSha": "b2733f560dff33a682311623b9b3547c1df8d7f26368199b9f7c5280655406dd",
+      "klAnchor": 54608
+    },
+    "action:save": {
+      "romSha": "df93ad3ceb25b578e47ca4cc29de80e0a80fed1fb6f58586a67f012a8996d810",
+      "size": 524304,
+      "namesSha": "88fb30479ec1bc668aab1d3c73cce90f1865d43dc94f4acbb9125e53e4e35e4e",
+      "klAnchor": 55701
+    },
+    "action:turn": {
+      "romSha": "526f2d75664a79228dfd1dfdbbe581bf6240a3abae75916240c46eeebcac25bb",
+      "size": 40976,
+      "namesSha": "ff75887b962137aa19a5bb824fd29c08d664031888868c8489285213ba2abac1",
+      "klAnchor": 54678,
+      "moveFace": 51573
+    },
+    "action:visible": {
+      "romSha": "7589b3287b52eca31628611fef821c5fa76e2db97826ee9af27f8b5031a3d016",
+      "size": 40976,
+      "namesSha": "4f1531fb9f4870084f8b65202b263d3d7f1bdee5bc21c3df0ec011f18d02efcb",
+      "klAnchor": 54655
+    },
+    "action:turn+move-npc": {
+      "romSha": "c6febb8ed450490ea41e0df6c2850a168bf06c55aa0e29b3948d0f3464716f67",
+      "size": 40976,
+      "namesSha": "61fe7d44d8f9c86dacc6ee86c5057662691ebe7f665852ad86e1b9e8db3eb51e",
+      "klAnchor": 55013,
+      "moveFace": 51789
+    },
+    "action:U-noA+turn": {
+      "romSha": "50387a3caad6c15502a79efe29797ce1e70dff68b85d8177f5e405121673d691",
+      "size": 524304,
+      "namesSha": "e851366cb010b54b81171a04b0878199c5a9ab40e0a286f14c09a574cc683597",
+      "klAnchor": 55760,
+      "khAnchor": 64234,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      },
+      "moveFace": 52516
+    },
+    "action:U-A+turn": {
+      "romSha": "05240b73107de8bd57c55ffe0eb583348029ffd69804c79a85be00de6f1dd50a",
+      "size": 524304,
+      "namesSha": "b0ae0b5ab6bdd012cc74175304772594215fb9bc1419b62f0dc4d6f2f1808061",
+      "klAnchor": 55641,
+      "khAnchor": 64465,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52397
+    },
+    "action:U-A+move-npc+text": {
+      "romSha": "a7b29272c9ba73332de837ac4c4923958c19ac7100a22a85752abac65047a1c4",
+      "size": 524304,
+      "namesSha": "c13431199618d0ff2ddd990dc3dceadf9b9829398ab75128a02a4803f61829a4",
+      "klAnchor": 56060,
+      "khAnchor": 64591,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52714
+    },
+    "action:U-noA+move-npc": {
+      "romSha": "0ce56825e1ce9b7331e971f67b481bdd14efd8e42d5d8a8f25c90188b7af7cd0",
+      "size": 524304,
+      "namesSha": "37f0d74d3828532bbdb3a68376eb3ff121a1082facf0b516591263db92f838b4",
+      "klAnchor": 56179,
+      "khAnchor": 64356,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      },
+      "moveFace": 52833
+    },
+    "action:all-toggles+move-npc": {
+      "romSha": "ec721d3c2b1f4e0a3d36277b1a557f30dde3275cc617e12cf76de6d27b03c4c5",
+      "size": 524304,
+      "namesSha": "9473e5664765ef6efbc17119f5b79109079d3fd6cabd81445e603cbf4d5b22f2",
+      "klAnchor": 56153,
+      "moveFace": 52054
+    },
+    "action:U-A+text+visible": {
+      "romSha": "4db75b535275fb5d34f6c203d7c2c65b53badd95cfc4dff8a0fabc615b5f42ae",
+      "size": 524304,
+      "namesSha": "d92203c1888afa0fa93b079086b50e5ae64734f41ba90e1f3668ab2dc80ce177",
+      "klAnchor": 55618,
+      "khAnchor": 64470,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      }
+    },
+    "action:U-noA+text+save+visible": {
+      "romSha": "4557b5ee16431b72e7b6edebec00c3fe4efed758a0875d7222134d31dc514fb1",
+      "size": 524304,
+      "namesSha": "d222f6d469fb9ab38e8610f281785ce9e626b83439b75d0deb354f86037ff89e",
+      "klAnchor": 56605,
+      "khAnchor": 64358,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      }
+    },
+    "action:move-player-ord+turn+text": {
+      "romSha": "6fb628d44a1d59a6bed091e3d3a6f6a158094d45ad579285e151702821524db2",
+      "size": 524304,
+      "namesSha": "122572b501d8eb625e946a00931e399863af83b3d5a416ae6724c2d1a25e6a23",
+      "klAnchor": 56223,
+      "khAnchor": 64594,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52844
+    },
+    "action:move-player-str+turn+text+visible": {
+      "romSha": "801db42330d63a78706beca3601469a17ea4e05066f5efc7ac547b89110e5714",
+      "size": 524304,
+      "namesSha": "423c938dac3f14a826a298943025c1c66ad135d6359a041364af3d0cf0631350",
+      "klAnchor": 56140,
+      "khAnchor": 64598,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52718
+    },
+    "rpg:base": {
+      "romSha": "d62e59e5343bc8337b0fb30ab14e423b1349edcd74dd3549ad877333f093bf8e",
+      "size": 524304,
+      "namesSha": "257eca16441b09788ef2b73bb5f1738e0dcb3d599f8ea68d38a38b966f4e9ed1",
+      "klAnchor": 55093
+    },
+    "rpg:U-noA": {
+      "romSha": "45c730156cae34486829f57f9256a352508431bd645ad4e9cffd7942c8878294",
+      "size": 524304,
+      "namesSha": "8e095cfa6fb5d20c3115a348abd799192539c58fc53d70e36104cdfd6f3adbc3",
+      "klAnchor": 55922,
+      "khAnchor": 64169,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      }
+    },
+    "rpg:U-A": {
+      "romSha": "fa8201883a89eaecc9f26dc3c69cc0942462327526b5b2072a292ef213bda724",
+      "size": 524304,
+      "namesSha": "09cf3cb9bb17beb0335fcbdca924ab1aeaed2dbca3390151c7f203a84a21d9d5",
+      "klAnchor": 55803,
+      "khAnchor": 64400,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      }
+    },
+    "rpg:move-npc": {
+      "romSha": "850b41d24bd0298f29ba0d56d6ad263cd6a38b275f2ddcf37eb9c8f2332c84ec",
+      "size": 524304,
+      "namesSha": "bc27958225deaa4b928b7c512849fdbab9587e01adc6f3d1d10cafbb18bdcb6a",
+      "klAnchor": 55465,
+      "moveFace": 52058
+    },
+    "rpg:move-player-ord": {
+      "romSha": "679c9b61eac32a291e61c2e1b300b988cbd4afddfc2e24acbc8f3980c5b08913",
+      "size": 524304,
+      "namesSha": "2fe43bcf2102f6b2d9018df8c065ebe574045ea2ccfff7a6a8fafe45a143f20f",
+      "klAnchor": 56422,
+      "khAnchor": 64530,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52865
+    },
+    "rpg:move-player-str": {
+      "romSha": "c0e4bee11483ae13076667bf23cd095f21efda7d184dc2eee20fce923ee07315",
+      "size": 524304,
+      "namesSha": "efd07c4d88f24a5134439ad315369e5792ad41e7bc43bb31215290c0251c3600",
+      "klAnchor": 56292,
+      "khAnchor": 64530,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52735
+    },
+    "rpg:text": {
+      "romSha": "46e477644dbcd185f88b6f6329fda9e4eef39aa9074d06daaaba53b18c7673ce",
+      "size": 524304,
+      "namesSha": "257eca16441b09788ef2b73bb5f1738e0dcb3d599f8ea68d38a38b966f4e9ed1",
+      "klAnchor": 55093
+    },
+    "rpg:save": {
+      "romSha": "981465f560bc3d1e089d5fc7e31d440f797d54435e1ba6f27a27094fe57976ec",
+      "size": 524304,
+      "namesSha": "f13802772d5d4e886303b5ae736faaad5b048d1d8a72928ab2665d0a5cf1d9c3",
+      "klAnchor": 55974
+    },
+    "rpg:turn": {
+      "romSha": "fc681796c3a822ad000c460376d439be81112dc6508f364aa57f33a9423d3ca6",
+      "size": 524304,
+      "namesSha": "73c00c3b797a5833937211b8cc608c22be0f26c87ced9c5ecd4fdda4decee367",
+      "klAnchor": 55163,
+      "moveFace": 51842
+    },
+    "rpg:visible": {
+      "romSha": "3cfac0d0b86ab6badf432c0daa451c73c966d377ce6069d5ac3dda7222a5b46d",
+      "size": 524304,
+      "namesSha": "33239dc1a86c04dd1dcc795668b8fee410fb033921be007d7904aae2633b7dad",
+      "klAnchor": 55140
+    },
+    "rpg:turn+move-npc": {
+      "romSha": "11fd5d9145acbd57898aaf375b6c7a178a5aa3a1508664b168dce3b7966bef95",
+      "size": 524304,
+      "namesSha": "d460652497aa2566adc65072181fb8ef4a65112410d4d6305e701eb19aab8336",
+      "klAnchor": 55498,
+      "moveFace": 52058
+    },
+    "rpg:U-noA+turn": {
+      "romSha": "c01ab02d69875e0c9bee12aa4365f4b51344740eb9ae90c2315460c703bfd215",
+      "size": 524304,
+      "namesSha": "bcd81ed61f67335541bb5f9724006307d85a794aacbba7deb5d892762bbaf74e",
+      "klAnchor": 55992,
+      "khAnchor": 64177,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      },
+      "moveFace": 52537
+    },
+    "rpg:U-A+turn": {
+      "romSha": "0bcecfeef95ac964a800175089b5f235704827da9fbe18ce74a57c21bccc4ad4",
+      "size": 524304,
+      "namesSha": "53651d923c194852823eaa19e3a9d5dfeb751f9ab612050f1a7ca42d118c5092",
+      "klAnchor": 55873,
+      "khAnchor": 64408,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52418
+    },
+    "rpg:U-A+move-npc+text": {
+      "romSha": "f8209ef65e6719a9a38235af145d3f10199bae691aa1c8c6bffcb1cd1bf5433a",
+      "size": 524304,
+      "namesSha": "efd07c4d88f24a5134439ad315369e5792ad41e7bc43bb31215290c0251c3600",
+      "klAnchor": 56292,
+      "khAnchor": 64534,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52735
+    },
+    "rpg:U-noA+move-npc": {
+      "romSha": "5237af434019bc4af05ab6bbe37541b21dadd3ac65721ee19ae516680521b5bd",
+      "size": 524304,
+      "namesSha": "0b32776021d1bb196ffb7ef487880b0ec84dcc42985f14cec29dee0dd09b6d32",
+      "klAnchor": 56411,
+      "khAnchor": 64299,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      },
+      "moveFace": 52854
+    },
+    "rpg:all-toggles+move-npc": {
+      "romSha": "edab5263f18399bdd0f27c709f5eebf74dc0f3fd659d0b1779b66596aa97e4e6",
+      "size": 524304,
+      "namesSha": "1a12c73aa48721620dedd23df403bd4e553ca5948717a8a8398368e32fdd0128",
+      "klAnchor": 56426,
+      "moveFace": 52070
+    },
+    "rpg:U-A+text+visible": {
+      "romSha": "e91901e8bc4ffd763ddab432fa8f9bb0624143233f49f8acdf4e4d986d4b07d2",
+      "size": 524304,
+      "namesSha": "4d2d0b21ca56cadf7fd52da70276445c1ab4637e31588dcc2c133a9be14e535a",
+      "klAnchor": 55850,
+      "khAnchor": 64413,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      }
+    },
+    "rpg:U-noA+text+save+visible": {
+      "romSha": "51ae243c6e0a53e9b8aa2e86ca8b925a5c8ce282a2a0625239d8fa45ec9c5b12",
+      "size": 524304,
+      "namesSha": "a37e248b1c134927f03aa7fb888c53ed6b91959200ef8c95b299c29a60a0f992",
+      "klAnchor": 56878,
+      "khAnchor": 64298,
+      "showSw": {
+        "size": 164,
+        "instructions": 81,
+        "normSha": "1fb41d7da996644c61bfd2d9cf4014f2e25a68145cb5ce6630ffdce80f63e45f"
+      }
+    },
+    "rpg:move-player-ord+turn+text": {
+      "romSha": "7e100d5781289495f273c6427c95db863ea2c6178948eab00f80dab9aa3af81e",
+      "size": 524304,
+      "namesSha": "409009cb9ede80aed25ea7df4aafbde48a012b8bf78731965843fe4e34c673a9",
+      "klAnchor": 56455,
+      "khAnchor": 64537,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52865
+    },
+    "rpg:move-player-str+turn+text+visible": {
+      "romSha": "0b4af33c6dcc6fc4a3ac6679cdc7339a306e9c3208a0cc4598deea0f9e1f6193",
+      "size": 524304,
+      "namesSha": "04cf3a1055d3cc5106874bc254f32ac2a9b27502f1f807b87e1a570672714b96",
+      "klAnchor": 56372,
+      "khAnchor": 64541,
+      "showSw": {
+        "size": 336,
+        "instructions": 168,
+        "normSha": "43764b8b84b1034f4388f54ef54d344b4fd0501805fccfa95bade636e4718b23"
+      },
+      "moveFace": 52739
+    }
+  }
+}

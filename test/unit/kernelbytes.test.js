@@ -5547,7 +5547,7 @@ test(
 // on by itself, e.g. plain action, non-mixed, no default title), that
 // disagreement is a real, separate addend to the expected supplement.
 test(
-  'phase 2 slice 3 fix 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE equals the real kernel-hi cost of sw_move_probe/sw_move_probe_solid, on UNROM 512, both game types and the mixed shape',
+  'phase 2 slice 3 fix 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE equals the real kernel-hi cost of the code of the streamed Move (before phase 3a S3a: the sw_move_probe/sw_move_probe_solid pair, deleted there; since: the four sw_step_nocross guards), on UNROM 512, both game types and the mixed shape',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const mapper = resolveMapper(30);
@@ -6354,6 +6354,10 @@ test(
 // can ever assemble this code (Part D item 1); both game types plus the
 // `mixed` shape are checked since kernelCodeBytes' own formula must hold for
 // all three, matching the kernel-hi test just above.
+// Re-measured by the test below (phase 3a S3a); a hand-written figure, never read from the generator.
+const S3A_DELEGATION_SPAN_BYTES = 67; // move_tick_streamed..move_tick_ordinary
+const S3A_SPEED_BRANCH_BYTES = 16; // move_speed_player..move_speed_player_ordinary: lda/beq/lda/cmp/bcs 2+2+2+2+2, jmp 3, jmp 3
+
 async function measureStreamedSpan(mapper, project, startLabel, endLabel) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamlo-'));
   try {
@@ -7773,16 +7777,38 @@ test(
 );
 
 test(
-  'phase 3a S1 (a1) kernel-lo round: the streamed Move probe stage is one 21-byte body per axis, shared by both directions of that axis, and an ordinary project assembles neither',
+  'phase 3a S3a: the streamed Move delegation span (move_tick_streamed..move_tick_ordinary) is its own measured cost, the retired probe stages and probe pair are gone, and an ordinary project assembles none of it',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async () => {
     const mapper = resolveMapper(30);
     for (const gameType of ['action', 'rpg']) {
       const project = createStreamedProject({ gameType, moveCommands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] });
-      const v = await measureStreamedSpan(mapper, project, 'move_tick_probe_v_streamed', 'move_tick_probe_h_streamed');
-      const h = await measureStreamedSpan(mapper, project, 'move_tick_probe_h_streamed', 'move_tick_probe_h_streamed_end');
-      assert.equal(v, 21, `${gameType}: vertical streamed probe body ${v}`);
-      assert.equal(h, 21, `${gameType}: horizontal streamed probe body ${h}`);
+      const span = await measureStreamedSpan(mapper, project, 'move_tick_streamed', 'move_tick_ordinary');
+      console.log(`phase 3a S3a ${gameType}: move_tick_streamed..move_tick_ordinary = ${span} bytes (STREAMWORLD_MOVE_KERNEL_ALLOWANCE ${STREAMWORLD_MOVE_KERNEL_ALLOWANCE})`);
+      assert.equal(span, S3A_DELEGATION_SPAN_BYTES, `${gameType}: delegation span ${span}`);
+      const speed = await measureStreamedSpan(mapper, project, 'move_speed_player', 'move_speed_player_ordinary');
+      assert.equal(speed, S3A_SPEED_BRANCH_BYTES, `${gameType}: move_speed_player's streamed branch ${speed}`);
+      assert.equal(span + speed, STREAMWORLD_MOVE_KERNEL_ALLOWANCE, `${gameType}: the two spans are the whole kernel-lo Move allowance`);
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamlo-'));
+      try {
+        const built = await buildProject({ dir, project, log: () => {} });
+        const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+        for (const gone of ['move_tick_probe_v_streamed', 'move_tick_probe_h_streamed', 'sw_move_probe', 'sw_move_probe_solid']) {
+          assert.doesNotMatch(symbols, new RegExp(`^${gone}\\b`, 'm'), `${gameType}: ${gone} is retired`);
+        }
+      } finally {
+        await fsp.rm(dir, { recursive: true, force: true });
+      }
+      const ordinary = structuredClone(project);
+      for (const map of ordinary.maps) map.streamed = false;
+      const dir2 = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamlo-'));
+      try {
+        const built = await buildProject({ dir: dir2, project: ordinary, log: () => {} });
+        const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+        assert.doesNotMatch(symbols, /^move_tick_streamed\b/m, `${gameType}: an ordinary project has no delegation`);
+      } finally {
+        await fsp.rm(dir2, { recursive: true, force: true });
+      }
     }
   }
 );

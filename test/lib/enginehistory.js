@@ -297,3 +297,27 @@ export function stripS1FromStreamworld(text) {
   if (endifAt <= elseAt) throw new Error("S1's projection wrapper has no closing .endif");
   return lines.filter((_, i) => !((i >= gStart && i <= gEnd) || (i >= ifAt && i <= elseAt) || i === endifAt)).join('\n');
 }
+
+// Phase 3a S3a changed streamworld.asm in two ways this pin must see past, in the S1 manner. It ADDED the
+// four sw_step_nocross guards (one per sw_pstep_<dir>, each wrapped in `.if MOVE_ENABLED`), which
+// stripS3aFromStreamworld removes from the current text; and it DELETED the scripted Move's probe pair
+// (sw_move_probe_solid .. sw_move_probe_same), which dropS3aRetiredFromOld removes from an older text.
+// Each pattern must match the exact number of times S3a wrote it, or the helper throws rather than strip
+// the wrong lines.
+export function stripS3aFromStreamworld(text) {
+  const guard = /^  \.if MOVE_ENABLED\n  lda sw_step_nocross\n  bne sw_p[lrdu]_refuse\n  \.endif\n/gm;
+  const label = /^  \.if MOVE_ENABLED\nsw_p[lrdu]_refuse:\n  \.endif\n/gm;
+  const guards = text.match(guard) ?? [];
+  const labels = text.match(label) ?? [];
+  if (guards.length !== 4 || labels.length !== 4) throw new Error(`S3a's four sw_step_nocross guards not found (${guards.length}/${labels.length})`);
+  return text.replace(guard, '').replace(label, '');
+}
+
+export function dropS3aRetiredFromOld(text) {
+  const a = text.indexOf('; sw_move_probe_solid -- a scripted Move');
+  const endMark = 'sw_move_probe_same:\n  jmp probe_solid\n  .endif\n';
+  const b = text.indexOf(endMark);
+  if (a < 0 || b < a) throw new Error('the retired sw_move_probe pair was not found in the older text');
+  const start = text.lastIndexOf('\n; ====', a) + 1;
+  return text.slice(0, start) + text.slice(b + endMark.length);
+}

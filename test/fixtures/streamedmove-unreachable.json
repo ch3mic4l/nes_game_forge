@@ -1,0 +1,227 @@
+{
+  "ruling": "Chris 2026-10-02; 74 RPG wide bound P1 compact cells only",
+  "refused": [
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-none/tail-flash/d150/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-none/tail-flash/d159/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-none/tail-flash/d150/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-none/tail-flash/d159/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d10/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d3/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d12/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d2/y61/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d3/y71/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d12/y63/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d2/y60/compact"
+    },
+    {
+      "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d10/y60/compact"
+    }
+  ]
+}

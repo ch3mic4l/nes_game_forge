@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { STREAM_TILE_BOUND, STREAM_TILE_BOUND_WITH_BOUND_TILES, STREAM_TILE_CERTIFIED, STREAM_TILE_MARGIN, STREAM_TILE_MARGIN_CYCLES } from '../../shared/streambound.js';
 import { STREAM_TILE_BOUND as REEXPORT, STREAM_TILE_BOUND_WITH_BOUND_TILES as REEXPORT_BT } from '../../shared/streamlayout.js';
 import { engineFingerprint } from '../lib/enginefingerprint.js';
+import { checkCertificates, validateCertificate, liveSources, curveEvidenceVerdict, CERT_DIR_REL } from '../lua/sw_identity_cert.mjs';
 import os from 'node:os';
 import { partitions, partitionKey, partitionDigest, ANIM_PRESETS, CANDIDATE, EVIDENCE_N, plan, stageF, knownFailing, runF, buildRecordFromRows, jobProvenanceProblems, mkJob, validateRows } from '../lua/sw_bound_sweep.mjs';
 import { provenanceFieldProblems, provenanceUniformityProblems, PROVENANCE_FIELDS } from '../lua/sw_provenance.mjs';
@@ -186,14 +187,33 @@ export function coverageProblems(rec) {
   return problems;
 }
 
-test('the record was measured on THIS engine (a change to engine/*.asm code invalidates the evidence)', () => {
+test('the record was measured on THIS engine and generator, or a valid ROM-identity certificate carries it to them (a change to engine/*.asm or main/build/ alone otherwise invalidates the evidence)', () => {
   const now = engineFingerprint(ROOT);
   assert.ok(curve.engine && curve.engine.sha256, 'the record carries an engine fingerprint');
-  assert.equal(now.sha256, curve.engine.sha256,
-    'engine/*.asm (comments stripped) differs from the engine the sweep was run on: this record is evidence for ONE engine. ' +
-    'Re-run test/lua/sw_bound_sweep.mjs (stages A, B, C, R, F; then `agg --write`) and re-derive shared/streambound.js. ' +
-    '(A change to main/build/ or shared/ alone does not trip this test: test/lua/sw_rebuild_check.mjs certifies the records for the current generator, or names the jobs whose ROMs differ, and those need a re-sweep.)');
   assert.match(curve.evidenceFor, /ONE engine/);
+  // Never stops checking: an exact match of BOTH recorded fingerprints (engine and generator), or a certificate of test/lua/sw_identity_cert.mjs that pins this
+  // very curve and these very current fingerprints (every recorded ROM rebuilt byte-identical, bindings unchanged). Review 2 finding 2: the exact branch
+  // used to look at the engine alone and so accepted the original engine with an arbitrarily changed generator.
+  const live = liveSources(ROOT);
+  assert.equal(live.engine, now.sha256);
+  const curveBytes = fs.readFileSync(path.join(ROOT, 'test/fixtures/streambound-curve.json'));
+  const verdicts = checkCertificates(path.join(ROOT, CERT_DIR_REL), { curve, curveBytes, live });
+  const verdict = curveEvidenceVerdict({ curve, live, verdicts });
+  assert.ok(verdict.ok,
+    `${verdict.why.join(' and ')}, and no valid ROM-identity certificate covers the current engine and generator. ` +
+    (verdicts.length ? `Certificates present: ${verdicts.map((v) => `${v.file}: ${v.problems.join('; ')}`).join(' | ')}. ` : `None under ${CERT_DIR_REL}. `) +
+    'Run `node test/lua/sw_identity_cert.mjs --out=' + CERT_DIR_REL + '/<name>.json` (about 90 s, no Mesen: it rebuilds every recorded job and writes the certificate only if every ROM is identical), ' +
+    'or re-run test/lua/sw_bound_sweep.mjs (stages A, B, C, R, F; then `agg --write`) and re-derive shared/streambound.js.');
+});
+
+test('the certificate consumer is not vacuous: a missing directory certifies nothing, a certificate-shaped object the certifier did not seal is rejected, and a changed generator alone is not an exact match', () => {
+  const curveBytes = fs.readFileSync(path.join(ROOT, 'test/fixtures/streambound-curve.json'));
+  const live = liveSources(ROOT);
+  assert.deepEqual(checkCertificates(path.join(os.tmpdir(), 'no-such-certificate-dir'), { curve, curveBytes, live }), []);
+  assert.ok(validateCertificate({ kind: 'rom-identity-certificate', version: 1, selfDigest: 'x' }, { curve, curveBytes, live }).length > 0);
+  // the engine the sweep ran on with a generator it did not: only a certificate may carry that, and there is none for these made-up sources
+  const sources = { engine: curve.engine.sha256, generator: '0'.repeat(64), harness: live.harness };
+  assert.equal(curveEvidenceVerdict({ curve, live: sources, verdicts: checkCertificates(path.join(ROOT, CERT_DIR_REL), { curve, curveBytes, live: sources }) }).ok, false);
 });
 
 test('the record states the gate and was a clean sweep (no timeouts, no crashed jobs)', () => {
