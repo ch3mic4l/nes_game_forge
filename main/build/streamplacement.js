@@ -100,7 +100,8 @@ export const BANK_SIZE = 8192;
 // none of which falls inside any other named span. Re-measured directly
 // (fix round 2: real kernel-hi delta 4601 on UNROM 512 action, 4566 rpg,
 // 4601 action-mixed; each equals STREAMWORLD_MT_PAL_KERNEL_HI_BYTES(64) +
-// STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE(834) +
+// STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE(834 then; 1024 now, see the history
+// block at that constant) +
 // STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE(32, action only) +
 // streamworldUpdatePlayerKernelHiAllowance (170 action / 167 rpg) +
 // STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE(64, fix round 2 finding C shrank
@@ -494,8 +495,13 @@ export function streamworldSaveResyncKernelHiAllowance(project) {
 // arithmetic), so the four shift loops and the 16-bit add/subtract pairs
 // are gone. Re-measured directly (measureStreamedSpan, same boundary
 // labels): 1102, flat across action/RPG/mixed (confirmed by a real build of
-// both game types).
-export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 1102;
+// both game types). S3a.5 then shrank this, from 1102 to 1024:
+// sw_camera_window_recompute's two per-frame repeated-subtract loops (camPy/240
+// and the desired row's divmod 15) became closed forms off player_y, and the
+// routine's Y half got 78 bytes shorter. Re-measured directly
+// (measureStreamedSpan, same boundary labels): 1024, flat across
+// action/RPG/mixed (confirmed by a real build of each).
+export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 1024;
 
 // Phase 2 slice 5: sw_update_player's own streamed-knockback branch
 // (engine/streamworld.asm's sw_knockback_step, now the accepted-hypothesis

@@ -6,8 +6,13 @@
 // THE RECORD IS EVIDENCE FOR ONE ENGINE. It stores a fingerprint of engine/*.asm (comments and whitespace stripped)
 // and this test fails when the engine no longer matches it: any change that moves the cycles of a streamed body
 // (draw_entities, entity_animate, the strip arms, the NMI) can move the curve, and the bound with it. The remedy
-// is to re-run the sweep (stages A, B, C, R, F in test/lua/sw_bound_sweep.mjs, then `agg --write`), not to edit the
+// is to re-run the sweep (stages A, B, C, R, F, P in test/lua/sw_bound_sweep.mjs, then `agg --write`), not to edit the
 // fingerprint.
+//
+// THE RULE (Chris, 2026-09-30, second fact AMENDED 2026-10-03, S3a.5 round 3): fact 1, everything passes at the certified n (plain 16,
+// bound tiles 15), exhaustively; fact 2, the certified n is the POLICY figure and the record's `probe` (stage P) shows where the cliff is:
+// one shape at every n from certified+1 up, passing below the cliff, and a failing row at it that an isolated re-run CONFIRMED, at least
+// certified+2. A missing, unconfirmed or too-near probe fails here (then the old rule, a confirmed failing row at certified+1, applies again).
 //
 // Wrong implementations caught: a hand-picked constant; one bound where the curves differ (plain and bound tiles); a
 // shipped figure that is not one below the certified n (the margin policy); a margin in cycles that is not the record's;
@@ -35,24 +40,22 @@ import { STREAM_TILE_BOUND as REEXPORT, STREAM_TILE_BOUND_WITH_BOUND_TILES as RE
 import { engineFingerprint } from '../lib/enginefingerprint.js';
 import { checkCertificates, validateCertificate, liveSources, curveEvidenceVerdict, CERT_DIR_REL } from '../lua/sw_identity_cert.mjs';
 import os from 'node:os';
-import { partitions, partitionKey, partitionDigest, ANIM_PRESETS, CANDIDATE, EVIDENCE_N, plan, stageF, knownFailing, runF, buildRecordFromRows, jobProvenanceProblems, mkJob, validateRows } from '../lua/sw_bound_sweep.mjs';
+import { partitions, partitionKey, partitionDigest, ANIM_PRESETS, CANDIDATE, EVIDENCE_N, PROBE_MAX_N, PROBE_SHAPE, plan, stageF, stageP, knownFailing, runF, buildRecordFromRows, jobProvenanceProblems, mkJob, validateRows } from '../lua/sw_bound_sweep.mjs';
 import { provenanceFieldProblems, provenanceUniformityProblems, PROVENANCE_FIELDS } from '../lua/sw_provenance.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const curve = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/streambound-curve.json'), 'utf8'));
 const GATE = 29780; // plan section 5.1: the action frame (mainline + coincident interrupt), Mesen
 
-// What the record certifies, per curve (plain: no bound tile; bound: a bound tile in the project). The certified n is the one BELOW
-// the first n at which a row of the curve fails the gate -- not "the largest passing n": a bound must hold for every n at or under
-// it -- provided nothing at or below it fails. The margin is the tightest passing action row at the certified n, in cycles.
+// What the record certifies, per curve (plain: no bound tile; bound: a bound tile in the project). Since 2026-10-03 the certified n is the POLICY
+// figure CAND (plain 16, bound tiles 15), not "the one below the first failing n": the record must show it passes (nothing at or below it fails,
+// checked by coverageProblems) and the probe shows where the cliff is (probeProblems). The margin is the tightest passing action row at the
+// certified n, in cycles.
 function certify(rows, boundCurve) {
   const mine = rows.filter((r) => !!r.bound === boundCurve && r.scenario === 'walk');
-  const failing = mine.filter((r) => r.gateFail > 0).map((r) => r.n);
-  assert.ok(failing.length > 0, 'the curve has a failing row: the sweep found its end');
-  const firstFail = Math.min(...failing);
-  const certified = firstFail - 1;
+  const certified = CAND[boundCurve ? 'bound' : 'plain'];
   const at = mine.filter((r) => r.n === certified && r.gt === 'action');
-  return { firstFail, certified, below: mine.filter((r) => r.n <= certified), at, marginCycles: GATE - Math.max(...at.map((r) => r.maxG)) };
+  return { certified, below: mine.filter((r) => r.n <= certified), at, marginCycles: GATE - Math.max(...at.map((r) => r.maxG)) };
 }
 
 // The animation parameters a preset stands for, from the record itself (curve.animPresets).
@@ -69,10 +72,11 @@ function animFacts(preset) {
   return { frames, durations, outOfPhase, alt: !!preset.alt, animated: frames.some((f) => f > 1), varies };
 }
 
-// WHAT THE RECORD MUST HOLD (Chris's ruling of 2026-09-30, the margin policy: ship the largest passing n minus one, separately
-// for the plain curve and the bound-tile curve). A curve is decided by TWO facts, and this requires exactly those two:
+// WHAT THE RECORD MUST HOLD (Chris's ruling of 2026-09-30, the margin policy: ship the certified n minus one, separately
+// for the plain curve and the bound-tile curve; second fact amended 2026-10-03). A curve is decided by TWO facts, and this requires exactly those two:
 //   (1) everything passes at the candidate n (plain 16, bound tiles 15), and the sweep is EXHAUSTIVE there over the axes below;
-//   (2) at the next n (plain 17, bound tiles 16) there is at least one failing row that an isolated re-run CONFIRMED.
+//   (2) the probe (probeProblems): the fixed shape at EVERY n from certified+1 to the cliff, passing below it, and a failing row at the cliff
+//       that an isolated re-run CONFIRMED, the cliff at least certified+2. (Until 2026-10-03: a confirmed failing row at certified+1.)
 // Every other n is sampled, and says so (curve.sampling). The axis lists are written HERE, not read from the record or from the
 // sweep: a record that stops listing a value must fail, not shrink the requirement. (CAND/EVID are cross-checked against the
 // sweep's own constants below, so the two cannot drift apart silently.)
@@ -139,6 +143,49 @@ export function provenanceProblems(rec) {
   return problems;
 }
 
+// The probe's own requirement, written HERE (cross-checked against the sweep's PROBE_SHAPE / PROBE_MAX_N below): not read from the record.
+const PROBE_WANT = { gt: 'action', wide: true, anim: 'P8', k: 7, y: 212, flashX: 241, tag: 'flashx241' };
+const PROBE_MAX = 64;
+
+/** The probe's problems: present, the right shape and range, under the record's own provenance, contiguous and passing from certified+1 to the cliff, the cliff confirmed and at least certified+2. */
+export function probeProblems(rec) {
+  const p = [];
+  const pr = rec.probe;
+  if (!pr || typeof pr !== 'object' || !Array.isArray(pr.rows)) return ['the record has no probe: the cliff above the certified n is not recorded'];
+  for (const [f, v] of Object.entries(PROBE_WANT)) if (pr.shape?.[f] !== v) p.push(`probe: shape.${f} is ${JSON.stringify(pr.shape?.[f])}, must be ${JSON.stringify(v)}`);
+  if (pr.maxN !== PROBE_MAX) p.push(`probe: maxN is ${pr.maxN}, must be ${PROBE_MAX}`);
+  if (pr.bad !== 0) p.push(`probe: ${pr.bad} bad (crashed or timed-out) probe jobs`);
+  if (pr.jobs !== pr.rows.length) p.push('probe: jobs does not count the rows');
+  for (const f of ['engine', 'harness', 'generator', 'mesen']) if (!HEX16.test(pr.provenance?.[f] ?? '') || pr.provenance[f] !== (rec.provenance?.[f] ?? '').slice(0, 16)) p.push(`probe: provenance.${f} is not the record's (the probe must go stale exactly when the curve does)`);
+  const cliff = {};
+  for (const r of pr.rows) if (!CURVES.includes(r.curve)) p.push(`probe: a row for an unknown curve ${JSON.stringify(r.curve)} (n=${r.n})`);
+  for (const c of CURVES) {
+    const rows = pr.rows.filter((r) => r.curve === c).sort((a, b) => a.n - b.n);
+    // the probe is BOUNDED: every row is an integer n in certified+1 .. PROBE_MAX, whatever maxN the record declares
+    for (const r of rows) if (!Number.isInteger(r.n) || r.n < EVID[c] || r.n > PROBE_MAX) p.push(`probe ${c}: a row at n=${JSON.stringify(r.n)} is outside the probed range ${EVID[c]}..${PROBE_MAX}`);
+    if (new Set(rows.map((r) => r.n)).size !== rows.length) p.push(`probe ${c}: a probed n is recorded twice`);
+    for (const r of rows) {
+      if (r.sizes?.reduce((a, b) => a + b, 0) !== r.n) p.push(`probe ${c} n=${r.n}: sizes do not add up to n`);
+      if ((r.gateFail > 0) !== (r.maxG > GATE)) p.push(`probe ${c} n=${r.n}: gateFail and maxG disagree about the gate`);
+      if (r.confirmed && !(r.gateFail > 0)) p.push(`probe ${c} n=${r.n}: a passing row marked confirmed`);
+    }
+    const fails = rows.filter((r) => r.gateFail > 0);
+    if (fails.length === 0) { p.push(`probe ${c}: no failing row up to n=${PROBE_MAX}: the cliff was not found`); continue; }
+    const first = fails[0]; // the smallest failing n, confirmed or not
+    cliff[c] = first.n;
+    if (!Number.isInteger(first.n) || first.n < EVID[c] || first.n > PROBE_MAX) p.push(`probe ${c}: the cliff n=${first.n} is outside the probed range ${EVID[c]}..${PROBE_MAX}`);
+    if (!first.confirmed || !(first.confirmMaxG > GATE)) p.push(`probe ${c}: the first failing row (n=${first.n}) is not CONFIRMED by an isolated re-run`);
+    if (first.n <= CAND[c] + 1) p.push(`probe ${c}: the cliff is at n=${first.n}, at or below certified+1 (${CAND[c] + 1}): the policy figure is not safe, the old rule applies again`);
+    for (let n = EVID[c]; n < first.n; n++) {
+      const here = rows.filter((r) => r.n === n);
+      if (here.length !== 1) p.push(`probe ${c}: n=${n} (below the cliff) is ${here.length ? 'recorded twice' : 'missing'}: the probe must be contiguous`);
+      else if (here[0].gateFail > 0) p.push(`probe ${c}: n=${n} fails below the cliff`);
+    }
+  }
+  if (JSON.stringify(pr.cliff) !== JSON.stringify(cliff)) p.push(`probe: the recorded cliff ${JSON.stringify(pr.cliff)} is not the rows' ${JSON.stringify(cliff)}`);
+  return p;
+}
+
 /** What the record must contain: every problem found, one per missing or malformed requirement. */
 export function coverageProblems(rec) {
   const problems = [];
@@ -167,11 +214,8 @@ export function coverageProblems(rec) {
     const c = r.bound ? 'bound' : 'plain';
     if (r.n <= CAND[c] && (r.gateFail > 0 || r.maxG > GATE)) problems.push(`row ${keyOf(c, r)} fails at or below the candidate n`);
   }
-  // the evidence at the next n: a failing row, confirmed by an isolated re-run
-  for (const c of CURVES) {
-    const ev = rows.filter((r) => r.gt === 'action' && !!r.bound === (c === 'bound') && r.n === EVID[c] && r.gateFail > 0 && r.confirmed > 0 && r.maxG > GATE);
-    if (ev.length === 0) problems.push(`${c}: no confirmed failing row at n=${EVID[c]}`);
-  }
+  // fact 2 (amended 2026-10-03): the probe shows the cliff, confirmed, at least certified+2
+  problems.push(...probeProblems(rec));
   for (const r of rec.rows) if (!(r.anim in rec.animPresets)) problems.push(`row ${keyOf(r.bound ? 'bound' : 'plain', r)} names an unknown preset`);
   // the animation facts the claim rests on, from the record's own definitions of the presets it names
   const facts = [...new Set([...PRESETS_B, ...RPG_PRESETS])].map((p) => animFacts(rec.animPresets[p]));
@@ -219,10 +263,10 @@ test('the certificate consumer is not vacuous: a missing directory certifies not
 test('the record states the gate and was a clean sweep (no timeouts, no crashed jobs)', () => {
   assert.equal(curve.gate, GATE);
   assert.equal(curve.bad, 0);
-  // version 2 is the pre-(a1) record; version 3 is the (a1) re-sweep of Chris's 2026-09-30 design (stages A B C F R)
-  assert.ok(curve.version === 2 || curve.version === 3, `unknown record version ${curve.version}`);
-  assert.ok(curve.jobs >= (curve.version === 3 ? 11000 : 9000), `expected the full sweep, got ${curve.jobs} jobs`);
-  assert.equal(curve.jobs, curve.rows.reduce((a, r) => a + r.jobs, 0), 'every job is accounted for in exactly one row');
+  // version 4 is the S3a.5 re-sweep under the 2026-10-03 amendment (stages A B C R F, and P for the `probe` section); 2 and 3 were the pre-lever records
+  assert.equal(curve.version, 4);
+  assert.ok(curve.jobs >= 12000, `expected the full sweep, got ${curve.jobs} jobs`);
+  assert.equal(curve.jobs, curve.rows.reduce((a, r) => a + r.jobs, 0) + curve.probe.jobs, 'every job is accounted for in exactly one row, or is a probe job');
 });
 
 test('every row flag agrees with the gate: gateFail only where maxG exceeds it (and at least one failing job)', () => {
@@ -232,10 +276,10 @@ test('every row flag agrees with the gate: gateFail only where maxG exceeds it (
   }
 });
 
-test('the certified n of each curve is recomputed from the rows; the shipped bounds are one below it (the margin policy)', () => {
+test('the certified n of each curve is the policy figure (16 / 15) and swept; the shipped bounds are one below it (the margin policy)', () => {
   const plain = certify(curve.rows, false);
   const bound = certify(curve.rows, true);
-  assert.deepEqual({ ...STREAM_TILE_CERTIFIED }, { plain: plain.certified, boundTiles: bound.certified }, JSON.stringify({ plain: plain.firstFail, bound: bound.firstFail }));
+  assert.deepEqual({ ...STREAM_TILE_CERTIFIED }, { plain: plain.certified, boundTiles: bound.certified });
   assert.equal(STREAM_TILE_MARGIN, 1);
   assert.equal(STREAM_TILE_BOUND, plain.certified - 1);
   assert.equal(STREAM_TILE_BOUND_WITH_BOUND_TILES, bound.certified - 1);
@@ -254,13 +298,16 @@ test('the recorded margins in cycles are the record\'s tightest passing action r
   assert.ok(bound.marginCycles < plain.marginCycles, 'bound tiles spend the margin, which is why their certified n is lower');
 });
 
-test('the bounds are not vacuous: the first n above each certified n fails on a CONFIRMED action row, and nothing at or below it fails', () => {
+test('the bounds are not vacuous: each curve\'s probe finds its cliff, CONFIRMED, at least certified+2, and nothing in the record fails below it', () => {
+  assert.deepEqual(probeProblems(curve), []);
   for (const [name, isBound, certified] of [['plain', false, STREAM_TILE_CERTIFIED.plain], ['bound tiles', true, STREAM_TILE_CERTIFIED.boundTiles]]) {
+    const cliff = curve.probe.cliff[isBound ? 'bound' : 'plain'];
+    assert.ok(cliff >= certified + 2, `${name}: cliff ${cliff} is at least certified+2 (${certified + 2})`);
+    const row = curve.probe.rows.find((r) => r.curve === (isBound ? 'bound' : 'plain') && r.n === cliff);
+    assert.ok(row.gateFail > 0 && row.confirmed && row.confirmMaxG > GATE, `${name}: the cliff row failed and its isolated re-run confirmed it`);
     const c = certify(curve.rows, isBound);
-    assert.equal(c.firstFail, certified + 1, name);
-    const ev = curve.rows.filter((r) => !!r.bound === isBound && r.gt === 'action' && r.n === certified + 1 && r.gateFail > 0 && r.confirmed > 0);
-    assert.ok(ev.length > 0, `${name}: n=${certified + 1} fails on a confirmed row, or the figure is just the end of the sweep`);
     assert.ok(c.below.every((r) => r.gateFail === 0), `${name}: no row at or below ${certified} fails`);
+    assert.ok(curve.rows.filter((r) => !!r.bound === isBound && r.gt === 'action' && r.n < cliff).every((r) => r.gateFail === 0), `${name}: no sampled row fails below the cliff`);
     assert.ok(c.at.length > 0, `${name}: the certified n was swept`);
   }
 });
@@ -279,10 +326,14 @@ let conforming = null;
 function conformingRows() {
   if (conforming) return conforming;
   const rows = ['A', 'B', 'C', 'R'].flatMap((st) => plan(st)).map((j) => fakeResult(j));
+  // the probe: every n from certified+1 to a synthetic cliff at certified+4 passes, the cliff fails and is confirmed, and one more n (a wave in flight) fails unconfirmed
   for (const c of CURVES) {
-    const j = stageF(c, [])[0];
-    const f = failing(j);
-    rows.push(f, { ...fakeResult({ ...j, id: `${j.id}#confirm`, confirmOf: j.id }), phases: f.phases });
+    const cliffN = CAND[c] + 4;
+    for (const j of stageP(c)) {
+      if (j.n < cliffN) rows.push(fakeResult(j));
+      else if (j.n === cliffN) { const f = failing(j); rows.push(f, { ...fakeResult({ ...j, id: `${j.id}#confirm`, confirmOf: j.id }), phases: f.phases }); }
+      else if (j.n === cliffN + 1) rows.push(failing(j));
+    }
   }
   conforming = rows;
   return rows;
@@ -297,6 +348,8 @@ const curveOf = (r) => (r.bound ? 'bound' : 'plain');
 test('the axes the test requires are the sweep\'s own (no silent drift between the requirement and the plan)', () => {
   assert.deepEqual(CAND, CANDIDATE);
   assert.deepEqual(EVID, EVIDENCE_N);
+  assert.deepEqual({ ...PROBE_SHAPE, split: undefined }, { ...PROBE_WANT, split: undefined });
+  assert.equal(PROBE_MAX_N, PROBE_MAX);
   assert.deepEqual(curve.animPresets, JSON.parse(JSON.stringify(ANIM_PRESETS)), 'the record\'s presets are the harness\'s presets (the rows\' labels mean what the sweep ran)');
 });
 
@@ -310,7 +363,16 @@ test('the stage plans have exactly the arithmetic job counts, and every job id i
   assert.equal(plan('R').length, 5 * 2 * 2 * 25);
   // A, per curve: 3 R3-F1 scenes + 3 review-2 tags x 2 presets x 4 y + dense y 2 presets x 2 shapes x 53 + odd k 2 presets x 2 shapes x 3 k x 3 y; plus the plain placement grid 18 x 2 x 3
   assert.equal(plan('A').length, 2 * (3 + 3 * 2 * 4 + 2 * 2 * 53 + 2 * 2 * 3 * 3) + 18 * 2 * 3);
-  for (const st of ['A', 'B', 'C', 'R', 'F', 'S']) { const j = plan(st); assert.equal(new Set(j.map((x) => x.id)).size, j.length, `stage ${st} ids are unique`); }
+  // P: the probe, plain n = 17..64 (48) and bound tiles n = 16..64 (49): one fixed shape, an even split, in ascending plan order
+  assert.equal(plan('P').length, (PROBE_MAX_N - 17 + 1) + (PROBE_MAX_N - 16 + 1));
+  for (const c of CURVES) {
+    const pj = stageP(c);
+    assert.deepEqual(pj.map((j) => j.n), Array.from({ length: PROBE_MAX_N - EVID[c] + 1 }, (_, i) => EVID[c] + i), `${c}: every n from certified+1 to the maximum, ascending`);
+    assert.ok(pj.every((j, i) => j.order === i && j.curve === c && j.stage === 'P' && j.bound === (c === 'bound') && (c === 'bound') === (j.gridH === 60)));
+    assert.ok(pj.every((j) => j.sizes.reduce((a, b) => a + b, 0) === j.n && Math.max(...j.sizes) - Math.min(...j.sizes) <= 1 && Math.max(...j.sizes) <= 16), 'an even split of n over eight actors');
+    assert.ok(pj.every((j) => j.gt === PROBE_WANT.gt && j.wide === PROBE_WANT.wide && j.anim === PROBE_WANT.anim && j.k === PROBE_WANT.k && j.y === PROBE_WANT.y && j.flashX === PROBE_WANT.flashX && j.tag === PROBE_WANT.tag), 'the shape the test requires');
+  }
+  for (const st of ['A', 'B', 'C', 'R', 'F', 'P', 'S']) { const j = plan(st); assert.equal(new Set(j.map((x) => x.id)).size, j.length, `stage ${st} ids are unique`); }
 });
 
 test('stage F: at the next n only, at most 500 candidates per curve; n+1 extensions of the worst-margin candidate-n rows first, then the known failing shapes', () => {
@@ -415,15 +477,15 @@ test('DEDUP: a record in which the duplicate jobs of stage B are REUSED measurem
   }
 });
 
-test('COVERAGE (the real record) is exactly the design: exhaustive at the candidate n of each curve, and a confirmed failing row at the next n', () => {
-  // This fails until the (a1) re-sweep (stages A B C F R, then `agg --write`) has replaced the pre-(a1) record.
+test('COVERAGE (the real record) is exactly the design: exhaustive at the candidate n of each curve, and a probe with a confirmed cliff at least certified+2', () => {
+  // This fails until the sweep (stages A B C R F P, then `agg --write`) has replaced a record of another engine.
   assert.deepEqual(coverageProblems(curve), []);
 });
 
 test('PROVENANCE (the real record): every row carries provenance, and it is uniform', () => {
   // This fails until the (a1) re-sweep has replaced the pre-(a1) record.
   assert.deepEqual(provenanceProblems(curve), []);
-  assert.equal(curve.version, 3);
+  assert.equal(curve.version, 4);
 });
 
 test('COVERAGE is checked per combination: removing or damaging any single required combination makes coverageProblems fail', () => {
@@ -453,7 +515,7 @@ test('COVERAGE is checked per combination: removing or damaging any single requi
   assert.equal(n, 1662);
 });
 
-test('COVERAGE: each axis value removed from the candidate n of a curve, and each way of losing the n+1 evidence, makes coverageProblems fail', () => {
+test('COVERAGE: each axis value removed from the candidate n of a curve, and each way of losing the probe, makes coverageProblems fail', () => {
   const rec = conformingRecord();
   const cand = (r) => r.n === CAND[curveOf(r)] && r.scenario === 'walk' && r.gt === 'action' && r.tag === '';
   const named = {};
@@ -468,8 +530,6 @@ test('COVERAGE: each axis value removed from the candidate n of a curve, and eac
     for (const k of [1, 3, 5]) named[`${c}: odd k=${k}`] = mine((r) => r.k === k);
     for (const t of R3_TAGS) named[`${c}: ${t}`] = (r) => curveOf(r) === c && r.tag === t;
     for (const [t] of REVIEW2) named[`${c}: ${t}`] = (r) => curveOf(r) === c && r.tag === t;
-    // the n+1 evidence
-    named[`${c}: the n=${EVID[c]} failing rows`] = (r) => curveOf(r) === c && r.n === EVID[c];
   }
   for (const [name, pred] of Object.entries(named)) assert.ok(coverageProblems(without(rec, pred)).length > 0, `${name}: coverageProblems must fail`);
   for (const t of POS_TAGS.slice(0, 3)) assert.ok(coverageProblems(without(rec, (r) => r.tag === t)).length > 0, `placement ${t}`);
@@ -482,14 +542,42 @@ test('COVERAGE: each axis value removed from the candidate n of a curve, and eac
   for (const p of RPG_PRESETS) assert.ok(coverageProblems(without(rec, (r) => r.gt === 'rpg' && r.anim === p)).length > 0, `rpg ${p}`);
   for (const a of ARTS) assert.ok(coverageProblems(without(rec, (r) => r.gt === 'rpg' && r.art === a)).length > 0, `rpg ${a}`);
   for (const k of RPG_KS) assert.ok(coverageProblems(without(rec, (r) => r.gt === 'rpg' && r.k === k)).length > 0, `rpg k${k}`);
-  // the evidence row must be a FAILING row, CONFIRMED by an isolated re-run, at the right n, on the action game
+  // the probe: its absence, an unconfirmed cliff, a cliff at certified+1, a gap, an earlier unconfirmed failure, the wrong shape or provenance, an exhausted curve
+  assert.deepEqual(probeProblems(rec), [], 'the conforming record has a clean probe');
+  const noProbe = clone(rec); delete noProbe.probe;
+  assert.ok(coverageProblems(noProbe).some((m) => /no probe/.test(m)), 'sabotage (b): the probe removed');
   for (const c of CURVES) {
-    const ev = (r) => curveOf(r) === c && r.n === EVID[c];
-    const mut = (f) => ({ ...rec, rows: rec.rows.map((r) => (ev(r) ? f(r) : r)) });
-    assert.ok(coverageProblems(mut((r) => ({ ...r, confirmed: 0 }))).length > 0, `${c}: unconfirmed evidence`);
-    assert.ok(coverageProblems(mut((r) => ({ ...r, gateFail: 0, maxG: 25000 }))).length > 0, `${c}: evidence row that passes`);
-    assert.ok(coverageProblems(mut((r) => ({ ...r, n: r.n + 1 }))).length > 0, `${c}: evidence at the wrong n`);
-    assert.ok(coverageProblems(mut((r) => ({ ...r, gt: 'rpg' }))).length > 0, `${c}: evidence on the wrong game type`);
+    const mutProbe = (f) => { const r = clone(rec); f(r.probe.rows.filter((x) => x.curve === c), r.probe, r); return r; };
+    const cliffN = CAND[c] + 4;
+    const cliffRow = (rows) => rows.find((x) => x.n === cliffN);
+    assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).confirmed = false; })).some((m) => /not CONFIRMED/.test(m)), `${c}: sabotage (c): an unconfirmed cliff`);
+    assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).confirmMaxG = 25000; })).some((m) => /not CONFIRMED/.test(m)), `${c}: a confirmation that does not fail`);
+    // sabotage (d): the cliff at certified+1 (the row there fails and is confirmed; everything above it is dropped)
+    const near = clone(rec);
+    near.probe.rows = near.probe.rows.filter((x) => x.curve !== c || x.n <= CAND[c] + 1);
+    const nr = near.probe.rows.find((x) => x.curve === c && x.n === CAND[c] + 1);
+    Object.assign(nr, { gateFail: 1, maxG: GATE + 1500, confirmed: true, confirmMaxG: GATE + 1500 });
+    near.probe.cliff[c] = CAND[c] + 1; near.probe.jobs = near.probe.rows.length;
+    assert.ok(coverageProblems(near).some((m) => /at or below certified\+1/.test(m)), `${c}: sabotage (d): a cliff at certified+1`);
+    assert.ok(coverageProblems(mutProbe((rows, pr) => { pr.rows = pr.rows.filter((x) => !(x.curve === c && x.n === CAND[c] + 2)); pr.jobs = pr.rows.length; })).some((m) => /missing: the probe must be contiguous/.test(m)), `${c}: a gap below the cliff`);
+    assert.ok(coverageProblems(mutProbe((rows) => { const r = rows.find((x) => x.n === CAND[c] + 2); Object.assign(r, { gateFail: 1, maxG: GATE + 10 }); })).length > 0, `${c}: an unconfirmed failure below the cliff`);
+    assert.ok(coverageProblems(mutProbe((rows, pr) => { pr.rows = pr.rows.filter((x) => !(x.curve === c && x.gateFail > 0)); pr.jobs = pr.rows.length; delete pr.cliff[c]; })).some((m) => /cliff was not found/.test(m)), `${c}: an exhausted curve`);
+    assert.ok(coverageProblems(mutProbe((rows, pr) => { pr.cliff[c] = cliffN + 3; })).some((m) => /recorded cliff/.test(m)), `${c}: a cliff field that is not the rows'`);
+    // F1 (review 2026-10-03): the probe is bounded. A row above the maximum, below the first probed n, or non-integer; an unknown curve; and a CONFIRMED cliff above the maximum with a contiguous passing probe below it
+    assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).n = PROBE_MAX + 1; })).some((m) => /outside the probed range/.test(m)), `${c}: a row above the maximum n`);
+    assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).n = EVID[c] - 1; })).some((m) => /outside the probed range/.test(m)), `${c}: a row below certified+1`);
+    assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).n = cliffN + 0.5; })).some((m) => /outside the probed range/.test(m)), `${c}: a non-integer n`);
+    assert.ok(coverageProblems(mutProbe((rows, pr) => { pr.rows.push({ ...clone(cliffRow(rows)), curve: 'other' }); pr.jobs = pr.rows.length; })).some((m) => /unknown curve/.test(m)), `${c}: a row for an unknown curve`);
+    const over = clone(rec);
+    over.probe.rows = over.probe.rows.filter((x) => x.curve !== c);
+    for (let n = EVID[c]; n <= PROBE_MAX; n++) over.probe.rows.push({ curve: c, n, id: `${c}-over-${n}`, sizes: [n], maxG: 25000, gateFail: 0, confirmed: false, confirmMaxG: null, project: '0'.repeat(16), rom: '0'.repeat(16) });
+    over.probe.rows.push({ curve: c, n: PROBE_MAX + 1, id: `${c}-over-max`, sizes: [PROBE_MAX + 1], maxG: GATE + 1500, gateFail: 1, confirmed: true, confirmMaxG: GATE + 1500, project: '0'.repeat(16), rom: '0'.repeat(16) });
+    over.probe.cliff[c] = PROBE_MAX + 1; over.probe.jobs = over.probe.rows.length;
+    const overProblems = coverageProblems(over);
+    assert.ok(overProblems.some((m) => new RegExp(`probe ${c}: the cliff n=${PROBE_MAX + 1} is outside`).test(m)) && overProblems.some((m) => /outside the probed range/.test(m)), `${c}: a confirmed cliff above the maximum (everything below it passing and contiguous) is refused`);
+  }
+  for (const f of ['shape', 'provenance', 'maxN', 'bad']) assert.ok(coverageProblems((() => { const r = clone(rec); if (f === 'shape') r.probe.shape.k = 4; else if (f === 'provenance') r.probe.provenance.engine = sha('x').slice(0, 16); else if (f === 'maxN') r.probe.maxN = 32; else r.probe.bad = 1; return r; })()).length > 0, `probe ${f}`);
+  for (const c of CURVES) {
     // a failing row at the candidate n, or any n below it, means the bound is lower than expected: stop, not a pass
     const row = rec.rows.find((r) => curveOf(r) === c && r.n === CAND[c] && r.gt === 'action' && r.tag === '' && r.k === 0);
     const failed = { ...rec, rows: rec.rows.map((r) => (r === row ? { ...r, gateFail: 1, maxG: GATE + 1 } : r)) };
@@ -549,16 +637,16 @@ test('the RPG rows are spot checks that pass with room to spare: action is the g
   assert.ok(rpg.length > 0);
   assert.ok(rpg.every((r) => r.n === 16 && r.gateFail === 0), 'every RPG row is at n = 16 and passes');
   const action16 = curve.rows.filter((r) => r.gt === 'action' && !r.bound && r.n === 16);
-  assert.ok(Math.max(...rpg.map((r) => r.maxG)) < Math.max(...action16.map((r) => r.maxG)) - 5000, 'an RPG-only derivation could not have found the end of either curve');
+  // the gap was over 5,000 cycles before the S3a.5 camera lever (it removes the same cost from both game types' deep rows, and RPG has less to lose); 3,000 still says action binds
+  assert.ok(Math.max(...rpg.map((r) => r.maxG)) < Math.max(...action16.map((r) => r.maxG)) - 3000, 'an RPG-only derivation could not have found the end of either curve');
 });
 
-test('the animated presets are what bind: the worst row at each certified n, and every n+1 evidence row, is on animated art', () => {
+test('the animated presets are what bind: the worst row at each certified n, and the probe shape, are on animated art', () => {
   for (const [isBound, certified] of [[false, STREAM_TILE_CERTIFIED.plain], [true, STREAM_TILE_CERTIFIED.boundTiles]]) {
     const worst = (n) => curve.rows.filter((r) => r.gt === 'action' && !!r.bound === isBound && r.n === n).sort((a, b) => b.maxG - a.maxG)[0];
     assert.ok(animFacts(curve.animPresets[worst(certified).anim]).animated, `the worst row at n = ${certified} (${worst(certified).anim})`);
-    const ev = curve.rows.filter((r) => r.gt === 'action' && !!r.bound === isBound && r.n === certified + 1 && r.gateFail > 0);
-    assert.ok(ev.length > 0 && ev.every((r) => animFacts(curve.animPresets[r.anim]).animated), 'the failing rows are on animated art');
   }
+  assert.ok(animFacts(curve.animPresets[curve.probe.shape.anim]).animated, 'the probe shape is on animated art');
 });
 
 test('the record holds walk rows only: the SYNTHETIC forced-Flash stress was not run on this engine, and no row pretends to be it', () => {

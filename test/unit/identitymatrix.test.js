@@ -137,6 +137,9 @@ test('the truth table and the generated shapes cover exactly the same rows, and 
   );
   assert.deepEqual(Object.keys(baseline.shapes).sort(), [...ids].sort());
   assert.equal(baseline.parentRev, '3313b6257dfdc1332916436c030a5e803aa2cc8c');
+  // Phase 3a S3a.5: the baseline is the parent's build with the closed-form camera carried in (build_identity_baseline.mjs --carry-s3a5), because
+  // every streamed ROM now differs from the parent's in exactly that routine; a baseline made without it would call every streamed row 'changed'.
+  assert.equal(baseline.carries, 's3a5-lever');
   assert.equal(ids.filter((id) => truthFor(id) === 'delegate').length, 12, 'six delegating rows per game type');
 });
 

@@ -6,8 +6,9 @@
 // each under Mesen with test/lua/sw_cadence.lua.template, and asserts, from PC hooks past the gate rather than from frame_cnt at
 // update_entities entry, that every slot is dispatched exactly on the bodies where (slot xor frame_cnt) & 1 == 0 and only then.
 //   walk       an ordinary walk at the shipped bound (plain 15, P8 wide, 7 blocked chasers, Flash y 212): frame_cnt advances 1 per body
-//   overrun-b  the bound-tile curve's n = 16 failing row (31,746 cycles): bodies overrun, so frame_cnt advances 2 between bodies
-//   overrun-p  the plain curve's n = 17 failing row (Flash x 241)
+//   overrun-b  bound tiles, n = 54 (31,243 cycles at the probe's Flash x 241; this scene is the x = 242 variant at the probe's bound cliff population): bodies overrun, so frame_cnt advances 2 between bodies
+//   overrun-p  plain, n = 56 (31,253 cycles; the probe shape at its plain cliff), Flash x 241
+//              (until S3a.5 these were the old engine's n = 16 / n = 17 failing rows, 31,746 / 31,741 cycles)
 //   beyond     (only with --scene=beyond; reported, never pinned) plain n = 24, far past the bound, where bodies overrun for long stretches
 // It reports the maximum wait in bodies of one slot -- from the start of a continuous run of visits to its first dispatch, between two
 // dispatches, and from the last dispatch (or the run's start, when there was none) to the end of the run or of the walk -- and fails when a
@@ -47,8 +48,8 @@ export const MIN_VISITS_OWING_DISPATCH = 4;
 const job = (over) => mkJob({ stage: 'X', gt: 'action', wide: true, anim: 'P8', k: 7, shape: 'even', y: 212, ...over });
 export const SCENES = {
   walk: job({ sizes: eightSplit(15) }),
-  'overrun-b': job({ sizes: eightSplit(16), bound: true }),
-  'overrun-p': job({ sizes: eightSplit(17), tag: 'flashx241', flashX: 241 })
+  'overrun-b': job({ sizes: eightSplit(54), bound: true }),
+  'overrun-p': job({ sizes: eightSplit(56), tag: 'flashx241', flashX: 241 })
 };
 export const EXTRA_SCENES = { beyond: job({ sizes: eightSplit(24) }) };
 

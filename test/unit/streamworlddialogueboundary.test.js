@@ -52,10 +52,18 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 // Phase 3a slice S3a moved ONLY the Move row UP by exactly 56 bytes (relocated 2450 -> 2506): the Move's
 // kernel-hi allowance STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE went 76 -> 20 when the Move's private probe pair
 // was deleted for the shared sw_pstep_* driver. The no-Move rows carry no such allowance and do not move.
+//
+// Phase 3a slice S3a.5 moved EVERY one of these UP by exactly 78 bytes (no-Save resident 1329 -> 1407, relocated
+// 2571 -> 2649; Save relocated 2456 -> 2534; Move relocated 2506 -> 2584). Cause: STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE
+// went 1102 -> 1024 when sw_camera_window_recompute's two repeated-subtract loops became closed forms. Every ceiling
+// is BANK_SIZE (8192) - 64 - streamworldHiBytesFor, and that sum holds the window term exactly once in every variant
+// (relocation removes the dialogue mapper/lifecycle/relocated terms and adds the banked shim, never the window term):
+// 8128 - 6799 = 1329 -> 8128 - 6721 = 1407; 8128 - 5557 = 2571 -> 8128 - 5479 = 2649; 8128 - 5672 = 2456 -> 8128 - 5594 =
+// 2534; 8128 - 5622 = 2506 -> 8128 - 5544 = 2584 (each reservation 78 smaller).
 const CEILINGS = {
-  nosave: { resident: 1329, relocated: 2571 },
-  save: { relocated: 2456 },
-  move: { relocated: 2506 }
+  nosave: { resident: 1407, relocated: 2649 },
+  save: { relocated: 2534 },
+  move: { relocated: 2584 }
 };
 const VARIANT_NAME = { nosave: 'no-Save', save: 'Save', move: 'Move' };
 
@@ -113,7 +121,7 @@ const report = (row, variant, project, extra = '') =>
 
 // ---- rows 1-2: the resident edge (no-Save) --------------------------------------------------
 
-test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1329) stays resident and builds', { skip }, async () => {
+test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1407) stays resident and builds', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), false, 'content == the resident ceiling fits it: the overlay must stay resident');
@@ -124,7 +132,7 @@ test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1329) stays r
   report(1, 'nosave', project, ' -> stays resident, builds');
 });
 
-test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1330) relocates and builds under the relocated ceiling', { skip }, async () => {
+test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1408) relocates and builds under the relocated ceiling', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident + 1 });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), true, 'content one byte over the resident ceiling must relocate');

@@ -256,7 +256,7 @@ session's own code the comment lives in, never whose choice the code encodes.
   **1,534 bytes** (no-Save, 4,336 − 2,802), **1,649** (Save, against 2,687) and **1,655** (Move,
   against 2,681) — the relocation does not reach the design's estimate. The reason is not the overlay:
   the resident base (`STREAMWORLD_KERNEL_HI_ALLOWANCE` and the terms measured beside it) grew to
-  5,213 bytes against the design's 2,053, **+3,160**, since the estimate was written; Chris ruled that
+  5,213 bytes against the design's 2,053, **+3,160** (5,135 / +3,082 since S3a.5, 2026-10-02), since the estimate was written; Chris ruled that
   base out of scope for this slice, so the shortfall is accepted and documented, not closed. Action
   and mixed projects keep the resident overlay and its refusal (no battle bank to hold it), and every
   project that does not pinch assembles byte-for-byte as before.
@@ -631,13 +631,15 @@ every addend `streamworldHiBytesFor` sums for an RPG project with dialogue and a
 - RPG base (no text, no Move, no Save; always-charged terms only): `STREAMWORLD_KERNEL_HI_ALLOWANCE`
   3342 (`generate.js:1369`) + `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES` (`LIMITS.metatiles`) 64
   (`generate.js:1383`, `shared/project.js:251`) + `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE` 1102
-  (`generate.js:2200`) + `streamworldUpdatePlayerKernelHiAllowance` (rpg) 167 (`generate.js:2248`,
+  (`generate.js:2200`; **1024 since S3a.5, 2026-10-02**, see the parenthetical below) + `streamworldUpdatePlayerKernelHiAllowance` (rpg) 167 (`generate.js:2248`,
   `2252`) + `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE` 64 (`generate.js:2267`) +
   `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE` 164 (`generate.js:1563`) +
   `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE` 108 (`generate.js:1784`) +
   `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE` 164 (`generate.js:1791`) +
   `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE` 38 (`generate.js:1537`)
-  = 3342+64+1102+167+64+164+108+164+38 = **5213**.
+  = 3342+64+1102+167+64+164+108+164+38 = **5213**. (S3a.5, 2026-10-02: the window term is 1024 now, so this sum is
+  3342+64+1024+167+64+164+108+164+38 = **5135**; every figure derived from 5213 below moves by the same 78 -- 6611, 1517, +3082,
+  +2819 -- and the text as written is the 2026-09-28 record.)
 - Dialogue (gated on `projectUsesText`): `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE` 613
   (`generate.js:1407`) + `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520
   (`generate.js:1439-1442`, `1446`) + `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222
@@ -651,7 +653,7 @@ every addend `streamworldHiBytesFor` sums for an RPG project with dialogue and a
   `streamworldSaveResyncKernelHiAllowance` (rpg) 45 (`generate.js:2137`, `2141`) = 6+52+12+45 = **115**
   (not added to the RPG+dialogue+Move total below, since Save is not live in that combination).
 
-RPG+dialogue+Move `streamworldHiBytesFor` = 5213 + 1355 + 121 = **6689**; `contentCeilingBytes`
+RPG+dialogue+Move `streamworldHiBytesFor` = 5213 + 1355 + 121 = **6689** (6611 since S3a.5); `contentCeilingBytes`
 (`generate.js:3689`, `BANK_SIZE` 8192 `generate.js:231`) = 8192 − 64 − 6689 = **1439**, matching the
 "1,439 bytes" figure measured directly below. Against the design's own original 2053 + 1616 + 123
 split for this same combination, the growth is +3160 (base) − 261 (dialogue) − 2 (Move) = **+2897**

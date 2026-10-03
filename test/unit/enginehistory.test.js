@@ -14,7 +14,14 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { restoreB1Routines, validateB1Block, mergeReconstructEngineFile, s1ZeroPageNames } from '../lib/enginehistory.js';
+import {
+  restoreB1Routines,
+  validateB1Block,
+  mergeReconstructEngineFile,
+  s1ZeroPageNames,
+  stripS3a5FromStreamworld,
+  dropS3a5RetiredFromOld
+} from '../lib/enginehistory.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const currentStreamworld = fs.readFileSync(path.join(ROOT, 'engine', 'streamworld.asm'), 'utf8');
@@ -188,4 +195,18 @@ test('validateB1Block: a one-letter operand that is not a register name (a/x/y) 
 test('validateB1Block: register-name operands (a/x/y, case-insensitive) remain exempt from the undefined-symbol check', () => {
   assert.ok(/\basl a\b|\, *x\b|\, *y\b/i.test(realB1Block), 'fixture assumption: the real block must contain at least one register operand');
   assert.doesNotThrow(() => validateB1Block(realB1Block, ROOT));
+});
+
+test('S3a.5 aside: the closed-form camera Y regions and the retired loops are cut exactly, and a changed shape throws instead of cutting something else', () => {
+  const current = currentStreamworld;
+  const old = execFileSync('git', ['show', '59d4468:engine/streamworld.asm'], { cwd: ROOT, encoding: 'utf8' });
+  const cutNew = stripS3a5FromStreamworld(current);
+  const cutOld = dropS3a5RetiredFromOld(old);
+  for (const gone of ['sw_fcw_yo_ge', 'sw_fcw_yo_done', 'sw_fcw_blky_here', 'sw_fcw_blky_clamp:']) assert.equal(cutNew.includes(gone), false, `${gone} must be cut from the current text`);
+  for (const gone of ['sw_fcw_ydiv_loop:', 'sw_fcw_ydivmod15_loop:', 'sw_fcw_blky_shift:']) assert.equal(cutOld.includes(gone), false, `${gone} must be cut from the old text`);
+  // exactly the two regions: the code lines either side of each survive on both sides
+  for (const kept of ['  sta sw_cam_origin_y_hi', '  jsr sw_clamp_row', '  stx sw_fc_desrl']) assert.ok(cutNew.includes(kept) && cutOld.includes(kept), `${kept.trim()} must survive the cut on both sides`);
+  assert.throws(() => stripS3a5FromStreamworld(current.replace('  bcs sw_fcw_yo_ge\n', '  bcs sw_fcw_yo_ge ; moved\n')), /not found exactly once/);
+  assert.throws(() => dropS3a5RetiredFromOld(old.replace('sw_fcw_ydiv_done:\n', 'sw_fcw_ydiv_done_x:\n')), /not found exactly once/);
+  assert.throws(() => stripS3a5FromStreamworld(current.replace('stash bit0 across the Y half', 'stash')), /stash line was not found exactly once/);
 });

@@ -257,7 +257,8 @@ export function mergeReconstructEngineFile(root, rev, name, { headRev = 'HEAD' }
   const historicalText = execFileSync('git', ['show', `${rev}:engine/${name}`], { cwd: root, encoding: 'utf8' });
   const b1Block = restoreB1Routines(currentText);
   validateB1Block(b1Block, root, rev);
-  return `${historicalText.replace(/\n+$/, '')}\n\n${b1Block}`;
+  const merged = `${historicalText.replace(/\n+$/, '')}\n\n${b1Block}`;
+  return carryS3a5Lever(merged, currentText);
 }
 
 // Phase 3a slice S1 added a contiguous block of equates to engine/constants.asm (the projection's
@@ -320,4 +321,102 @@ export function dropS3aRetiredFromOld(text) {
   if (a < 0 || b < a) throw new Error('the retired sw_move_probe pair was not found in the older text');
   const start = text.lastIndexOf('\n; ====', a) + 1;
   return text.slice(0, start) + text.slice(b + endMark.length);
+}
+
+// Phase 3a S3a.5 rewrote the Y half of sw_camera_window_recompute: two repeated-subtract loops (camPy/240 and
+// the desired row's divmod 15) became closed forms off player_y. A pin of "this file equals commit X in every
+// code line" must see past exactly those two regions and nothing else -- the behaviour of the new code is owned
+// by test/unit/streamworldcamera.test.js (an independent statement of the camera rule over a reduced grid, and
+// an exhaustive one-off). stripS3a5FromStreamworld cuts the closed forms out of the current text and
+// dropS3a5RetiredFromOld cuts the loops out of an older one; each region is anchored on a start line and an
+// end line that must each occur exactly once, so a changed shape throws rather than cutting the wrong lines.
+// The one other difference is the trailing comment on the `sta sw_tmp` bit-0 stash, reworded because its
+// "Y divmod" no longer exists; that single comment is normalized away on both sides (the instruction is not).
+const S3A5_STASH = /^(  sta sw_tmp)[ \t]+; stash bit0 across the Y [^\n]*$/gm;
+
+function cutRegion(text, start, end, what) {
+  const a = text.indexOf(start);
+  if (a < 0 || text.indexOf(start, a + 1) >= 0) throw new Error(`S3a.5: the start of ${what} was not found exactly once`);
+  const b = text.indexOf(end, a);
+  if (b < 0 || text.indexOf(end, b + 1) >= 0) throw new Error(`S3a.5: the end of ${what} was not found exactly once`);
+  return text.slice(0, a) + text.slice(b + end.length);
+}
+
+function normalizeS3a5Stash(text) {
+  const hits = text.match(S3A5_STASH) ?? [];
+  if (hits.length !== 1) throw new Error(`S3a.5: the bit-0 stash line was not found exactly once (${hits.length})`);
+  return text.replace(S3A5_STASH, '$1');
+}
+
+export function stripS3a5FromStreamworld(text) {
+  let out = cutRegion(
+    text,
+    '  lda <player_y\n  cmp #112\n  bcs sw_fcw_yo_ge\n',
+    'sw_fcw_yo_done:\n  lda sw_fc_lpy\n  sta <cam_y_lo\n',
+    'the closed-form camScreenRow/camLocalPxY'
+  );
+  out = cutRegion(
+    out,
+    '  lda sw_fc_lpy\n  lsr a\n  lsr a\n  lsr a\n  lsr a\n  sec\n  sbc #7\n',
+    'sw_fcw_blky_clamp:\n',
+    'the closed-form desired window row'
+  );
+  return normalizeS3a5Stash(out);
+}
+
+export function dropS3a5RetiredFromOld(text) {
+  let out = cutRegion(
+    text,
+    '  lda #0\n  sta sw_fc_scr\nsw_fcw_ydiv_loop:\n',
+    'sw_fcw_ydiv_done:\n  lda sw_fc_py_lo\n  sta sw_fc_lpy\n  sta <cam_y_lo\n',
+    'the camPy/240 repeated-subtract loop'
+  );
+  out = cutRegion(
+    out,
+    '  lda sw_fc_scr\n  sta sw_tmp\n  lda #0\n  sta sw_tmp2\n  ldx #4\nsw_fcw_blky_shift:\n',
+    '  lda sw_tmp5                   ; A = screenRow\n  ldx sw_tmp3                   ; X = localRow\n',
+    'the divmod-15 repeated-subtract loop'
+  );
+  return normalizeS3a5Stash(out);
+}
+
+// Every ROM-identity pin built on mergeReconstructEngineFile compares "the current build" with "an older engine
+// plus B1". Phase 3a S3a.5 replaced two repeated-subtract loops in sw_camera_window_recompute with closed forms, in
+// every streamed build, so an older text still carrying the loops can no longer assemble to the same bytes -- and
+// that is not what those pins are about. carryS3a5Lever puts the CURRENT closed forms into the older text in the
+// loops' own place (each region lifted from the current file, never retyped), so the comparison stays "identical in
+// every byte except what the pin names"; the camera rule itself is held by test/unit/streamworldcamera.test.js.
+// An older text that has no such loops throws rather than passing through unchanged.
+function spliceRegion(oldText, oldStart, oldEnd, curText, curStart, curEnd, what) {
+  const a = oldText.indexOf(oldStart);
+  if (a < 0 || oldText.indexOf(oldStart, a + 1) >= 0) throw new Error(`S3a.5: the start of the retired ${what} was not found exactly once`);
+  const b = oldText.indexOf(oldEnd, a);
+  if (b < 0 || oldText.indexOf(oldEnd, b + 1) >= 0) throw new Error(`S3a.5: the end of the retired ${what} was not found exactly once`);
+  const c = curText.indexOf(curStart);
+  if (c < 0 || curText.indexOf(curStart, c + 1) >= 0) throw new Error(`S3a.5: the start of the current ${what} was not found exactly once`);
+  const d = curText.indexOf(curEnd, c);
+  if (d < 0 || curText.indexOf(curEnd, d + 1) >= 0) throw new Error(`S3a.5: the end of the current ${what} was not found exactly once`);
+  return oldText.slice(0, a) + curText.slice(c, d + curEnd.length) + oldText.slice(b + oldEnd.length);
+}
+
+export function carryS3a5Lever(oldText, currentText) {
+  let out = spliceRegion(
+    oldText,
+    '  lda #0\n  sta sw_fc_scr\nsw_fcw_ydiv_loop:\n',
+    'sw_fcw_ydiv_done:\n  lda sw_fc_py_lo\n  sta sw_fc_lpy\n  sta <cam_y_lo\n',
+    currentText,
+    '  lda <player_y\n  cmp #112\n  bcs sw_fcw_yo_ge\n',
+    'sw_fcw_yo_done:\n  lda sw_fc_lpy\n  sta <cam_y_lo\n',
+    'camPy/240 loop and its closed form'
+  );
+  out = spliceRegion(
+    out,
+    '  lda sw_fc_scr\n  sta sw_tmp\n  lda #0\n  sta sw_tmp2\n  ldx #4\nsw_fcw_blky_shift:\n',
+    '  lda sw_tmp5                   ; A = screenRow\n  ldx sw_tmp3                   ; X = localRow\n',
+    currentText,
+    '  lda sw_fc_lpy\n  lsr a\n  lsr a\n  lsr a\n  lsr a\n  sec\n  sbc #7\n',
+    'sw_fcw_blky_clamp:\n',
+    'divmod-15 loop and its closed form'
+  );
+  return out;
 }

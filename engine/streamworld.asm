@@ -2724,12 +2724,27 @@ sw_wedr_c1:
 ; this identical formula as their degenerate case). camPx's own low byte
 ; already IS the local-pixel-within-screen value; camPx's bit 8 already IS
 ; the screenCol's own parity. Y is not power-of-two (screen height 240, not
-; 256), so it needs a real camPy/240 divmod -- a bounded repeated-subtract
-; loop, the same cold-path idiom sw_resolve_screen's own screenRow divmod
-; already uses (never more than sw_grid_h iterations, once a frame).
+; 256), but it needs no divide either: camPy is sw_row*240 + (player_y-112)
+; before the clamp, so camScreenRow and camLocalPxY follow from player_y and
+; sw_row directly (this row, or the row above; row 0 floors at 0,0; the last
+; row's ceiling pins the local pixel at 0), and the desired window row follows
+; from camLocalPxY>>4 the same way. The cost is the same at every row of every
+; grid (S3a.5; the repeated-subtract loops this replaced cost ~45 cycles per
+; world row, every frame). test/unit/streamworldcamera.test.js holds both the
+; values (against an independent statement of the rule) and that flat cost.
 ;
+; In: sw_row, sw_col, sw_grid_w, sw_grid_h, player_x, player_y.
 ; Out: sw_fc_desc/desl/desr/desrl = this call's own desired window origin
-; (screen+local, per axis). Clobbers A, X, Y, sw_tmp..sw_tmp6, sw_fc_*.
+; (screen+local, per axis); also published, cam_dirty-bracketed: cam_x_lo,
+; cam_y_lo, cam_nt, sw_cam_origin_x/y_lo/hi. Left behind for readers of the
+; intermediates: sw_fc_px_lo/hi and sw_fc_py_lo/hi (the CLAMPED camPx/camPy --
+; before S3a.5 the Y pair was destroyed into the /240 remainder), sw_fc_scr
+; (camScreenRow), sw_fc_lpy (camLocalPxY), sw_fc_wy_lo/hi (worldY).
+; Clobbers exactly: A, X, Y (the X half's `tay`), sw_tmp..sw_tmp6 and
+; sw_fc_wy/px/py/scr/lpy/des*; the declared list is not wider than what the code
+; writes. No caller reads sw_tmp* or sw_fc_py_* afterwards: sw_pjg_check and
+; sw_oam_rowbase write the sw_tmp* bytes before reading them, and nothing outside
+; this routine reads sw_fc_py_lo/hi, sw_fc_scr or sw_fc_lpy.
 ; ==========================================================================
 sw_camera_window_recompute:
   ; ---- worldY = sw_row*240 + player_y (sw_tmp/sw_tmp2 = row<<4, staged) ----
@@ -2855,36 +2870,49 @@ sw_fcw_y_clamp_done:
   lda sw_fc_px_hi
   sta sw_cam_origin_x_hi
   and #1
-  sta sw_tmp                    ; stash bit0 across the Y divmod below
+  sta sw_tmp                    ; stash bit0 across the Y half below (its own sw_tmp users)
 
-  ; ---- camScreenRow = camPy/240, camLocalPxY = camPy mod 240 (destructive
-  ; to sw_fc_py_lo/hi) -- sw_cam_origin_y_lo/hi is published FIRST, from the
-  ; still-intact clamped value, before this loop consumes it. ----
+  ; ---- camScreenRow = camPy/240, camLocalPxY = camPy mod 240; sw_cam_origin_y_lo/hi
+  ; is the clamped camPy itself (sw_fc_py_lo/hi stays intact). ----
   lda sw_fc_py_lo
   sta sw_cam_origin_y_lo
   lda sw_fc_py_hi
   sta sw_cam_origin_y_hi
-  lda #0
-  sta sw_fc_scr
-sw_fcw_ydiv_loop:
-  lda sw_fc_py_hi
-  bne sw_fcw_ydiv_sub
-  lda sw_fc_py_lo
-  cmp #240
-  bcc sw_fcw_ydiv_done
-sw_fcw_ydiv_sub:
-  lda sw_fc_py_lo
-  sec
-  sbc #240
-  sta sw_fc_py_lo
-  lda sw_fc_py_hi
-  sbc #0
-  sta sw_fc_py_hi
-  inc sw_fc_scr
-  jmp sw_fcw_ydiv_loop
-sw_fcw_ydiv_done:
-  lda sw_fc_py_lo
+  ; No divide: the clamped camPy is sw_row*240 + (player_y-112), so camScreenRow/camLocalPxY follow from
+  ; player_y directly -- player_y >= 112: this row, player_y-112 down it; player_y < 112: the row above,
+  ; player_y+128 down it (the top row clamps to 0,0). The last row's ceiling pins the local pixel at 0
+  ; (camPy = (gridH-1)*240). Constant cost, any row.
+  lda <player_y
+  cmp #112
+  bcs sw_fcw_yo_ge
+  ldx sw_row
+  beq sw_fcw_yo_top
+  dex
+  stx sw_fc_scr
+  clc
+  adc #128
   sta sw_fc_lpy
+  jmp sw_fcw_yo_done
+sw_fcw_yo_top:
+  lda #0                        ; row 0 floors camPy at 0
+  sta sw_fc_scr
+  sta sw_fc_lpy
+  beq sw_fcw_yo_done
+sw_fcw_yo_ge:
+  sec
+  sbc #112
+  sta sw_fc_lpy
+  lda sw_row
+  sta sw_fc_scr
+  lda sw_grid_h
+  sec
+  sbc #1
+  cmp sw_row
+  bne sw_fcw_yo_done
+  lda #0
+  sta sw_fc_lpy
+sw_fcw_yo_done:
+  lda sw_fc_lpy
   sta <cam_y_lo
 
   lda sw_fc_scr
@@ -2953,69 +2981,34 @@ sw_fcw_blkx_nonneg:
   stx sw_fc_desl
 
   ; ---- desired window Y: camBlockY = camScreenRow*15 + (camLocalPxY>>4);
-  ; desiredBlockY = camBlockY-7, floored at 0; divmod 15 (not power-of-2 --
-  ; bounded repeated-subtract, same cold-path idiom as above); clamp ----
-  lda sw_fc_scr
-  sta sw_tmp
-  lda #0
-  sta sw_tmp2
-  ldx #4
-sw_fcw_blky_shift:
-  asl sw_tmp
-  rol sw_tmp2
-  dex
-  bne sw_fcw_blky_shift
-  lda sw_tmp
-  sec
-  sbc sw_fc_scr
-  sta sw_tmp                    ; scr*16 - scr = scr*15, lo
-  lda sw_tmp2
-  sbc #0
-  sta sw_tmp2                   ; scr*15 hi
+  ; desiredBlockY = camBlockY-7, floored at 0, split into screenRow/localRow by
+  ; 15; clamp. No divide: (camLocalPxY>>4) is 0..14, so the screenRow is
+  ; camScreenRow or the row above (the top row floors at 0,0). ----
   lda sw_fc_lpy
   lsr a
   lsr a
   lsr a
   lsr a
-  clc
-  adc sw_tmp
-  sta sw_tmp3                   ; camBlockY lo
-  lda sw_tmp2
-  adc #0
-  sta sw_tmp4                   ; camBlockY hi
-  lda sw_tmp3
   sec
   sbc #7
-  sta sw_tmp3
-  lda sw_tmp4
-  sbc #0
-  sta sw_tmp4
-  bcs sw_fcw_blky_nonneg
+  bcs sw_fcw_blky_here          ; (lpy>>4) >= 7: this row, local = (lpy>>4)-7
+  ldx sw_fc_scr
+  beq sw_fcw_blky_floor
+  clc
+  adc #15                       ; the row above: local = (lpy>>4)-7+15
+  tax
+  ldy sw_fc_scr
+  dey
+  tya
+  jmp sw_fcw_blky_clamp
+sw_fcw_blky_floor:
   lda #0
-  sta sw_tmp3
-  sta sw_tmp4
-sw_fcw_blky_nonneg:
-  lda #0
-  sta sw_tmp5                   ; screenRow quotient
-sw_fcw_ydivmod15_loop:
-  lda sw_tmp4
-  bne sw_fcw_ydivmod15_sub
-  lda sw_tmp3
-  cmp #15
-  bcc sw_fcw_ydivmod15_done
-sw_fcw_ydivmod15_sub:
-  lda sw_tmp3
-  sec
-  sbc #15
-  sta sw_tmp3
-  lda sw_tmp4
-  sbc #0
-  sta sw_tmp4
-  inc sw_tmp5
-  jmp sw_fcw_ydivmod15_loop
-sw_fcw_ydivmod15_done:
-  lda sw_tmp5                   ; A = screenRow
-  ldx sw_tmp3                   ; X = localRow
+  tax
+  beq sw_fcw_blky_clamp
+sw_fcw_blky_here:
+  tax
+  lda sw_fc_scr
+sw_fcw_blky_clamp:
   jsr sw_clamp_row
   sta sw_fc_desr
   stx sw_fc_desrl
@@ -3342,7 +3335,8 @@ sw_pjg_lt_no:
 ;
 ; In: sw_col/sw_row/player_x/player_y already the landing position (set by
 ; sw_enter_screen and by the caller, respectively, both of which run before
-; this). Clobbers exactly as sw_camera_window_recompute does.
+; this). Clobbers A, X, Y and everything sw_camera_window_recompute does (its
+; header), plus win_col_screen/local and win_row_screen/local, which it writes.
 ; ==========================================================================
 sw_camera_window_install:
   jsr sw_camera_window_recompute

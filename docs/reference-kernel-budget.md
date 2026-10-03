@@ -222,7 +222,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   unconditional under `STREAMING_ENABLED`, none of which falls inside any other named span.
   Re-measured directly (fix round 2: real kernel-hi delta 4601 on UNROM 512 action, 4566 rpg, 4601
   action-mixed; each equals `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES`(64) +
-  `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE`(834) + `STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE`(32,
+  `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE`(834 at that measurement; 1024 since S3a.5) + `STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE`(32,
   action only) + `streamworldUpdatePlayerKernelHiAllowance` (170 action / 167 rpg) +
   `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE`(64) + 3437 exactly, all three shapes), not derived by
   hand from the new code's own line count. The +52 over fix round 1's 3385 is
@@ -241,7 +241,10 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     "straddling probe" section, `docs/reference-engine.md`). Unconditional — not gated on
     `MOVE_ENABLED` or `BATTLE_ENABLED`, since `player_hazard` calls this on every streamed screen
     regardless of either (orchestrator ruling 9). Flat across action/RPG/mixed.
-  - `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 834` — the window/camera-window region
+  - `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 1024` (834 here at slice 4b; 1102 after the landing, guard and fix-round
+    growth recorded at the constant; **1024 since phase 3a S3a.5, 2026-10-02**, when `sw_camera_window_recompute`'s two
+    per-frame repeated-subtract loops became closed forms off `player_y` and the region shrank by 78, on every streamed
+    project) — the window/camera-window region
     (`sw_win_col_inc`/`_dec`, `sw_win_row_inc`/`_dec`, `sw_win_entering_col_right`/`_row_down`,
     `sw_frame_camera_window`, `sw_win_arm`): the per-frame camera-to-PPU publish and the
     current/desired window-block arm decision. Flat across game type and the `mixed` shape —
@@ -367,28 +370,30 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     and roster count, not a universal NPC limit.
 
   **2026-09-28, fix round 2 (item 5) — per-term decomposition**, re-deriving the RPG+dialogue+Move
-  (no Save) row above (1439) directly from `generate.js`, file:line each: RPG base
+  (no Save) row above (1439) directly from `generate.js`, file:line each (**S3a.5, 2026-10-02:** the window term is carried
+  at its current 1024, so every sum derived from it is 78 lower -- 5135, 6611, 1517, +3082, +2819, below -- and the table row
+  above stays the 2026-09-28 record, 1439; no other term here was re-measured since): RPG base
   `STREAMWORLD_KERNEL_HI_ALLOWANCE` 3342 (`:1369`) + `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES` 64
-  (`:1383`) + `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE` 1102 (`:2200`) +
+  (`:1383`) + `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE` 1024 (`:2200`; 1102 until S3a.5) +
   `streamworldUpdatePlayerKernelHiAllowance` (rpg) 167 (`:2248`, `:2252`) +
   `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE` 64 (`:2267`) + `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE` 164
   (`:1563`) + `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE` 108 (`:1784`) +
   `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE` 164 (`:1791`) +
-  `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE` 38 (`:1537`) = **5213**; dialogue
+  `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE` 38 (`:1537`) = **5135** (5213 until S3a.5); dialogue
   `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE` 613 (`:1407`) +
   `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520 (`:1439-1442`, `:1446`) +
   `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222 (`:1475`) = **1355**; Move
   `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`; 20 since phase 3a S3a, which lifts this table row's Move figures by 56) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
   14 (`:2053`) + `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`:2065`) = **121**. Sum
-  5213+1355+121 = 6689; `contentCeilingBytes` = `BANK_SIZE`(8192, `:231`) − 64 − 6689 = **1439**,
-  matching the table row exactly. Save's own four terms (not charged in this row, since Save is not
+  5135+1355+121 = 6611; `contentCeilingBytes` = `BANK_SIZE`(8192, `:231`) − 64 − 6611 = **1517**,
+  which is the table row's 1439 plus the 78 S3a.5 gave back (the row itself is the 2026-09-28 record). Save's own four terms (not charged in this row, since Save is not
   live): `STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE` 6 (`:2082`) +
   `STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE` 52 (`:2097`) +
   `STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE` 12 (`:2109`) +
   `streamworldSaveResyncKernelHiAllowance` (rpg) 45 (`:2137`, `:2141`) = **115** (matches the
   1560→1445 drop between the two `rpg`/`text=on`/`Move=off` rows above: 1560−1445=115 exactly).
-  Against the design's own original 2053+1616+123 split for base/dialogue/Move, the growth is +3160
-  (base) −261 (dialogue) −2 (Move) = **+2897**, entirely inside the resident package's measured
+  Against the design's own original 2053+1616+123 split for base/dialogue/Move, the growth is +3082
+  (base) −261 (dialogue) −2 (Move) = **+2819** (+3160 / +2897 until S3a.5), entirely inside the resident package's measured
   growth since the design estimate (`docs/design-streamed-worlds.md`'s own matching note).
 - **Phase 2 slice 10b — the dialogue overlay relocated (`streamworldDialogueBanked`,
   `main/build/streamplacement.js:584`, the one predicate, re-exported by `generate.js`; it also writes the generated `SW_DLG_BANKED`).**

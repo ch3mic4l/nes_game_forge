@@ -197,7 +197,10 @@ const kind = (b) => (b.guard.fl === FLASH_PENDING ? 'restore' : 'Flash-on');
 // The authored touch Shake/Flash/Sfx npc on the walk's corridor, x=242. y picks the phase of its publications against
 // the row arms; these four (found by sweeping y over the whole screen) each produce an actual deferral of a WANTED row:
 // [y, direction, publication]. Down is the walk into the eight-actor target, up the trip back.
-const AUTHORED = [[225, 'down', 'restore'], [234, 'down', 'Flash-on'], [30, 'up', 'restore'], [21, 'up', 'Flash-on']];
+// Phase 3a S3a.5 made the camera routine constant-cost, which moves every body's phase against the touch, so the two
+// UP rows were re-found by the same sweep (even y over 0..239, node only; each of 46 and 22 is the sole deferral kind
+// there, and checkLaws reports zero violations at both); the two DOWN rows still defer where they did.
+const AUTHORED = [[225, 'down', 'restore'], [234, 'down', 'Flash-on'], [46, 'up', 'restore'], [22, 'up', 'Flash-on']];
 
 for (const [y, dir, state] of AUTHORED) {
   test(`authored Flash touch at (242,${y}), 16 tiles in view: a row wanted ${dir} on the ${state} publication is deferred, and armed on the next eligible body`, { skip }, async () => {

@@ -1,18 +1,18 @@
 {
  "version": 1,
- "what": "The Mesen measurements of streambound-curve.json were taken on the generator in curve.provenance.generator. This record certifies they stand for the generator in finalGenerator: every record that ran Mesen was rebuilt on that tree, with no Mesen, by the sweep's own scene builder, and its project hash and ROM hash equal the recorded ones. A later generator-only change is certified by re-running test/lua/sw_rebuild_check.mjs; a change whose ROMs differ needs a re-sweep.",
+ "what": "The Mesen measurements of streambound-curve.json were taken on the generator in curve.provenance.generator. This record certifies they stand for the generator in finalGenerator: every record that ran Mesen was rebuilt on that tree, with no Mesen, by the sweep's own scene builder, and its project hash and ROM hash equal the recorded ones. A later generator-only change is certified by re-running test/lua/sw_rebuild_check.mjs; a change whose ROMs differ needs a re-sweep. (Re-made 2026-10-03, S3a.5 round 3, on the S3a.5 engine: the record was swept on the generator it is certified for, so recordedGenerator equals finalGenerator; stage P, the probe, is part of it.)",
  "script": "test/lua/sw_rebuild_check.mjs",
- "date": "2026-10-01",
- "recordedGenerator": "c66b2c9b978b9f28c7b5902cb02d44c9552c7cefdb12caff8bc9abc86a88746e",
- "finalGenerator": "d5d313dcf58b4a2249e33f47f74318043fd7aae8726cf03a6f33833764605886",
- "engine": "0f20bc8ef03270b831c99a49735e8ddf1614c8217b712291898d01d5d49b349b",
- "harness": "2f5a6cc54da1b5b8d5cb245649bedbe4e8960d04b2535bd0374b2f95698ed483",
+ "date": "2026-10-03",
+ "recordedGenerator": "433de291feae8781ad37678f9fba7010e272febf29a6ecf057bca23403126355",
+ "finalGenerator": "433de291feae8781ad37678f9fba7010e272febf29a6ecf057bca23403126355",
+ "engine": "5c38e1a6ddd2d38e333c99be3a0bbec1f89c16fdad31811b5464633eab68a5a1",
+ "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
  "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
- "jobs": 11534,
- "reused": 643,
+ "jobs": 12590,
+ "reused": 880,
  "confirms": 2,
- "checked": 10893,
- "matched": 10893,
+ "checked": 11712,
+ "matched": 11712,
  "mismatched": 0,
  "errors": 0,
  "byStage": {
@@ -28,12 +28,16 @@
    "checked": 5312,
    "mismatched": 0
   },
-  "F": {
-   "checked": 39,
-   "mismatched": 0
-  },
   "R": {
    "checked": 500,
+   "mismatched": 0
+  },
+  "F": {
+   "checked": 760,
+   "mismatched": 0
+  },
+  "P": {
+   "checked": 98,
    "mismatched": 0
   }
  }

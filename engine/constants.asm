@@ -1317,10 +1317,10 @@ sw_fc_wy_lo   = $0780   ; worldY lo (sw_row*240+player_y), 16-bit
 sw_fc_wy_hi   = $0781
 sw_fc_px_lo   = $0782   ; camPx lo = clamp(worldX-120, 0, mapPxX-256), 16-bit
 sw_fc_px_hi   = $0783
-sw_fc_py_lo   = $0784   ; camPy, then reused in place as the /240 divmod's own remainder
+sw_fc_py_lo   = $0784   ; camPy = clamp(worldY-112, 0, mapPxY-240), 16-bit; kept intact (nothing reads it after the call)
 sw_fc_py_hi   = $0785
-sw_fc_scr     = $0786   ; camPy/240 divmod quotient == camera's own current screen row
-sw_fc_lpy     = $0787   ; camPy/240 divmod remainder == cam_y_lo's own source value
+sw_fc_scr     = $0786   ; camPy/240 (camScreenRow) == camera's own current screen row
+sw_fc_lpy     = $0787   ; camPy mod 240 (camLocalPxY) == cam_y_lo's own source value
 sw_fc_desc    = $0788   ; this frame's desired window screenCol
 sw_fc_desl    = $0789   ; this frame's desired window localCol
 sw_fc_desr    = $078A   ; this frame's desired window screenRow

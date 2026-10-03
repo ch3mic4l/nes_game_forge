@@ -3226,7 +3226,7 @@ async function measureBankTotals(project, { overrides = null } = {}) {
 
 for (const gameType of ['action', 'rpg']) {
   test(
-    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 2-byte REDUCTION, not equal (lo -476, hi +474; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
+    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 80-byte REDUCTION since S3a.5 (2 before), not equal (lo -476, hi +396, was +474; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async () => {
       const current = await measureBankTotals(createStreamedNoProjectionProject({ gameType }));
@@ -3244,8 +3244,12 @@ for (const gameType of ['action', 'rpg']) {
       // streamed screen (createStreamedNoProjectionProject), so the projection's own 3-byte
       // kernel-lo setup call is absent and the hi delta is B1's 474 exactly.
       assert.equal(loDelta, -501 + 18 + 7, `${gameType}: kernel-lo delta must be Item 4's -501 plus S1's 18-byte OAM_BUSY cost and (a1)'s 7-byte mover parity gate`);
-      assert.equal(hiDelta, 474, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost`);
-      assert.equal(totalDelta, -27 + 18 + 7, `${gameType}: total kernel-lo+hi delta is a net 2-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
+      // Phase 3a S3a.5: this baseline is the flat 2563ef4 engine, which still has sw_camera_window_recompute's two
+      // repeated-subtract loops; the current engine's closed forms are 78 bytes smaller (STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE
+      // 1102 -> 1024), so the kernel-hi delta is B1's 474 less that 78 = 396 and the total moves with it (-2 - 78 = -80).
+      const S3A5_HI_SAVING = 78;
+      assert.equal(hiDelta, 474 - S3A5_HI_SAVING, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost (474) less S3a.5's 78-byte camera-window saving`);
+      assert.equal(totalDelta, -27 + 18 + 7 - S3A5_HI_SAVING, `${gameType}: total kernel-lo+hi delta is a net 80-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
     }
   );
 }

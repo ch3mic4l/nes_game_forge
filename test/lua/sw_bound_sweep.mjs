@@ -2,20 +2,33 @@
 // one Mesen run per job, test/lua/run_sw_manifest.mjs), and aggregates the results into test/fixtures/streambound-curve.json with
 // per-job provenance (test/lua/sw_provenance.mjs).
 //
-//   node test/lua/sw_bound_sweep.mjs plan <stage> [--n=..] [--from=out.jsonl,..] > jobs.jsonl    (stages A B C F R S; `plan <stage> | wc -l` counts)
+//   node test/lua/sw_bound_sweep.mjs plan <stage> [--n=..] [--from=out.jsonl,..] > jobs.jsonl    (stages A B C F R P S; `plan <stage> | wc -l` counts)
 //   node test/lua/sw_bound_sweep.mjs run  <jobs.jsonl> <out.jsonl> [--procs=20]       (resumable: keeps only valid same-provenance records; STOPS at the first candidate-n gate failure; exit 1/3/5)
-//   node test/lua/sw_bound_sweep.mjs runF <jobs.jsonl> <out.jsonl> [--procs=20]       (stage F: in plan order, each curve stops at its first CONFIRMED failing row (re-run once alone, never reused); exit 4 if a curve is exhausted)
+//   node test/lua/sw_bound_sweep.mjs runF <jobs.jsonl> <out.jsonl> [--procs=20]       (stages F and P: in plan order, each curve stops at its first CONFIRMED failing row (re-run once alone, never reused); exit 4 if a curve is exhausted -- expected for F since 2026-10-03, an error for P)
 //   node test/lua/sw_bound_sweep.mjs agg  <out.jsonl>... [--write]                    (prints, or writes the fixture; REFUSES mixed or missing provenance)
 //   node test/lua/sw_bound_sweep.mjs worst <out.jsonl>... [--k=20] [--n=..]           (top jobs by G, as a job list)
 //
-// THE DESIGN (Chris's ruling of 2026-09-30, margin policy): the shipped bound of a curve is the largest passing n, minus one, so a curve
-// needs two facts: (1) EVERYTHING passes at the candidate n (plain 16, bound tiles 15), exhaustively; (2) at least one CONFIRMED failing
-// row at the next n (plain 17, bound tiles 16), found by a failure search and re-run once alone. Every other n is SAMPLED, and the
-// curve's provenance says so. The stages:
+// THE DESIGN (Chris's ruling of 2026-09-30, margin policy; its second fact AMENDED by his ruling of 2026-10-03, S3a.5 round 3): the
+// shipped bound of a curve is the CERTIFIED n minus one, and a curve needs two facts: (1) EVERYTHING passes at the certified n (plain 16,
+// bound tiles 15), exhaustively; (2) a BOUNDED PROBE (stage P) records where the cliff is: ONE fixed worst-known shape at every n from
+// certified+1 up (plain 17.., bound tiles 16..) in order, to PROBE_MAX_N, each curve ending at its first failing row, CONFIRMED by re-running
+// it once alone (exactly as stage F does). The passing rows below the cliff and the confirmed failing row at it are in the record
+// (`probe`), under the SAME provenance as every other job. The cliff must be at least certified+2, or the policy figure is no longer
+// safe and the OLD rule (a confirmed failing row at certified+1 found by the stage F search, exhaustive below it) applies again. Every
+// other n is SAMPLED, and the curve's provenance says so.
+// WHY AMENDED: until 2026-10-03 fact 2 was "a CONFIRMED failing row at the next n (plain 17, bound tiles 16), found by the stage F failure
+// search", and the certified n was the last passing one. The S3a.5 camera lever (sw_camera_window_recompute's O(1) Y half) took about
+// 4,700 cycles out of these scenes, so stage F found nothing to confirm at 17/16 (500 candidates per curve, worst 25,130 / 25,227), the
+// cliff moved to about n=56 plain / n=54 bound tiles, and an exhaustive stage C at the certified n of that cliff is about 219,000 jobs per
+// curve (about 20 hours). Chris kept the shipped bounds at 15 / 14 as POLICY figures (the spare cycles are headroom for S3b's Move ring
+// and S4, which re-sweep anyway) and the probe records the margin above them.
+// The stages:
 //   A  named rows (the review cases) and the dense Flash-y band 186-238 on P6/P8, at the candidate n only
 //   B  the Q1c grid at the candidate n of each curve: P1-P8 x 2 arts x 4 shapes x k{0,4,7,8} x (12 y + Flash-free)
 //   C  full unordered-partition sets at the candidate n of each curve, presets P1/P2/P6/P8, both arts, k = 0, y 225 and 234
-//   F  the failure search at the next n of each curve, likeliest-to-fail first, each curve stopping at its first failing row
+//   F  the failure search at the next n of each curve (500 candidates, likeliest-to-fail first); since 2026-10-03 it finds nothing and is kept as
+//      SAMPLED evidence that nothing fails just above the certified n (its exhaustion, exit 4, is expected); the cliff itself is stage P's
+//   P  the bounded probe: the PROBE_SHAPE at every n from certified+1 to PROBE_MAX_N, per curve, stopping at the first CONFIRMED failing row
 //   R  RPG spot checks at n = 16: P0/P1/P5/P7/P8, both arts, k{0,7}, a sampled set of partitions including the uneven ones
 //   S  the authored stand/say scenarios and the SYNTHETIC forced-Flash stress (not part of the bound; optional)
 //
@@ -98,6 +111,12 @@ const list = (v) => String(v).split(',').map((s) => (Number.isNaN(Number(s)) ? s
 export const CANDIDATE = { plain: 16, bound: 15 };
 export const EVIDENCE_N = { plain: 17, bound: 16 };
 export const CURVES = ['plain', 'bound'];
+// Stage P (the bounded probe, 2026-10-03): the shape the failing rows have always been -- action, wide art, P8, 7 blocked chasers, touch-Flash
+// npc at y 212, Flash x 241 -- with the n tiles split as evenly as eight actors allow, at every n from the first n above the certified one
+// (EVIDENCE_N) up to PROBE_MAX_N (8 actors of 8 tiles = the OAM's 64 sprites; past it nothing is meaningful).
+export const PROBE_MAX_N = 64;
+export const PROBE_SHAPE = Object.freeze({ gt: 'action', wide: true, anim: 'P8', k: 7, y: 212, flashX: 241, tag: 'flashx241', split: 'even (eight actors, the first n % 8 one tile larger)' });
+export const probeSizes = (n) => Array.from({ length: ACTORS }, (_, i) => Math.floor(n / ACTORS) + (i < n % ACTORS ? 1 : 0));
 export const GRID_H = { plain: undefined, bound: 60 }; // 3x61 does not build with BOUND_TILE_ENABLED
 export const PRESETS_B = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8'];
 export const PRESETS_C = ['P1', 'P2', 'P6', 'P8'];
@@ -273,8 +292,16 @@ export function stageF(curve, fromRows = []) {
   return out;
 }
 
+/** Stage P for one curve: the probe shape at n = EVIDENCE_N[curve] .. PROBE_MAX_N, in plan order (ascending n), so `runF` ends the curve at its first confirmed failing row. */
+export function stageP(curve) {
+  const out = [];
+  for (let n = EVIDENCE_N[curve]; n <= PROBE_MAX_N; n++) out.push({ ...mkJob({ stage: 'P', sizes: probeSizes(n), wide: PROBE_SHAPE.wide, anim: PROBE_SHAPE.anim, y: PROBE_SHAPE.y, k: PROBE_SHAPE.k, shape: 'even', bound: curve === 'bound', tag: PROBE_SHAPE.tag, flashX: PROBE_SHAPE.flashX }), curve, order: out.length });
+  return out;
+}
+
 export function plan(stage) {
   if (stage === 'A') return stageA();
+  if (stage === 'P') return CURVES.flatMap(stageP);
   if (stage === 'R') return stageR();
   if (stage === 'S') return stageS();
   if (stage === 'B') return CURVES.flatMap((c) => gridJobs('B', c, CANDIDATE[c], { presets: PRESETS_B, ks: KS_B }));
@@ -649,13 +676,33 @@ export function aggregate(rows) {
 }
 
 export const SAMPLING = [
-  'EXHAUSTIVE (the design of Chris\'s 2026-09-30 ruling): at the candidate n of each curve (plain 16, bound tiles 15), action: presets P1-P8 x both arts x shapes even/front/back/scatter x k {0,4,7,8} x (the 12 Flash y values + Flash-free; k=8 is Flash-free only); and the full unordered-partition set of that n on presets P1/P2/P6/P8 x both arts x k=0 x y 225 and 234.',
-  'EVIDENCE: at the next n of each curve (plain 17, bound tiles 16), at least one failing row found by the stage F search and CONFIRMED by an isolated re-run.',
+  'EXHAUSTIVE (the design of Chris\'s 2026-09-30 ruling, fact 1 unchanged by the 2026-10-03 amendment): at the candidate n of each curve (plain 16, bound tiles 15), action: presets P1-P8 x both arts x shapes even/front/back/scatter x k {0,4,7,8} x (the 12 Flash y values + Flash-free; k=8 is Flash-free only); and the full unordered-partition set of that n on presets P1/P2/P6/P8 x both arts x k=0 x y 225 and 234.',
+  'THE PROBE (Chris\'s 2026-10-03 amendment of the second fact): the certified n is the POLICY figure (plain 16, bound tiles 15) and `probe` records where the cliff is -- ONE shape (action, wide art, P8, k=7, Flash y 212, Flash x 241, even split) at every n from certified+1 up, each curve ending at its first failing row, CONFIRMED by an isolated re-run; the cliff must be at least certified+2. Stage F (500 candidates per curve at certified+1) found no failing row and is kept as sampled evidence only.',
   'NAMED rows at the candidate n: the R3-F1 scenes (turn, control, reset, eight chasers), review 2 (Flash x 241, placement (174,203), sizes [1,3,1,3,1,3,1,3] at k=5), the dense Flash y band 186-238 on P6/P8 wide k=7 even/front, and a placement grid (plain curve only).',
   'SAMPLED, NOT COVERED: every n other than the four above; the partitions of presets P3/P4/P5/P7 and of y values other than 225/234 (those presets and y are covered by the Q1c-grid shapes only); odd k (1,3,5) on a sample (P6/P8 wide, even/front, y 212/216/225); the placement grid on the plain curve only; Flash x other than 241/242; animation durations and frame counts outside P0-P8; RPG beyond the n=16 spot checks (P0/P1/P5/P7/P8 x both arts x k {0,7} x 25 partitions incl. uneven ones, y 234); the bound-tile cell/switch values (one bound tile: row 0, col 0, switch 0, metatile 2).'
 ];
 
 export const buildRecord = (files, opts = {}) => buildRecordFromRows(readOut(files), opts);
+
+/**
+ * The probe section from the stage P records (direct runs and their isolated confirmations): one row per probed n per curve with whether an
+ * isolated re-run CONFIRMED it, and per curve the cliff = the smallest CONFIRMED failing n (null when there is none). `stamp` is the record's provenance stamp.
+ */
+export function probeSection(pRows, stamp) {
+  const confirms = new Map(pRows.filter((r) => r.confirmOf).map((r) => [r.confirmOf, r]));
+  const direct = pRows.filter((r) => !r.confirmOf && !isBad(r)).sort((a, b) => (candidateCurve(a) === candidateCurve(b) ? a.n - b.n : (candidateCurve(a) < candidateCurve(b) ? -1 : 1)));
+  const rows = direct.map((r) => {
+    const c = confirms.get(r.id);
+    const failed = jobFails(r) > 0;
+    return { curve: candidateCurve(r), n: r.n, id: r.id, sizes: r.sizes, maxG: jobMax(r), gateFail: jobFails(r), confirmed: failed && confirmationProblems(r, c).length === 0, confirmMaxG: c && !isBad(c) ? jobMax(c) : null, project: r.prov.project.slice(0, 16), rom: r.prov.rom.slice(0, 16) };
+  });
+  const cliff = Object.fromEntries(CURVES.map((c) => { const f = rows.filter((r) => r.curve === c && r.confirmed).map((r) => r.n); return [c, f.length ? Math.min(...f) : null]; }));
+  return {
+    design: 'Chris\'s 2026-10-03 amendment of the margin policy\'s second fact: the certified n is the policy figure; this probe records where the cliff is. One fixed shape, every n from certified+1 up, per curve in ascending order, each curve ending at its first failing row, which an isolated re-run CONFIRMED. A row beyond the cliff (a wave of runs is in flight when it fails) is a plain measurement, not evidence.',
+    shape: PROBE_SHAPE, maxN: PROBE_MAX_N, from: EVIDENCE_N, jobs: direct.length, confirms: pRows.filter((r) => r.confirmOf && !isBad(r)).length, bad: pRows.filter((r) => !r.confirmOf && isBad(r)).length,
+    cliff, provenance: stamp, rows
+  };
+}
 
 /**
  * The record from validated job records. REFUSES unless the records share one provenance AND that provenance is the source state of the files
@@ -664,7 +711,8 @@ export const buildRecord = (files, opts = {}) => buildRecordFromRows(readOut(fil
 export function buildRecordFromRows(all, opts = {}) {
   const problems = jobProvenanceProblems(all);
   if (problems.length) throw new Error(`REFUSED: the records do not share one provenance:\n  ${problems.slice(0, 12).join('\n  ')}`);
-  const { bad, rows } = aggregate(all);
+  const probeRows = all.filter((r) => r.stage === 'P');
+  const { bad: gridBad, rows } = aggregate(all.filter((r) => r.stage !== 'P'));
   const good = all.filter((r) => !isBad(r) && !r.confirmOf);
   const first = good[0]?.prov;
   if (!first) throw new Error('REFUSED: no measured job');
@@ -676,19 +724,22 @@ export function buildRecordFromRows(all, opts = {}) {
   if (eng.sha256 !== first.engine) throw new Error(`REFUSED: the jobs were measured on engine ${first.engine.slice(0, 12)} but the engine now is ${eng.sha256.slice(0, 12)}`);
   const prov = { engine: first.engine, harness: first.harness, generator: first.generator, mesen: first.mesen };
   const stamp = Object.fromEntries(Object.entries(prov).map(([k, v]) => [k, short(v)]));
+  const probe = probeSection(probeRows, stamp);
+  const bad = gridBad + probe.bad;
   return {
-    version: 3,
-    evidenceFor: 'ONE engine: the fingerprint below (engine/*.asm with comments stripped). A change that moves the cycles of a streamed body invalidates every figure here; re-run test/lua/sw_bound_sweep.mjs (stages A, B, C, F, R, then agg --write) and re-derive shared/streambound.js.',
+    version: 4,
+    evidenceFor: 'ONE engine: the fingerprint below (engine/*.asm with comments stripped). A change that moves the cycles of a streamed body invalidates every figure here; re-run test/lua/sw_bound_sweep.mjs (stages A, B, C, R, F, P, then agg --write) and re-derive shared/streambound.js.',
     engine: eng,
     provenance: prov,
     gate: GATE,
     unit: 'cycles per frame, Mesen full-system (mainline + coincident interrupt)',
-    design: { candidate: CANDIDATE, evidence: EVIDENCE_N, rule: 'ship the largest passing n minus one, separately per curve: everything passes at the candidate n, and a confirmed failing row exists at the next n' },
+    design: { candidate: CANDIDATE, evidence: EVIDENCE_N, rule: 'ship the certified n minus one, separately per curve (the certified n is the policy figure, 16 plain / 15 bound tiles): everything passes at it, exhaustively, and the probe records the cliff, a failing row CONFIRMED by an isolated re-run, at least certified+2 (2026-10-03 amendment; until then: a confirmed failing row at certified+1)' },
     sampling: SAMPLING,
     partitionRule: `unordered partitions of n into at most ${ACTORS} parts of 1..${MAX_PART}; a row is one game type x art x scenario x preset x n x curve x k x touch-Flash y x tag, and its partitions.digest is sha256 of its sorted distinct partition keys`,
     named: Object.fromEntries(Object.entries(NAMED).map(([t, d]) => [t, { anim: d.anim ?? null, wide: d.wide ?? null, y: d.y ?? null, k: d.k ?? null, pos: d.pos ?? null, flashX: d.flashX ?? null, geom: d.geom ?? null, turn: d.turn ?? null }])),
     animPresets: ANIM_PRESETS,
     jobs: all.filter((r) => !r.confirmOf).length, reused: all.filter((r) => r.reuse).length, confirms: all.filter((r) => r.confirmOf).length, bad,
+    probe,
     rows: rows.map((r) => ({ ...r, provenance: { ...stamp, set: r.jobSet } })).map(({ jobSet, ...r }) => r)
   };
 }
@@ -710,7 +761,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   }
   else if (cmd === 'agg') {
     const rec = buildRecord(rest, arg('mesen', null) ? { mesen: arg('mesen') } : {});
-    console.log(rec.jobs, 'jobs', rec.confirms, 'confirm re-runs', rec.bad, 'bad', rec.rows.length, 'rows');
+    console.log(rec.jobs, 'jobs', rec.confirms, 'confirm re-runs', rec.bad, 'bad', rec.rows.length, 'rows; probe cliff', JSON.stringify(rec.probe.cliff), rec.probe.jobs, 'probe jobs');
     if (process.argv.includes('--write')) { fs.writeFileSync(OUT_FIXTURE, JSON.stringify({ ...rec, rows: undefined }, null, 1).replace(/\n\}\s*$/, ',\n "rows": [\n' + rec.rows.map((r) => '  ' + JSON.stringify(r)).join(',\n') + '\n ]\n}\n')); console.log('wrote', OUT_FIXTURE); }
   } else if (cmd === 'table') {
     // the worst row per curve x n x preset x art, from the checked-in fixture

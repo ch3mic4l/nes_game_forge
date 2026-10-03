@@ -412,22 +412,38 @@ the engine did, not what `frame_cnt` was at body start. A Code Forge override of
 rewrites the gate voids the bounds (`docs/reference-code-forge.md`).
 
 The tile bound is the output of the frame gate under the margin policy (Chris, 2026-09-30: **ship one below the
-largest n the sweep certifies**) and there are two figures because switch-bound tiles
+certified n**; the second fact amended by his ruling of 2026-10-03, below) and there are two figures because switch-bound tiles
 (`projectUsesBoundTiles`, `BOUND_TILE_ENABLED`) make every streamed body dearer: **`STREAM_TILE_BOUND` = 15** (certified
-16; tightest passing row 29,695 cycles, 85 under the gate: action, wide art, P8, 7 blocked chasers, Flash y 212, Flash x
-241) and **`STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14** (certified 15; 29,722, 58 under). `streamTileBoundFor(project)`
-(`shared/project.js`) is the single reader, the validateProject warning and `describeStreamTileWarning` use it, and the
-text says so when bound tiles lowered the figure. Both are derived from `test/fixtures/streambound-curve.json`
-(version 3: 11,534 jobs, 643 of them reused measurements, 2 confirmed failing rows -- plain 17 at 31,741 cycles and
-bound-tile 16), which is evidence for **one engine**: `streamtilebound.test.js` fails when `engine/*.asm` no longer matches
-the recorded fingerprint, and the remedy is re-running `test/lua/sw_bound_sweep.mjs` (stages A, B, C, R, then `plan F` /
-`runF`, then `agg --write`), never editing the fingerprint. The records' generator hash (`c66b2c9b…`) is not the final tree's (`d5d313dc…`): `test/lua/sw_rebuild_check.mjs` rebuilt all 10,893 Mesen-run records on the final tree with no Mesen and every project and ROM hash matched (`test/fixtures/streambound-equivalence.json`), so the measurements stand; a later generator-only change is certified the same way, and any change whose ROMs differ needs a re-sweep. The record is **exhaustive at the certified n of each curve and
-holds one confirmed failing row at the next**; everything else (other n, the partitions of P3/P4/P5/P7, odd k, other Flash
-x, durations and frame counts beyond the presets P0-P8, RPG beyond 500 spot checks at n = 16) is *sampled* and said so in the
-record's `sampling` (provenance in `shared/streambound.js`). The mechanism of the failure is unchanged: an
-`entity_animate` +456-cycle aligned advance on the body that also carries the deferred row arm, and an NMI landing in the
-poll tail. Not measured: the SYNTHETIC forced-Flash stress. The sweep's scene builder asserts, after `normalizeProject`,
-that each scene has the animations and projection bounds it meant to (`test/unit/streamscene.test.js`), and
+16, a **policy figure**; tightest passing row 25,012 cycles, 4,768 under the gate: action, wide art, P8, 7 blocked chasers,
+Flash y 212, Flash x 241) and **`STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14** (certified 15; 25,111, 4,669 under).
+`streamTileBoundFor(project)` (`shared/project.js`) is the single reader, the validateProject warning and
+`describeStreamTileWarning` use it, and the text says so when bound tiles lowered the figure. Both are derived from
+`test/fixtures/streambound-curve.json` (version 4: 12,590 jobs, 880 of them reused measurements, 2 confirmation re-runs),
+which is evidence for **one engine**: `streamtilebound.test.js` fails when `engine/*.asm` no longer matches the recorded
+fingerprint, and the remedy is re-running `test/lua/sw_bound_sweep.mjs` (stages A, B, C, R, `plan F` / `runF`, `plan P` /
+`runF`, then `agg --write`), never editing the fingerprint. The sweep file itself is in the harness hash, so editing
+`sw_bound_sweep.mjs` (even its comments) stales the whole record just as an engine edit does, and `shared/` and `main/build/`
+feed the generator hash: `test/lua/sw_rebuild_check.mjs` rebuilt all 11,712 Mesen-run records with no Mesen and every project
+and ROM hash matched (`test/fixtures/streambound-equivalence.json`, recorded generator equal to the final one), and a later
+generator-only change is certified the same way or by `sw_identity_cert.mjs`; any change whose ROMs differ needs a re-sweep.
+**The rule (2026-10-03).** Fact 1 is unchanged: the record is **exhaustive at the certified n of each curve**. Fact 2 used to
+be a confirmed failing row at certified+1; the S3a.5 camera lever (`sw_camera_window_recompute`'s closed-form Y half) took
+about 4,700 cycles out of these scenes, so stage F's 500 candidates per curve at 17 / 16 found nothing (worst 25,130 /
+25,227) and the cliff moved to **n = 56 plain (31,253 cycles) and n = 54 with bound tiles (31,243)**, about 40 tiles above the
+shipped figures, where an exhaustive stage C would be about 219,000 jobs per curve (about 20 hours). Chris ruled the shipped
+figures stay at 15 / 14 as **policy figures** (the spare cycles are headroom for S3b's Move ring and S4, which re-sweep
+anyway), and fact 2 became the record's **`probe`** (stage P): one fixed shape (action, wide art, P8, 7 chasers, Flash y 212,
+Flash x 241, even split) at **every** n from certified+1 up to 64, each curve ending at its first failing row, which an
+isolated re-run CONFIRMED; `streamtilebound.test.js` fails when the probe is missing, its cliff unconfirmed, a passing n
+absent below the cliff, the probe under another provenance, or the cliff at or below certified+1 (then the old rule applies
+again). Everything else (other n, the partitions of P3/P4/P5/P7, odd k, other Flash x, durations and frame counts beyond the
+presets P0-P8, RPG beyond 500 spot checks at n = 16, and above the certified n everything but the probe shape and stage F's
+sample) is *sampled* and said so in the record's `sampling` (provenance in `shared/streambound.js`). The cadence check keeps
+its walk scene at 15 because the bound stays 15; `overrun-p` is the probe shape at the plain cliff (n = 56, Flash x 241) and `overrun-b`
+is the x = 242 variant at the probe's bound cliff population (n = 54), not the probe's own Flash-x-241 row. The mechanism of the failure is unchanged: an `entity_animate` +456-cycle aligned advance on the
+body that also carries the deferred row arm, and an NMI landing in the poll tail. Not measured: the SYNTHETIC forced-Flash
+stress. The sweep's scene builder asserts, after `normalizeProject`, that each scene has the animations and projection bounds
+it meant to (`test/unit/streamscene.test.js`), and
 `streamgate.test.js` pins the gate's own cost deltas.
 
 **Capacity drop recorded with S1 (a1): 21 placed actors with Save, was 24.** The committed Save inventory project needs 8
@@ -498,6 +514,12 @@ order:
   tail-calls `sw_win_arm` — the compare-and-arm decision above that sets `st_active`. Mainline
   only, once a frame, never called from NMI. The clamp is `docs/design-streamed-worlds.md`'s one
   formula per axis: `cameraOrigin = clamp(desiredOrigin, 0, max(mapPixels-viewportPixels, 0))`.
+  **Constant cost, any world row (S3a.5):** the routine (`sw_camera_window_recompute`) has no divide —
+  `camScreenRow`/`camLocalPxY` and the desired window row follow from `player_y` and `sw_row` directly
+  (this row or the row above, row 0 floored, the last row's ceiling pinning the local pixel), about 0.8k cycles
+  at every row of a 255-high grid; the repeated-subtract loops it replaced cost 5.5k at row 58 and 20.3k at row 254
+  (worst `player_y`, measured through `callRoutine`, including its 6-cycle JSR). `test/unit/streamworldcamera.test.js`
+  holds the values against an independent statement of the rule (`test/lib/streamcamera.js`) and the flat cost.
   `sw_win_arm` arms at most one axis per frame (blocked or unchanged axes simply retry next frame;
   the window's own 7-8 block margin absorbs the slack) and only while `st_active==0`, since arming
   while a strip is still draining would overwrite `sbuf`/`st_len`/`st_cur` out from under

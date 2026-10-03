@@ -516,9 +516,9 @@ sw_dlg_acb_done:
 ; sw_cam_origin_x_lo>>4 is its local metatile column (0-15) -- a clean
 ; shift because the nudge floors it to a 16px multiple. screenRow needs a
 ; real divmod: a screen is 240px tall, not a power of two -- the same
-; bounded repeated-subtract idiom sw_camera_window_recompute's own
-; sw_fcw_ydiv_loop already uses (bounded by sw_grid_h, as that routine's
-; own header documents), run here on a local copy in sw_dlg_scr0/scr1 so
+; bounded repeated-subtract idiom sw_resolve_screen's own screenRow divmod
+; (sw_resolve_divloop) uses (at most sw_grid_h iterations), run here on a
+; local copy in sw_dlg_scr0/scr1 so
 ; sw_cam_origin_y_lo/hi itself is left untouched for sw_project_axis's own
 ; next frame.
 ;
