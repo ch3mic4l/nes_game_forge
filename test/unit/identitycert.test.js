@@ -19,7 +19,7 @@ const OLD = { engine: sha('old engine'), harness: sha('harness'), generator: sha
 const CURRENT = { ...OLD, engine: sha('new engine'), generator: sha('new generator') };
 
 /** A made-up sweep: `direct` Mesen-run records (the last `confirms` are confirmation re-runs), `reuses` reuse records; every one carries the key a faithful rebuild reproduces. */
-function mock({ direct = 6, reuses = 2, confirms = 1 } = {}) {
+function mock({ direct = 7, reuses = 2, confirms = 1 } = {}) {
   const luaOf = (id) => sha(`lua ${id}`);
   const base = (id, stage) => {
     const prov = { ...OLD, project: sha(`project ${id}`), rom: sha(`rom ${id}`) };
@@ -72,11 +72,11 @@ const currentOf = (m) => ({ ...OLD });
 test('a faithful rebuild of every direct record certifies; the 3 reuse records resolve and are not counted as rebuilds', async () => {
   const m = mock(); const ws = workset(m);
   assert.deepEqual(ws.problems, []);
-  assert.equal(ws.direct.length, 6); assert.equal(ws.reuses.length, 2);
+  assert.equal(ws.direct.length, 7); assert.equal(ws.reuses.length, 2);
   const { pool, verdict } = await run(ws.direct, 'ok', { current: currentOf(m) });
   assert.equal(verdict.exit, 0, verdict.why.join('; '));
-  assert.equal(pool.result.expected, 6); assert.equal(pool.result.answered, 6); assert.equal(pool.result.matched, 6);
-  assert.equal(pool.luaOf.size, 6, 'one rendered-script digest per rebuilt direct record, none for a reuse');
+  assert.equal(pool.result.expected, 7); assert.equal(pool.result.answered, 7); assert.equal(pool.result.matched, 7);
+  assert.equal(pool.luaOf.size, 7, 'one rendered-script digest per rebuilt direct record, none for a reuse');
 });
 
 test('options: --workers/--limit/--shard must be exact positive integers; workers are capped at 12; limit and shard exclude each other', () => {
@@ -104,7 +104,7 @@ test('PARTIAL COVERAGE is never success: a subset is exit 3 when it says so and 
   const m = mock(); const ws = workset(m);
   const subset = ws.direct.slice(0, 3);
   const claimsComplete = await run(subset, 'ok', { current: currentOf(m), directCount: ws.direct.length, partial: false });
-  assert.equal(claimsComplete.verdict.exit, 1); assert.match(claimsComplete.verdict.why.join(';'), /not every one of 6/);
+  assert.equal(claimsComplete.verdict.exit, 1); assert.match(claimsComplete.verdict.why.join(';'), /not every one of 7/);
   const declared = await run(subset, 'ok', { current: currentOf(m), directCount: ws.direct.length, partial: true });
   assert.equal(declared.verdict.exit, 3, 'a clean declared partial run');
   assert.notEqual(declared.verdict.exit, 0);
@@ -290,4 +290,10 @@ test('curveEvidenceVerdict: exact only when BOTH recorded fingerprints are the l
   // a curve whose own two engine fields disagree is not an exact match for either
   const split = { ...curve, engine: { sha256: sha('another engine') } };
   assert.equal(curveEvidenceVerdict({ curve: split, live: { engine: OLD.engine, generator: OLD.generator }, verdicts: none }).ok, false);
+});
+
+test('the probe stage P (S3a.5) is a stage the certifier requires: a record set without it is refused, and the stage list is the sweep\'s own', () => {
+  assert.deepEqual(STAGES, ['A', 'B', 'C', 'F', 'R', 'P']);
+  const m = mock(); m.rows = m.rows.filter((r) => r.stage !== 'P');
+  assert.match(workset(m, { curve: null }).problems.join(';'), /stage P has no records/);
 });

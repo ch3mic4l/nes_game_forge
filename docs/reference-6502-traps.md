@@ -71,3 +71,12 @@ Each of these cost real debugging time and now has a regression test. They are e
   resolving too high, and a `<` in an addressing mode with no zero-page form) over the shared
   equate resolver and per-mnemonic mode table in `test/lib/equates.js`. See
   `docs/design-kernel-diet.md` for the full sweep and the ledger it re-measured.
+
+**Phase 3a slice S3b (2026-10-04) hit no new trap, so this list gains no entry.** It applied two of the above
+and met one hazard of the same family, each with a test (`test/unit/streamedtalker.test.js`): a sentinel
+stored by a routine whose branch left a stale accumulator (`sw_talker_cross` loads `NO_ENTITY` explicitly
+before the `cpx`; the T5 decoy-record case fails on a leftover), a routine whose caller branches on `Z`
+(`sw_talker_reset` ends in `lda #0`, so `settle_owed`'s `beq` is taken), and the early-exit path that skips a
+write its caller assumed (`script_op_move` stores `mv_left`/`mv_ent` before its talker guard, so Rule R's
+`sw_rr_move` zeroes `mv_left` and writes `mv_ent = NO_ENTITY` itself, or `ui_tick`'s move guard would index
+`ent_*` at `$FF`; the T8 watch fails on any store through an `ent_*` array at an index >= `MAX_ENTITIES`).

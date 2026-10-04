@@ -251,13 +251,38 @@ body (`BODY_L`=2, `BODY_R`=13, `BODY_T`=8, `BODY_B`=15), so a vertical Move at x
 the right neighbour's solid column 0 (x=242 completes), the walk's own rule; the retired private
 probe had probed one corner. EITHER probe coordinate can leave the current screen regardless of
 which axis is moving, and the driver normalizes both before each probe (`screenCol+1` on an X
-carry, `screenRow+1` for a Y at or past 240, both for a corner). The true player position itself
-never crosses: `sw_step_nocross` (`engine/constants.asm`, `$077F`, charged as a 5-byte guard in
-each `sw_pstep_*`'s crossing branch, `.if MOVE_ENABLED`) is raised by `move_tick` around its one call
-and makes the driver refuse any crossing before it commits anything -- the shipped ownership stop,
-reproduced; slice S3b deletes the flag and enables crossings. Ownership does not change mid-Move
-(a Warp is still required to change screen). The pin for all of this is
-`test/unit/streamedmovestep.test.js` (T3-T6) and `streamedmovecamera.test.js` (T1/T1v). `script_op_move` (`engine/script.asm`) captures
+carry, `screenRow+1` for a Y at or past 240, both for a corner). **A scripted Move now crosses a seam (phase 3a S3b, 2026-10-04).**
+Through S3a the true player position never crossed: `sw_step_nocross` (`$077F`, a 5-byte guard in each
+`sw_pstep_*`'s crossing branch) made the driver refuse any crossing, reproducing the shipped ownership stop.
+S3b deleted the flag, its four guards and `move_tick`'s raise and drop (`test/unit/rammap.test.js` pins that
+the symbol is gone and `$077F` unallocated); a step that crosses commits exactly as a walking one does, and a
+Warp is no longer the only way to change screen mid-event. What a crossing costs the *event* is the talker
+bookkeeping below. The pin is `test/unit/streamedmovestep.test.js` (T3-T6), `streamedmovecamera.test.js`
+(T1/T1v) and `streamedcross.test.js` (the crossing itself).
+
+**The talker across a seam (S3b; `TALKER_ENABLED` = a streamed map AND a Move anywhere in the project,
+`projectUsesTalker` in `main/build/streamplacement.js`; an NPC-only Move pays the same).** A crossing respawns the
+screen's actors, so the slot `talk_ent` named is no longer the talker's. Four absolute RAM bytes at
+`$07F2-$07F5` (`engine/constants.asm`, not saved: `SAVE_LAYOUT_VERSION` stays 3, pinned by `streamedtalker.test.js`
+T9) hold the identity by what survives a respawn: `talk_rec` (the talker's `ent_record`, `NO_ENTITY` = none),
+`talk_scr` (its `flat_screen`), `talk_crossed` (nonzero once a crossing happened during this event: **Rule R's one
+key**) and `owed_enter_rec` (the destination actor whose enter event the final crossing armed). The routines are one
+kernel-hi span, `sw_talker_capture`..`sw_talker_end` (`engine/streamworld.asm`): `sw_talker_capture` (from
+`start_dialog`), `sw_talker_rebind` (re-derives `talk_ent` from the identity), `sw_talker_cross` (the end of each
+`sw_pstep_*` crossing, only while a script runs), `sw_battle_resume` (`battle_end`'s `script_active` branch: rebind,
+then re-arm the owed entry through `arm_event`, the shipped claim rule) and `sw_talker_reset`, which ends the
+identity from `close_ui`, `init_session`, `take_door` (after a valid target) and `settle_owed`'s inactive-slot
+discard (it leaves Z set; `settle_owed` branches on it). **Rule R** (`sw_rr_move`/`_turn`/`_visible`, entered
+from `script_op_move`/`_turn`/`_visible` where the talker is not live): after a crossing the self-command is a no-op
+that continues the page; before one, the shipped defence stands and the event ends. `sw_rr_move` first zeroes
+`mv_left` and writes `mv_ent = NO_ENTITY`, because `script_op_move` had already stored them and `ui_tick`'s move guard
+would index `ent_*` at `$FF`. Pins: `streamedtalker.test.js` (T5 owed entry, T6 talker matrix with the T8 watch that
+no store reaches an `ent_*` array at an index >= `MAX_ENTITIES`, T9 reset paths), `talkeraudit.test.js` (the complete
+set of `talk_ent` readers and writers by file, label and direction), `talkerflag.test.js` (`TALKER_ENABLED` per
+shape), `talkerbattle.test.js` (the case list and judge of the Mesen L5 runner `test/lua/sw_talker_battle.mjs`, no Mesen: 24
+talker + scripted-Battle cases, **24/24 completed on the final tree**, 2026-10-04). Measured cost: `docs/reference-kernel-budget.md`.
+The Map Forge's "a Move moves the player to the edge and cannot cross" warning is deleted with the stop
+(`test/unit/streamedwarning.test.js` pins that nothing replaced it). `script_op_move` (`engine/script.asm`) captures
 `talk_ent` into `mv_ent` once, at Move start; `move_get_*`/`move_set_*`/`move_speed`'s NPC
 branch/`move_animate`'s NPC branch read `mv_ent` from then on, never live `talk_ent` again, so a
 self-Move keeps its own mover even were `talk_ent` reassigned mid-flight (unreachable in
@@ -418,7 +443,9 @@ certified n**; the second fact amended by his ruling of 2026-10-03, below) and t
 Flash y 212, Flash x 241) and **`STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14** (certified 15; 25,111, 4,669 under).
 `streamTileBoundFor(project)` (`shared/project.js`) is the single reader, the validateProject warning and
 `describeStreamTileWarning` use it, and the text says so when bound tiles lowered the figure. Both are derived from
-`test/fixtures/streambound-curve.json` (version 4: 12,590 jobs, 880 of them reused measurements, 2 confirmation re-runs),
+`test/fixtures/streambound-curve.json` (version 4: 12,590 jobs, 880 of them reused measurements, 2 confirmation re-runs;
+**re-swept on the S3b engine 2026-10-04** -- stamp engine `aaa235270e07`, generator `e4cd0e975976` -- and every `maxG`, `gateFail`
+and probe row came out identical to the S3a.5 record, so no figure here moved: see "The S3b re-sweep" below),
 which is evidence for **one engine**: `streamtilebound.test.js` fails when `engine/*.asm` no longer matches the recorded
 fingerprint, and the remedy is re-running `test/lua/sw_bound_sweep.mjs` (stages A, B, C, R, `plan F` / `runF`, `plan P` /
 `runF`, then `agg --write`), never editing the fingerprint. The sweep file itself is in the harness hash, so editing
@@ -432,7 +459,7 @@ about 4,700 cycles out of these scenes, so stage F's 500 candidates per curve at
 25,227) and the cliff moved to **n = 56 plain (31,253 cycles) and n = 54 with bound tiles (31,243)**, about 40 tiles above the
 shipped figures, where an exhaustive stage C would be about 219,000 jobs per curve (about 20 hours). Chris ruled the shipped
 figures stay at 15 / 14 as **policy figures** (the spare cycles are headroom for S3b's Move ring and S4, which re-sweep
-anyway), and fact 2 became the record's **`probe`** (stage P): one fixed shape (action, wide art, P8, 7 chasers, Flash y 212,
+anyway; S3b has been re-swept and did not use them: below), and fact 2 became the record's **`probe`** (stage P): one fixed shape (action, wide art, P8, 7 chasers, Flash y 212,
 Flash x 241, even split) at **every** n from certified+1 up to 64, each curve ending at its first failing row, which an
 isolated re-run CONFIRMED; `streamtilebound.test.js` fails when the probe is missing, its cliff unconfirmed, a passing n
 absent below the cliff, the probe under another provenance, or the cliff at or below certified+1 (then the old rule applies
@@ -445,6 +472,24 @@ body that also carries the deferred row arm, and an NMI landing in the poll tail
 stress. The sweep's scene builder asserts, after `normalizeProject`, that each scene has the animations and projection bounds
 it meant to (`test/unit/streamscene.test.js`), and
 `streamgate.test.js` pins the gate's own cost deltas.
+
+**The S3b re-sweep (RS, 2026-10-04): the same record on the S3b engine.** S3b changed `engine/*.asm` and `main/build/` (the talker
+bookkeeping, the deleted guards), so the S3a.5 record's engine and generator fingerprints no longer matched the tree and `sw_bound_sweep.mjs` was run again
+end to end on it (stages A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes, 89 min 42 s). Stage F exhausted
+(exit 4) on both curves as before. `agg --write` changed the per-row provenance stamp and **seven tied worst-scene witnesses** (rows 835, 837, 887, 1101, 1489, 1901 and
+1902, all at equal G); `version`, `jobs` 12,590, `reused` 880, `confirms` 2, `bad` 0, all 1,932 rows' `maxG`/`gateFail`/`confirmed` and the whole probe are **identical** to the S3a.5
+record, so no timing figure or bound changed -- tightest passing row at the certified n 25,012 (plain n = 16) / 25,111 (bound tiles n = 15), margins 4,768 / 4,669,
+probe cliff n = 56 (31,253 cycles) plain / n = 54 (31,243) with bound tiles, each CONFIRMED by an isolated re-run -- so
+`shared/streambound.js` did not change (bounds 15 / 14, certified 16 / 15). That is the expected result: the sweep's scenes
+have no Move, every S3b addition is gated on `TALKER_ENABLED` (a streamed map and a Move), and the probe rows' project and
+ROM hashes are unchanged -- the sweep's ROMs are byte-for-byte the S3a.5 ones (`test/fixtures/identity/S3b.json`, pinned
+by `identitymatrix.test.js`). The rebuild check (`sw_rebuild_check.mjs`) rebuilt 11,712 of 11,712 Mesen-run records with
+no Mesen and every project and ROM hash matched (880 reuse records covered by their sources), and
+`test/fixtures/streambound-equivalence.json` was re-made from it; the ROM-identity certificate over the same records is
+**`test/fixtures/identity-cert/s3b-rs.json`** (11,712/11,712 matched, 0 mismatched, 0 errored, 880 reuses resolved; its
+`scope` string is the certifier's fixed text and still says "S3a engine" -- the `provenance` stamps inside it are the
+S3b engine's). `run_sw_cadence.mjs` passes 3/3 on the re-swept tree. What S3b's own scenes cost (the long Move, the
+crossing bodies, the composed seams) is a different gate row, M11: `docs/design-streamed-worlds-phase3a.md`, "S3b: measured outcomes".
 
 **Capacity drop recorded with S1 (a1): 21 placed actors with Save, was 24.** The committed Save inventory project needs 8
 kernel-lo lookup bytes per placed actor; S1's `OAM_BUSY` (+18) and projection setup (+3) and (a1)'s gate (+7) took the

@@ -786,8 +786,8 @@ move_tick_step:
 ; the clipped one, a distance of 1 on a two-pixel tick moves 1 px, and mv_left cannot underflow.
 ; "Blocked" is whether the driver granted the step: it answers a commit with `inc <moving`, which
 ; is cleared first (update_player re-clears it every frame, so a stale value cannot leak out).
-; sw_step_nocross makes a step that would cross into the next screen refuse exactly as a missing
-; grid neighbour does -- the ownership stop the shipped Move had; S3b deletes it.
+; A step that crosses into the next screen commits exactly as a walking step does (S3b: the ownership
+; stop the shipped Move had is gone; sw_pstep_* ends a crossing with sw_talker_cross).
   .if STREAMING_ENABLED
 move_tick_streamed:
   lda <mv_who
@@ -798,7 +798,6 @@ move_tick_streamed:
   sta <cur_speed
   lda #0
   sta <moving
-  inc sw_step_nocross
   lda <mv_dir
   cmp #DIR_LEFT
   bcs move_tick_s_horizontal
@@ -817,7 +816,6 @@ move_tick_s_horizontal:
 move_tick_s_left:
   jsr sw_pstep_left
 move_tick_s_done:
-  dec sw_step_nocross
   lda <moving
   beq move_wall              ; the driver refused the step: blocked, exactly as shipped
   jsr sw_frame_camera_window

@@ -101,7 +101,13 @@ import {
   STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
   STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
-  STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
+  TALKER_KERNEL_LO_ALLOWANCE_START_DIALOG,
+  TALKER_KERNEL_LO_ALLOWANCE_CLOSE,
+  TALKER_KERNEL_LO_ALLOWANCE_SCRIPT,
+  TALKER_KERNEL_LO_ALLOWANCE_SETTLE,
+  TALKER_RESET_KERNEL_LO_ALLOWANCE_INIT_SESSION,
+  TALKER_RESET_KERNEL_LO_ALLOWANCE_TAKE_DOOR,
+  TALKER_BATTLE_KERNEL_LO_ALLOWANCE,
   STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
   streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance,
@@ -183,6 +189,7 @@ import {
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
+import { TALKER_KERNEL_HI_ALLOWANCE, TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE } from '../../main/build/streamplacement.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { buildPinching } from '../lib/streamedpinching.js';
 
@@ -5356,7 +5363,7 @@ test(
       // streaming -- absent from baseline regardless (baseline never assembles streamworld.asm at
       // all), so it inflates this raw delta only on a shape whose own default project happens to
       // use text (RPG, unconditionally) rather than being a further confound the delta already
-      // cancels the way STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE's own text.inc growth is cancelled.
+      // cancels the way the talker kernel-hi terms' own text.inc growth is cancelled.
       // B1 (phase 2 slice 9 fix round 1b, Chris's relocation ruling) added a
       // SIXTH, unconditional-under-streaming block: the four routines moved
       // (spawn_streamed, build_oam_draw_sw, draw_one_entity_show_sw) or
@@ -5488,7 +5495,13 @@ test(
       const projTerm =
         (projectUsesStreamedActors(streamedWithMove) ? PROJ_SETUP_KERNEL_LO_ALLOWANCE : 0) -
         (projectUsesStreamedActors(streamedNoMove) ? PROJ_SETUP_KERNEL_LO_ALLOWANCE : 0);
-      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + dlgTerm + oamTerm + closeformoveTerm + projTerm;
+      // Phase 3a S3b: a live Move on a streamed map also switches the talker bookkeeping on (TALKER_ENABLED), whose six kernel-lo call
+      // sites (and, on an RPG, battle_end's) are on the with-Move side only. Each term is measured site by site by the test below.
+      const talkerTerm =
+        TALKER_KERNEL_LO_ALLOWANCE_START_DIALOG + TALKER_KERNEL_LO_ALLOWANCE_CLOSE + TALKER_KERNEL_LO_ALLOWANCE_SCRIPT +
+        TALKER_KERNEL_LO_ALLOWANCE_SETTLE + TALKER_RESET_KERNEL_LO_ALLOWANCE_INIT_SESSION + TALKER_RESET_KERNEL_LO_ALLOWANCE_TAKE_DOOR +
+        (gameType === 'rpg' ? TALKER_BATTLE_KERNEL_LO_ALLOWANCE : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + talkerTerm + dlgTerm + oamTerm + closeformoveTerm + projTerm;
       // fix round 1, finding 7/verification: printed on every run, pass or
       // fail -- an independent, per-shape figure a report can quote.
       console.log(
@@ -5508,46 +5521,14 @@ test(
   }
 );
 
-// Phase 2 slice 3 fix round 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE
-// is the kernel-hi charge for sw_move_probe/sw_move_probe_solid
-// (engine/streamworld.asm), gated identically to the kernel-lo term above.
-//
-// A naive streamed-with-Move-minus-streamed-without-Move single delta is
-// NOT this term in isolation: placing any live event on a screen at all --
-// regardless of which command it carries -- turns projectUsesText on
-// (shared/font.js: "only an event that survives to the ROM counts"), which
-// grows the compiled event/text tables text.inc emits into this same
-// kernel-hi bank by an amount that depends on the compiled command's own
-// wire length (main/build/textcompile.js's 'move' case emits 4 bytes,
-// [op, who, dir, dist]) -- entirely unrelated to sw_move_probe. Measured
-// directly (a single build's own symbolAddr('sw_read_transaction') -
-// symbolAddr('sw_move_probe_solid'), the exact span the `.if MOVE_ENABLED`
-// bracket in streamworld.asm opens) this term is 80; the naive single delta
-// reads 89 -- the missing 9 bytes are that same "any event exists" text.inc
-// growth, confirmed by comparing a Move-carrying event against a same-shaped
-// Wait-carrying one (delta 82, not 80: Wait's own 2-byte wire form still
-// costs 2 fewer text.inc bytes than Move's 4-byte form, the remaining gap).
-// The double-difference below is what actually cancels it: subtracting the
-// IDENTICAL confound measured on the ordinary-map pair (a live Move event on
-// a non-streamed map assembles no streamworld.asm content at all, so its own
-// kernel-hi delta is pure text.inc growth, unrelated to streaming) leaves
-// only the streaming-gated remainder -- 89 - 9 = 80, matching the direct
-// span measurement exactly. This is the identical technique the kernel-lo
-// term above already uses, and for the identical reason.
-//
-// Phase 2 slice 7a added a second, INDEPENDENT confound the double-difference
-// below does NOT cancel: STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE is
-// gated on `hasStreamed && projectUsesText`, and streamedWithMove's own live
-// Move event trips projectUsesText the identical "any event exists" way the
-// text.inc confound above already does -- but unlike text.inc, this term
-// assembles NOTHING on the ordinary side regardless (streamworld.asm never
-// assembles off a non-streamed project), so ordinaryDelta carries none of it
-// to subtract out. Whenever streamedWithMove and streamedNoMove disagree on
-// projectUsesText (true only when the game type does not already force text
-// on by itself, e.g. plain action, non-mixed, no default title), that
-// disagreement is a real, separate addend to the expected supplement.
+// Phase 3a S3b: the streamed Move's own kernel-hi term (STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE: 76 for ruling 7's probe pair, 20 after S3a for the
+// four sw_step_nocross guards) is deleted with the ownership stop, and the talker bookkeeping (TALKER_KERNEL_HI_ALLOWANCE, the span
+// sw_talker_capture..sw_talker_end, plus TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE, the four `jsr sw_talker_cross` ending sw_pstep_<dir>)
+// is the whole kernel-hi cost of a live Move on a streamed map. The same double difference as before isolates it: streamed-with-Move minus
+// streamed-without-Move, minus the ordinary pair's own delta (the text.inc growth of the Move event's compiled bytes), minus the three
+// independent confounds that only ever assemble on the streamed side (dialogue mapper, close-for-move, entity projection).
 test(
-  'phase 2 slice 3 fix 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE equals the real kernel-hi cost of the code of the streamed Move (before phase 3a S3a: the sw_move_probe/sw_move_probe_solid pair, deleted there; since: the four sw_step_nocross guards), on UNROM 512, both game types and the mixed shape',
+  'phase 3a S3b: TALKER_KERNEL_HI_ALLOWANCE + TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE equal the real kernel-hi cost of a live Move on a streamed map (it was STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE until S3b deleted the ownership stop), on UNROM 512, both game types and the mixed shape',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const mapper = resolveMapper(30);
@@ -5599,9 +5580,9 @@ test(
       const projTerm =
         (projectUsesStreamedActors(streamedWithMove) ? STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE - STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE : 0) -
         (projectUsesStreamedActors(streamedNoMove) ? STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE - STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE : 0);
-      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm + closeformoveTerm + projTerm;
+      const expectedSupplement = TALKER_KERNEL_HI_ALLOWANCE + TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE + dlgTerm + closeformoveTerm + projTerm;
       console.log(
-        `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE supplement ${supplement} ` +
+        `${mapper.name} (${label}): talker kernel-hi supplement ${supplement} ` +
           `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta} -- the text.inc confound, ` +
           `dialogue-mapper term ${dlgTerm}, close-for-move term ${closeformoveTerm}, projection term ${projTerm}, expected ${expectedSupplement})`
       );
@@ -5610,10 +5591,92 @@ test(
         expectedSupplement,
         `${mapper.name} (${label}): a live Move on a streamed map costs ${supplement} bytes of kernel-hi code ` +
           `beyond an ordinary map's own Move cost (streamed delta ${streamedDelta} - ordinary delta ${ordinaryDelta}), ` +
-          `but STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE} -- re-measure ` +
+          `but the talker terms reserve ${TALKER_KERNEL_HI_ALLOWANCE + TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE} -- re-measure ` +
           'and correct it.'
       );
     }
+  }
+);
+
+// Phase 3a S3b: every talker term is held to nesasm's real bytes, SITE BY SITE -- not only through the supplement sums above, which could be
+// satisfied by two offsetting errors. The kernel-hi span is a label pair (sw_talker_capture..sw_talker_end); the four `jsr sw_talker_cross`
+// and each kernel-lo call site are measured by removing exactly their own lines from a Code Forge override of the engine file and taking
+// the shift of the end of that bank's code (music_tick_loop for kernel-lo, sw_redraw_screen_landing_end for the kernel-hi calls). The
+// replacement text for each site is the stock engine's own text without those lines, so a figure that drifts from the code fails here.
+const TALKER_SITES = [
+  { name: 'start_dialog', allowance: () => TALKER_KERNEL_LO_ALLOWANCE_START_DIALOG, file: 'ui.asm', find: '  .if TALKER_ENABLED\n  jsr sw_talker_capture\n  .endif\n', repl: '' },
+  { name: 'close_ui', allowance: () => TALKER_KERNEL_LO_ALLOWANCE_CLOSE, file: 'ui.asm', find: '  .if TALKER_ENABLED\n  jsr sw_talker_reset\n  .endif\n  lda #NO_ENTITY\n  sta <talk_ent\n', repl: '  lda #NO_ENTITY\n  sta <talk_ent\n' },
+  { name: 'init_session', allowance: () => TALKER_RESET_KERNEL_LO_ALLOWANCE_INIT_SESSION, file: 'combat.asm', find: '  .if TALKER_ENABLED\n  jsr sw_talker_reset\n  lda #0\n  .endif\n', repl: '' },
+  { name: 'take_door', allowance: () => TALKER_RESET_KERNEL_LO_ALLOWANCE_TAKE_DOOR, file: 'boot.asm', find: '  .if TALKER_ENABLED\n  jsr sw_talker_reset\n  .endif\n  jmp redraw_screen\ntake_door_done:', repl: '  jmp redraw_screen\ntake_door_done:' },
+  {
+    name: 'settle_owed', allowance: () => TALKER_KERNEL_LO_ALLOWANCE_SETTLE, file: 'boot.asm',
+    find: '  .if TALKER_ENABLED\n  bne settle_owed_live\n  jsr sw_talker_reset       ; the owed actor is gone: nothing may re-arm it later\n  beq settle_owed_none      ; sw_talker_reset leaves Z set\nsettle_owed_live:\n  .endif\n  .if !TALKER_ENABLED\n  beq settle_owed_none\n  .endif\n',
+    repl: '  beq settle_owed_none\n'
+  },
+  { name: 'battle_end (RPG only)', allowance: () => TALKER_BATTLE_KERNEL_LO_ALLOWANCE, file: 'rpg.asm', find: '  .if TALKER_ENABLED\n  jsr sw_battle_resume\n  .endif\n', repl: '', rpgOnly: true }
+];
+
+async function builtWithOverride(project, file, find, repl) {
+  const stock = await fsp.readFile(path.join(ROOT, 'engine', file), 'utf8');
+  assert.equal(stock.split(find).length, 2, `${file}: the site's text is in the stock engine exactly once`);
+  const variant = structuredClone(project);
+  variant.code = variant.code ?? { overrides: [], files: [] };
+  variant.code.overrides = [{ name: file, text: stock.replace(find, repl) }];
+  return variant;
+}
+
+async function symbolsOf(project) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-talkersite-'));
+  try {
+    const built = await buildProject({ dir, project, log: () => {} });
+    return await fsp.readFile(built.symbolPath, 'utf8');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+}
+
+test(
+  'phase 3a S3b: every talker term equals the real bytes of its own site -- the kernel-hi span, the four crossing calls, and each kernel-lo call site',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType, moveCommands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] });
+      const stockSyms = await symbolsOf(project);
+      const span = symbolAddr(stockSyms, 'sw_talker_end') - symbolAddr(stockSyms, 'sw_talker_capture');
+      assert.equal(span, TALKER_KERNEL_HI_ALLOWANCE, `${gameType}: sw_talker_capture..sw_talker_end is ${span}, TALKER_KERNEL_HI_ALLOWANCE reserves ${TALKER_KERNEL_HI_ALLOWANCE}`);
+      const call = '  .if TALKER_ENABLED\n  jsr sw_talker_cross\n  .endif\n';
+      const stock = await fsp.readFile(path.join(ROOT, 'engine', 'streamworld.asm'), 'utf8');
+      assert.equal(stock.split(call).length - 1, 4, 'four crossing calls');
+      const noCalls = structuredClone(project);
+      noCalls.code = noCalls.code ?? { overrides: [], files: [] };
+      noCalls.code.overrides = [{ name: 'streamworld.asm', text: stock.split(call).join('') }];
+      const noCallSyms = await symbolsOf(noCalls);
+      const callBytes = symbolAddr(stockSyms, 'sw_talker_end') - symbolAddr(noCallSyms, 'sw_talker_end');
+      assert.equal(callBytes, TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE, `${gameType}: the four jsr sw_talker_cross cost ${callBytes}, TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE reserves ${TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE}`);
+      for (const site of TALKER_SITES) {
+        const without = await symbolsOf(await builtWithOverride(project, site.file, site.find, site.repl));
+        const bytes = symbolAddr(stockSyms, 'music_tick_loop') - symbolAddr(without, 'music_tick_loop');
+        const expected = site.rpgOnly && gameType !== 'rpg' ? 0 : site.allowance();
+        assert.equal(bytes, expected, `${gameType}: ${site.name} costs ${bytes} bytes of kernel-lo, its allowance says ${expected}`);
+      }
+    }
+  }
+);
+
+test(
+  'phase 3a S3b: Rule R\'s three entries swap a three-byte jmp for a three-byte jmp, so TALKER_KERNEL_LO_ALLOWANCE_SCRIPT is a measured zero (and the flag-off arm is the shipped jmp)',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = createStreamedProject({ gameType: 'action', moveCommands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] });
+    const script = await fsp.readFile(path.join(ROOT, 'engine', 'script.asm'), 'utf8');
+    const swapped = script.replace(/  \.if TALKER_ENABLED\n  jmp sw_rr_(move|turn|visible)\n  \.endif\n  \.if !TALKER_ENABLED\n  jmp script_finish\n  \.endif\n/g, '  jmp script_finish\n');
+    assert.equal((script.match(/jmp sw_rr_/g) ?? []).length, 3);
+    const variant = structuredClone(project);
+    variant.code = variant.code ?? { overrides: [], files: [] };
+    variant.code.overrides = [{ name: 'script.asm', text: swapped }];
+    const delta = symbolAddr(await symbolsOf(project), 'music_tick_loop') - symbolAddr(await symbolsOf(variant), 'music_tick_loop');
+    assert.equal(delta, TALKER_KERNEL_LO_ALLOWANCE_SCRIPT, `Rule R's entries cost ${delta} bytes of kernel-lo`);
+    assert.equal(TALKER_KERNEL_LO_ALLOWANCE_SCRIPT, 0);
   }
 );
 
@@ -6355,7 +6418,7 @@ test(
 // `mixed` shape are checked since kernelCodeBytes' own formula must hold for
 // all three, matching the kernel-hi test just above.
 // Re-measured by the test below (phase 3a S3a); a hand-written figure, never read from the generator.
-const S3A_DELEGATION_SPAN_BYTES = 67; // move_tick_streamed..move_tick_ordinary
+const S3A_DELEGATION_SPAN_BYTES = 61; // move_tick_streamed..move_tick_ordinary: 67 at S3a, minus the 6 bytes of the sw_step_nocross inc/dec pair S3b deleted
 const S3A_SPEED_BRANCH_BYTES = 16; // move_speed_player..move_speed_player_ordinary: lda/beq/lda/cmp/bcs 2+2+2+2+2, jmp 3, jmp 3
 
 async function measureStreamedSpan(mapper, project, startLabel, endLabel) {

@@ -119,18 +119,15 @@ test(
 );
 
 test(
-  // Phase 2 slice 3 (docs/design-streamed-worlds.md §7, ruling 7): move_tick now bounds and
-  // probes this exact case at runtime (the player-mover's own 0-255/0-239 ownership rectangle,
-  // sw_move_probe_solid reading the neighbour screen's terrain at the seam), so item 3 lifted
-  // from an error back to the phase-1 warning -- it still warns, since the Move still cannot
-  // cross to a new screen (ownership never changes mid-page), but it no longer refuses the build.
-  'D.3: a scripted Move reachable on a streamed screen warns but no longer refuses the build',
+  // Phase 3a S3b retired the item-3 warning (a scripted Move crosses a seam like a walking step), so a Move reachable on a
+  // streamed screen neither warns nor refuses the build.
+  'D.3: a scripted Move reachable on a streamed screen neither warns nor refuses the build',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async () => {
     const project = withEvent(createStreamedProject({}), [{ op: 'move', who: 'player', dir: 'up', dist: 16 }]);
     assert.deepEqual(streamedErrors(project), []);
-    const warnings = validateProject(project).filter((x) => x.severity === 'warning' && /moves the player/.test(x.message));
-    assert.equal(warnings.length, 1, JSON.stringify(validateProject(project)));
+    const warnings = validateProject(project).filter((x) => x.severity === 'warning' && /moves the player|long enough Move/.test(x.message));
+    assert.deepEqual(warnings, [], JSON.stringify(validateProject(project)));
     assert.ok(await buildsClean(project));
   }
 );
@@ -173,8 +170,8 @@ test('D.4 positive, phase 2 slice 8: an event that both shows text (Say) and mov
   assert.ok(await buildsClean(project));
   const warnings = validateProject(project).filter((x) => x.severity === 'warning');
   assert.ok(
-    warnings.some((w) => /moves the player, and a long enough Move/.test(w.message)),
-    `the item-3 warning must still fire independently of the lifted refusal: ${JSON.stringify(warnings)}`
+    !warnings.some((w) => /moves the player|long enough Move/.test(w.message)),
+    `the item-3 warning is retired (S3b): ${JSON.stringify(warnings)}`
   );
 });
 

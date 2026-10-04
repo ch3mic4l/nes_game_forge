@@ -63,6 +63,18 @@ read the close path ends in (`sw_dlg_terrain_read`, resident) re-selects the bat
 `sw_peek_byte` has restored the window to the screen's own bank — invisible on a map-row-0 screen,
 where that bank coincides with the battle bank, and fatal on any other row.
 
+**A scripted Battle inside a streamed Move that crossed a seam resumes through `sw_battle_resume`** (phase 3a S3b,
+2026-10-04). `battle_end` (`engine/rpg.asm`, kernel) ends with `redraw_screen`, whose `pending_ent` clear drops the
+enter event the crossing armed; on its `script_active` branch it now calls `sw_battle_resume` under `.if
+TALKER_ENABLED`, which (only when a crossing happened during the event, `talk_crossed`) rebinds `talk_ent` from the talker's identity if the screen change left it `NO_ENTITY` and
+re-arms `owed_enter_rec` through `arm_event` (`docs/reference-event-system.md`, "A streamed `Move` can cross a seam").
+It is a plain `jsr` to a kernel-hi routine, **not** a `call_battle` entry: the `BE_*` count (22) is unchanged and no
+bank is switched. Its cost to an RPG is `TALKER_BATTLE_KERNEL_LO_ALLOWANCE` = 3 kernel-lo bytes, the one talker term
+that is RPG-only (`docs/reference-kernel-budget.md`). The battle region's own byte count (`battleRegionBytes`) is
+untouched. Measured, not just designed: the L5 runner `test/lua/sw_talker_battle.mjs` drove 24 talker + scripted-Battle
+cases in Mesen, **24/24 completed** (2026-10-04, `handoff-next/s3b/impl/D/L5.json`); the engine-side pins are
+`streamedtalker.test.js` T5 (a Battle, repeated Battles, two crossings and a Battle, a switch before and after).
+
 **`BE_JOIN`'s operand is guarded**, matching `party_init`'s own twin guard on the same access:
 `battle_entry_join` (`engine/battle.asm`) does `cpx #PARTY_SIZE` / `bcs battle_entry_join_skip` —
 `rts` back to `call_battle`. `NO_MEMBER = $FF` is defined once per side, beside `NO_ACTOR`/

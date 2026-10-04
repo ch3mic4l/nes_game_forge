@@ -1,0 +1,2370 @@
+{
+ "approved": true,
+ "ruling": "Chris 2026-10-02 (the parent-refusal appendix); confirmed in spike review 3 section 3 (2026-10-03): the filename and report wording \"pending ruling\" in the source files is stale metadata",
+ "scope": "An exact-ID appendix: it grants NO population or shape exclusion, does not certify the unmeasured RPG-bound class-(a) composition, and is kept apart from the 74 (streamedmove-unreachable.json) and the conditional 111 (exclusions-conditional.json).",
+ "source": {
+  "file": "handoff-next/s3b/spike/fix2-refusals-pending-ruling.json",
+  "sha256": "801dbc38d39aa798a727a3369b6dbe4f15ca4f5a9c2223f19b7bba8e3f8d1680",
+  "crosswalk": "handoff-next/s3b/reviewer5/appendix-crosswalk.json",
+  "baseline": "846cd78c12a8ace57ea2ee2fbf28a74bc9a7eabe",
+  "evidencePathsRelativeTo": "handoff-next/s3b",
+  "note": "need/free were measured on the 846cd78 parent; the final pin re-confirms them on the 15c11b7 parent tree (kernel-lo tables are untouched by the lever)"
+ },
+ "counts": {
+  "f1": 11,
+  "classA": 78
+ },
+ "f1": [
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-flash/enter-set/x246y210d10",
+   "need": 173,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 0,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 2,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-move2/enter-set/x246y210d10",
+   "need": 173,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 1,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 1,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-none/enter-set/x246y210d10",
+   "need": 173,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 2,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 3,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-say/enter-set/x246y210d10",
+   "need": 173,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 3,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 7,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 173,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 4,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 4,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-3/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 171,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/preflight.json",
+    "recordIndex": 2,
+    "sha256": "4aa3ec8ee7aa5c8c09cce3231d98cc4f28ef345421a123c94bbe32f642374112"
+   },
+   "child": {
+    "file": "spike/acc2-main.json",
+    "recordIndex": 66,
+    "sha256": "74756a2b66d31163f7d0d88668c77babf48397fa96e48ed3a1a305e41c5d3792"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-4/P1/bound/tail-flash/enter-set/x246y210d10",
+   "need": 163,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 5,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 0,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-4/P1/bound/tail-move2/enter-set/x246y210d10",
+   "need": 163,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 6,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 6,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-4/P1/bound/tail-none/enter-set/x246y210d10",
+   "need": 163,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 7,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 5,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-4/P1/bound/tail-say/enter-set/x246y210d10",
+   "need": 163,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 8,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 9,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-4/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 163,
+   "free": 160,
+   "parent": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 9,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   },
+   "child": {
+    "file": "spike/fix2-10-prep.json",
+    "recordIndex": 8,
+    "sha256": "5a4f9fd111e1b55dca67bf252c4ae934a37f442fe19d91fdd8f74df8804dfd1d"
+   }
+  }
+ ],
+ "classA": [
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y210d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "87388bafa82118bee10b2c6b7017a0971632b06d1c41652b67a1feab1b4118bf",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 10,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y210d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "f15ff2bbe200c49ae341187d9005051a9e841c7b27fdc8544d65d1a1ce890873",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 11,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y210d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "c1b03ba94412f39a42e2ff16e8208c58df0e78a975a1c73a762e3ec107516671",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 12,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y214d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "9bb58948cc387a3a39122eb2ec7b1835f189434cf7063a1e8a23e156462e2b70",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 13,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y214d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "b2a1c14c6a4c0d30ff6691ab19a4fdca78463580ece971b6024a50ae1f6d4b0c",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 14,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y214d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "4f50122dd6f680ac26b18140cab5f5c8693fa68b113d49c587691145a090076c",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 15,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y210d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "606eaf150e37adfaee3ef1824f0950ce8aeb6e192ba6c75f2598b8341cddc34f",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 16,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y210d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "242bdac1ccecdb6356969909c92bd87fc587383b938f4842bd0f7ad664147334",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 17,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y210d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "fa0440173d63c3c2c6ad6049432f939853e07cde0dacdb820afdb531983287f9",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 18,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y206d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "28d1a4a4cae810882d8d8abe3858722b69f8e37df33681245bf799f93824beed",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 19,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y206d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "70ae1dcdd5000b35cbc91d76bd464ce961f64b49fa214039d8c197a976a9a33b",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 20,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y206d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "fb3bf9b16a68ad4af1a8b618d1911b4313060da26d9af9817323ee7d7d033884",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 21,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y210d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "39ab66b783331c049e16a53850d27cae51c046857ec30458fb1c07a7f5fd2bcf",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 22,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y210d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "637bbe52b5cc917d123b6860d7a7608940b66502087712c33c42fc419e666067",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 23,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y210d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "7821f5a65464ba44b970cf3d4450938e0a9bf56d6408160293be890e41ad7337",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 24,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y206d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "7c0716e72f5d3b27864af7a67dd198fbfe78fa3b7cc3d8bb289366247483ec25",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 25,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y206d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "dc54b5a563475acbf1142b4736fadd98ef7066e892a151f7600524fd6da9397c",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 26,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y206d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "672d65139f2586ee50f6341b5fc8aa8694d253ffff3101b2f13ec8551110732a",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 27,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y214d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "ddf7a925b8552b0d1e9a04ff5c2764d2c2ff821904bd827cfe6ba5d9ab132c3f",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 28,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y214d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "88e09855567a211e8537e3bc38a11edcaf0d17b01f9766ac43ce447ce7eedf54",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 29,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y214d14/ty237/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 237,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "f546eae3feac283980f8ad83b06536e13285d94b70216db8929819bbc577775a",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 30,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y210d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "5615d886477d2dc3e4f017d367dced3279eb3f09407d2cc339b21cf5f578b344",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 31,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y210d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "715f3fbbd0af999f4567c9377675056bca0defe7a619d8a82055ebac5ebe47ca",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 32,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y210d14/ty238/flashwait1",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 238,
+    "wf": 1,
+    "bound": true
+   },
+   "recipeSha256": "1d4899fa1a1a053928a75ef4cdd1335513215c73463d989668a2377add3976e6",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 33,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y206d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "94a1124a6d79c8136e0b4971946468fbe887a5f318a3bef0c770ad89625f0646",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 34,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y206d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "032ed9b33150936c8d0bb548f4050deee6a7dddd8734e62ac398444ae43f4245",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 35,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y206d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "d9ba242f10301323447588ef6c3b5dd46b9ad43da4e9bcbadd546d1c1d954de7",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 36,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y210d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "d7e575f22142cf3d66962f8469e5e4bbb77095d176cd86e4a26b24a0038a670c",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 37,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y210d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "b4abc6fbf94f2b97c5c069aa1044362735c856a05c1feed2abc11fb5d128a7c6",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 38,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y210d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "a325b6b65e401b727eed4883d018099abc956ed1edb0310261c61ffd9e05378e",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 39,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y206d14/ty237/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 237,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "2c6be157136388b5795be158c97c6f2113e48c316c6ca28f28a148cab350f58e",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 40,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y206d14/ty237/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 237,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "2b68985d14064a1fb4aeb97001381c4689a2eff1d0dc4672e0b0a5130283bcd5",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 41,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y206d14/ty237/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 237,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "9e1d03470df47d720afd611e6acf7a5a6ee533b07e2674114b6496678fe9f5aa",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 42,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y214d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "2d9c7c53b09f0aa05407c2e9b0d821289a788cae3c9151f178c6c321bea63c69",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 43,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y214d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "0cf5d724fb1503086a3101d32eccbc52e31e1365f3eb954eecb8c311d2b9cd5e",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 44,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y214d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "9e8eb60c57c180706201d9f85641d88dc5cd3cd942bbb062ca5a55ba1df160d3",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 45,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y206d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "6ef14207d8839c5f40ec2c287e42aaea377748a4e374a63f8001567619366119",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 46,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y206d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "994b6ffbc3f36940a4ad459ef57573288eb0f965eb860019dd8562c01f98db34",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 47,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y206d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "894684f3cad7eb670485768c62fc9263c9ec93dc3c3d6c5dc2a7350996b3e4d2",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 48,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y206d14/ty237/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 237,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "52244b44638a9bf2aff54f3ec9ae10dbf3b277fc3d20b8a4be4f1694ae203f19",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 49,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y206d14/ty237/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 237,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "1ad8eadcd494ade96c804c293457bfbb54096c262b4cb6ca7fe6f8917be1c288",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 50,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y206d14/ty237/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 237,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "4bd715102b19469d089f7365330c6baacb867d3d5ec0be70f15e457ed125f554",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 51,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y214d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "9d10ac751d797bb11478852a7b2b2126d7da8e7bec3d9566385282958c6ff932",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 52,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y214d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "b175364924e284838240bf785827550cf6662cae69e165ff4869ccb74ad81802",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 53,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y214d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "54309c3ed598f5ddc0f780b6dadcb7775d76961b9f8b0e810699450892d908f6",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 54,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y210d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "0424832418f42eba8e7d60ba74fdada5322ec2001942c628b55f22a6308d7085",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 55,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y210d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "fccdedc6cb47919258c0a572b0994290a0fc06c1ad00b1a8269c4fd6958c05a0",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 56,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y210d14/ty236/flashwait2",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 236,
+    "wf": 2,
+    "bound": true
+   },
+   "recipeSha256": "4aec1fabcce31a33a3a405fa3c3f3024a8ad6e819acb10bc0d2828ad283fdf87",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 57,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y210d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "aaf33b8ce21159fd78a4459d8f18a56381bd77d837cecf6c930cd05c1d177a20",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 58,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y210d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "ece7f87e107fc714bb1234ac3b2aa5784de0b9318d8f92179bb4be07772ba0ba",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 59,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y210d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "d7d1975de480b3f73ab8200cde943ddd735cb88c10f6c396ac145dfc23bd90cd",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 60,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y206d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "5b3e98fd41be262db753dade79876219820cf4337d455f77df58190112be2e2c",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 61,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y206d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "e14056b1f0b1438f14cd13cac41d9f8698e17478e9d8f1cbb332ce7307dfaf1d",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 62,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y206d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 206,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "da966d8fe6d1bc12058c3d6847a147ad6d61a99ba7fedcf6567fe7be2b2b9940",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 63,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y214d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "154c7d9c8a32c4db07f6225fd8b711c80e42a0319b23d1fdb802f4f76537120b",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 64,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y214d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "27839293078816be64c4c1a26c87b7b4588934a749ac1fd699ac70bae95f0939",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 65,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y214d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "998042309616a1e91f85f88f4d95021e341309e6805ecb03c543e8e53f6347d0",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 66,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y210d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "e59fd9c9553294e76a1bec6dbbdbe736ed2655736b52436278b52e1e23752d66",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 67,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y210d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "3062100a23f2c97f024d9a8ed081e6017b83871706314e5e72989ae2c1cde6d3",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 68,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y210d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 210,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "c1913d2058196d9b9999a5723c6e3efb97607a3bbbc8e70f733c5f90e4902caa",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 69,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x244y214d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "c715fdaccf2b90282d470465b8b7570c3085e0d50d55628dcc5c7b586ad3d370",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 70,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x244y214d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "21010ad157d5552993c7f0a095eaa64ca8a9750dcea61c23df5b8c9327351cbb",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 71,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x244y214d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 244,
+    "startY": 214,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "f2dad4fbc71c7985d0e29a3c9fefabe101683ea01700c3eb9db471e73732a24c",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 72,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y210d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "b776bec57f3c6f48a06ca74f1510f986814c21a274531762ce4612a22c19a0ed",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 73,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y210d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "b5cd51214eb095f3abf284bea65cdc9d76b4a90ed1788974fb8ff6600768cfb6",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 74,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y210d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "056633fe5eddadf834870d92026ab7ffb64cc819c2f1e999f714a45a457ac411",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 75,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y206d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "4016c8bb931b67cd35448774da9afd3f0969b5fe03f2152e5d341bb6e10f15a3",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 76,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y206d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "02a3a35bc7b42c267c855ba0b3c98fab668703b6f9b54f6159b86153a891b910",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 77,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y206d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 206,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "ed4fb47ebf2b64920b913c4197e09bcf75453635a5fb4b4d55b4ec992be3ebdb",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 78,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y214d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "03c923d6de5a67b066ed793192c88d3d5d4eb584b3e78df2d8409a1a704e3d9d",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 79,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y214d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "97df0409c490416fe9da0502593d817b05400b9a6a1471880b1d065418931bfc",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 80,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y214d14/ty234/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 234,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "eb20bd9e6e64c3309716ec62623628114cbf50e89f7ab8d394d536ddd106461c",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 81,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y210d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "25ec1b4ed3f6ffffe17625e773821b2af0fb339da11f8f1d235d4cdd7e38e517",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 82,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y210d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "4d7534b992a80ead8a375e5907240021212a1f0f54fde253ba0fe096810a8f00",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 83,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y210d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 210,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "eec206e3866afd41b842962f90140658cc5a8884699ea9bb4e856b36f617c05a",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 84,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/many-small/P1/bound/tail-switch/enter-set/x245y214d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "many-small",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "d3cd113bde81452d399368e44da818b035299c00af3270d5a8d61e20dbcb8fad",
+   "need": 128,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 85,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x245y214d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-5",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "edb90d5db7a165d729627fb8df5f696e7741762c8060bb20c17547c01e3135e2",
+   "need": 155,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 86,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  },
+  {
+   "id": "new/rpg//wide/few-large-1/P1/bound/tail-switch/enter-set/x245y214d14/ty235/flashwait3",
+   "recipe": {
+    "dir": "right",
+    "down": 0,
+    "dist": 14,
+    "tail": "switch",
+    "wide": true,
+    "pop": "few-large-1",
+    "enter": "set",
+    "lead2": "flashwait",
+    "gt": "rpg",
+    "anim": "P1",
+    "startX": 245,
+    "startY": 214,
+    "ty": 235,
+    "wf": 3,
+    "bound": true
+   },
+   "recipeSha256": "04d1be741976f2d7db486317e5b109b058f606cc1394f194bf0ec7d2f4c92832",
+   "need": 173,
+   "free": 117,
+   "evidence": {
+    "file": "reviewer4/parent-refusals.json",
+    "recordIndex": 87,
+    "sha256": "3604462c0fc6621e0c029bb1984529a97cd1c6df3857b66bae282d16a12b6f95"
+   }
+  }
+ ]
+}

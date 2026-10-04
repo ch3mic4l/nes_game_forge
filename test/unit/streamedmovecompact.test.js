@@ -23,11 +23,14 @@ const errorsOf = (project) => checkCapacity(project).problems.filter((p) => p.se
 const placed = (project) => project.maps.flatMap((m) => m.screens.flatMap((s) => (s.entities ?? [])));
 const tilesOfEntity = (project, e) => { const a = project.sprites.actors[e.actorId]; const an = project.sprites.animations[a.anims.walkDown]; return project.sprites.metasprites[an.frames[0].metaspriteId].tiles.length; };
 
-test('CONTROL: the uncompacted scene IS refused by the generator (161 bytes of lookup tables for 160 free): the defect the compaction answers', async () => {
+// Phase 3a S3b: the scene's table need (161) is unchanged, but an RPG with a streamed Move now carries 16 more bytes of kernel-lo engine code
+// (net of the nocross pair: the talker call sites), so the free figure in the refusal fell from 160 to 144. The claim is that the need exceeds what is free.
+test('CONTROL: the uncompacted scene IS refused by the generator (161 bytes of lookup tables, fewer than that free): the defect the compaction answers', async () => {
   const { project } = await buildSceneProject({ root: REPO, ...SCENE });
   const errs = errorsOf(project);
   assert.equal(errs.length, 1, errs.join('; '));
-  assert.match(errs[0], /lookup tables need 161 bytes but only 160 are free/);
+  const m = /lookup tables need 161 bytes but only (\d+) are free/.exec(errs[0]);
+  assert.ok(m && Number(m[1]) < 161, errs[0]);
 });
 
 test('compaction makes the same scene admissible and within capacity, with every placed entity unchanged and the tile total exactly 14', async () => {
@@ -82,14 +85,19 @@ test('the compacting build root builds the scene the generator refused (a real R
     const rom = fs.readFileSync(built.romPath);
     assert.equal(rom.subarray(0, 4).toString('latin1'), 'NES\x1a');
     assert.ok(rom.length > 16);
-    await assert.rejects(() => buildScene({ root: REPO, outDir: `${dir}/real`, ...SCENE }), /lookup tables need 161 bytes but only 160 are free/);
+    await assert.rejects(() => buildScene({ root: REPO, outDir: `${dir}/real`, ...SCENE }), /lookup tables need 161 bytes but only \d+ are free/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('the compacting root is the real tree through symlinks except one file (so the engine and generator measured are the real ones)', () => {
+test('the compacting root is the real tree: engine/shared by symlink, every main/build file a byte-identical COPY except the pipeline wrapper (so the hash covers the real generator)', () => {
   const root = compactRoot(REPO);
-  for (const rel of ['engine', 'shared', 'main/build/generate.js', 'main/build/nesasm.js']) assert.ok(fs.lstatSync(`${root}/${rel}`).isSymbolicLink(), rel);
+  for (const rel of ['engine', 'shared']) assert.ok(fs.lstatSync(`${root}/${rel}`).isSymbolicLink(), rel);
+  for (const rel of ['main/build/generate.js', 'main/build/nesasm.js']) {
+    assert.ok(fs.lstatSync(`${root}/${rel}`).isFile() && !fs.lstatSync(`${root}/${rel}`).isSymbolicLink(), `${rel} is a real file`);
+    assert.deepEqual(fs.readFileSync(`${root}/${rel}`), fs.readFileSync(`${REPO}/${rel}`), `${rel} is the real file's bytes`);
+  }
   assert.ok(fs.lstatSync(`${root}/main/build/pipeline.js`).isFile());
+  assert.deepEqual(fs.readFileSync(`${root}/main/build/pipeline.real.js`), fs.readFileSync(`${REPO}/main/build/pipeline.js`), 'the real pipeline is kept under its own name');
   assert.equal(compactRoot(REPO), root, 'one root per tree');
   assert.equal(fs.realpathSync(`${root}/engine`), fs.realpathSync(`${REPO}/engine`));
 });

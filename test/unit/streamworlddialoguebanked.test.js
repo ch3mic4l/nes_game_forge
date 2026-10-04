@@ -42,6 +42,7 @@ import { readEngineSource } from '../lib/enginesource.js';
 import {
   stripS1FromStreamworld,
   stripS3aFromStreamworld,
+  stripS3bFromStreamworld,
   stripS3a5FromStreamworld,
   dropS3aRetiredFromOld,
   dropS3a5RetiredFromOld
@@ -95,7 +96,7 @@ test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 
   // compared is every CODE line, in order: comment-only and blank lines are ignored, because S3a
   // retired the prose that described the deleted routines (and streamdialog.asm's own header comment
   // and the blank line at its include's end were always the only other additions).
-  const flat = stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS1FromStreamworld(readEngineSource('streamworld.asm'))));
+  const flat = stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS3bFromStreamworld(stripS1FromStreamworld(readEngineSource('streamworld.asm')))));
   const codeLines = (text) => text.split('\n').filter((l) => l.trim() !== '' && !/^\s*;/.test(l));
   const stripped = codeLines(flat);
   const oldLines = codeLines(dropS3a5RetiredFromOld(dropS3aRetiredFromOld(old.stdout)));

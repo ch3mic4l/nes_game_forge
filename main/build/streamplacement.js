@@ -310,24 +310,23 @@ export const STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE = 395;
 // action and RPG (6 while it covered the restore publication alone).
 export const STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE = 10;
 
-// Fix round 1, finding 2: sw_move_probe/sw_move_probe_solid (engine/
-// streamworld.asm) are the resident half of ruling 7's own probe-crossing
-// mechanism -- kernel-HI, not kernel-lo, and gated `.if MOVE_ENABLED` inside
-// the already-`.if STREAMING_ENABLED` file, so a streamed project with no
-// live Move command pays nothing extra in kernel-hi either. Measured the
-// same isolated way as the kernel-lo term above (streamed-with-Move minus
-// streamed-without-Move, minus the ordinary project's own kernel-hi Move
-// delta -- fix round 2: that ordinary delta is 9 bank bytes of compiled
-// event data (the Move command's own operands), but its ENGINE-CODE
-// contribution is 0 -- an ordinary project's Move code never touches the
-// $E000 bank at all, only its own compiled event bytes live there), flat
-// across action, RPG and the mixed shape.
-//
-// Phase 3a S3a: sw_move_probe/sw_move_probe_solid are DELETED (the Move takes the shared sw_pstep_<dir>, which
-// probes through sw_hazard_probe_solid, a routine every player step already pays for). What remains of this term is
-// the four sw_step_nocross guards, one per sw_pstep_<dir> (`lda sw_step_nocross / bne`, 3 + 2 = 5 bytes each),
-// gated `.if MOVE_ENABLED` like the pair they replace: 76 -> 20 (-56, re-measured, flat across action, RPG and mixed).
-export const STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 20;
+// Phase 3a slice S3b: the streamed Move's own kernel-hi term (STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE, 76 for ruling 7's
+// resident probe pair, 20 after S3a for the four sw_step_nocross guards) is GONE: the Move crosses a seam like a walking
+// step, so the guards, the byte and the term are deleted, and the talker's kernel-hi cost below is the Move's whole
+// streamed kernel-hi cost.
+
+// Phase 3a slice S3b: the scripted Move may cross a screen seam, so the talker (the actor whose event is
+// running) needs an identity that survives the respawn a crossing makes -- the one predicate for every
+// talker term below, the generated TALKER_ENABLED flag and the Map Forge's own warning removal. A player
+// Move is not required: an NPC-only Move on a streamed map pays the same (the plan's X = U and M).
+export const projectUsesTalker = (project) => projectUsesStreaming(project) && projectUsesMove(project);
+
+// The kernel-hi half of S3b's talker bookkeeping: sw_talker_capture/rebind/cross/battle_resume, Rule R's
+// three entries and sw_talker_reset (engine/streamworld.asm, sw_talker_capture..sw_talker_end, one span: 196 on every
+// board and game type). Gated projectUsesTalker; kernelbytes.test.js asserts it equal to nesasm's real span.
+export const TALKER_KERNEL_HI_ALLOWANCE = 196;
+// ...and the four `jsr sw_talker_cross` that end sw_pstep_right/left/down/up (3 bytes each, inside code that was already there).
+export const TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE = 12;
 
 // Phase 2 slice 8: engine/streamworld.asm's sw_dlg_closeformove_start..end,
 // the release half of the mechanism -- sw_dlg17_camrelease's own draw-down
@@ -623,7 +622,7 @@ export function streamworldResidentHiBytes(project, mapper) {
   const usesMoveHere = projectUsesMove(project);
   const usesText = projectUsesText(project);
   const usesSaveHere = projectUsesSave(project) && saveMediaImplemented(mapper);
-  const streamworldMoveHiBytes = usesMoveHere ? STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE : 0;
+  const talkerHiBytes = projectUsesTalker(project) ? TALKER_KERNEL_HI_ALLOWANCE + TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE : 0;
   const streamworldKnockbackHiBytes = !battleEnabledFor(project, mapper) ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0;
   const streamworldDialogueMapperHiBytes = usesText ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0;
   const streamworldDialogueLifecycleHiBytes = usesText
@@ -646,7 +645,7 @@ export function streamworldResidentHiBytes(project, mapper) {
   return (
     STREAMWORLD_KERNEL_HI_ALLOWANCE +
     STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
-    streamworldMoveHiBytes +
+    talkerHiBytes +
     STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
     (projectUsesFlash(project) ? STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE : 0) +
     streamworldKnockbackHiBytes +

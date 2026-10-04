@@ -179,6 +179,21 @@ transition, not to the player.**
   buttons nothing known can empty that slot in between, so this is a guard rather than a fix: the
   index is remembered across a frame boundary, and a stale one would speak for something that is
   not there without saying so.
+- **A streamed `Move` can cross a seam mid-event (phase 3a S3b, 2026-10-04), so an event's talker and the entry it owes
+  have an identity that survives the respawn.** The destination's `spawn_entities` arms its enter actor into
+  `pending_ent` as ever; `sw_talker_cross` (end of every `sw_pstep_*` crossing, only while `script_active`) records that
+  actor's `ent_record` in `owed_enter_rec`, **overwritten by every crossing, so only the last screen's entry is owed**
+  (a final crossing into a screen with no enter actor clears what an earlier crossing owed: the absent sentinel is
+  loaded explicitly, never a leftover accumulator). `main_loop` still turns `pending_ent` into a conversation only
+  after the page ends. A scripted `Battle` in between redraws the screen, whose `pending_ent` clear drops the arm;
+  `battle_end`'s `script_active` branch calls `sw_battle_resume`, which rebinds the talker and re-arms the owed record
+  through `arm_event`, so eligibility (a switch set before the battle that hides the record, one set after it) is the
+  shipped claim rule and is not restated. `start_dialog` obsoletes anything an earlier event owed, and
+  `close_ui`/`init_session`/`take_door`/`settle_owed`'s discard end the identity. A self-command (`Move` `who: self`,
+  `Turn`, `Visible`) whose talker is not live is **Rule R**: after a crossing a no-op that continues the page, before
+  one the shipped defence (the event ends). The authoring warning "a Move can walk the player to the edge and cannot
+  cross" no longer exists. Mechanism, RAM and pins: `docs/reference-engine.md` (streamed Move, "The talker across a
+  seam"); pins `streamedtalker.test.js` T5 (owed entry, one-shot, battle, switch before/after), T6, T9.
 - **`ent_touched` is cleared by walking off, not by the event ending.** The conversation ends with
   the player standing exactly where they started it.
 

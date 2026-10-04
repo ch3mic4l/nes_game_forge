@@ -282,7 +282,7 @@ for (const dir of ['right', 'left', 'down', 'up']) {
 
 const ENTITIES = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../engine/entities.asm'), 'utf8');
 const DUP_ROUTINE = 'renamed_probe_dup:\n  jsr sw_hazard_probe_solid\n  rts\n';
-const AFTER_STEP = '  dec sw_step_nocross\n';
+const AFTER_STEP = 'move_tick_s_done:\n';
 const DUPLICATES = {
   unconditional: { text: `${AFTER_STEP}  jsr renamed_probe_dup\n`, routine: DUP_ROUTINE, flagged: ['left', 'right'] },
   'direction-conditional (left only)': {

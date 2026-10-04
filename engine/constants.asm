@@ -1306,6 +1306,22 @@ sw_dlg17_move_close = $07F1
 ; survive untouched for that hook to find); cleared by sw_dlg20_save_check (engine/streamworld.asm)
 ; the instant it runs the real deferred commit.
 sw_dlg20_save_pending = $07F8
+; Phase 3a S3b: the talker's identity, four bytes at $07F2-$07F5 (the unclaimed sw_dlg17_resync_i
+; comment above keeps its own words; the prototype that named it never needed the byte). Not zero
+; page (full): absolute addressing, no `<` prefix (zeropage.test.js). A scripted Move that crosses a
+; seam respawns the screen's actors, so the slot talk_ent named is no longer the talker's: these
+; bytes name the talker by what survives a respawn. Only code assembled under TALKER_ENABLED touches
+; them (a streamed project with a Move), and none is saved: SAVE_LAYOUT_VERSION stays 3.
+;   talk_rec        the ent_record of the talker, or NO_ENTITY ($FF) = no identity
+;   talk_scr        flat_screen the talker stood on when its event started (one byte: a screen's
+;                   global id, which is what a crossing compares against)
+;   talk_crossed    nonzero once a crossing has happened during this event -- Rule R's one key
+;   owed_enter_rec  the ent_record of the destination actor whose enter event the final crossing
+;                   armed, or NO_ENTITY ($FF) = nothing owed (survives a scripted Battle)
+talk_rec       = $07F2
+talk_scr       = $07F3
+talk_crossed   = $07F4
+owed_enter_rec = $07F5
 ; Phase 2 slice 4b's own claim, twelve bytes starting right after save_flash_buf's own
 ; SAVE_RECORD_LEN span (ends $077E) and clear of the four named-but-unallocated future bytes
 ; above ($07F0-$07F8): sw_frame_camera_window's transient working set (engine/streamworld.asm).
@@ -1334,14 +1350,6 @@ sw_fc_desrl   = $078B   ; this frame's desired window localRow
 ; enforces it above $100.
 sw_kb_timer   = $078C   ; frames left in a streamed knockback (0 = none in flight)
 sw_kb_acc     = $078D   ; sw_walk_step_x/y's own WHOLE_STEP+overflow accumulator shape, this axis's own copy
-
-; Phase 3a S3a's own claim: one byte in the confirmed-free gap just before sw_fc_wy_lo (save_flash_buf
-; ends $077E, sw_fc_wy_lo is $0780). Nonzero ONLY while a scripted player Move's step is inside
-; sw_pstep_* (entities.asm move_tick raises and lowers it around the call): each sw_pstep_<dir> then
-; refuses a step that would cross into the next screen, exactly as it refuses a missing grid
-; neighbour, before any commit -- the ownership stop the shipped Move had. S3b deletes the flag and
-; its byte. Not zero page (full): absolute addressing, no `<` prefix (zeropage.test.js).
-sw_step_nocross = $077F
 
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0

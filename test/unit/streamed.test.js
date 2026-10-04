@@ -412,152 +412,39 @@ const withEvent = (p, commands, { streamed = true, place = true } = {}) => {
   }
   return m;
 };
-// Phase 2 slice 2b, Part D item 3 escalated this from a warning to an error (a scripted Move that
-// walks the player off a streamed screen's own bound); phase 2 slice 3 gave move_tick its own
-// bound and crossing probe for exactly this case (docs/design-streamed-worlds.md §7, ruling 7),
-// so it lifted back to a warning -- "Move warning" is the right label again, not a misnomer.
-const moveWarnings = (p) => validateProject(p).filter((x) => x.severity === 'warning' && /moves the player/.test(x.message));
+// The "a scripted Move moves the player, and a long enough Move can walk them to the edge" warning is RETIRED (phase 3a S3b:
+// a scripted Move crosses a seam like a walking step, so there is no edge to warn about). test/unit/streamedwarning.test.js
+// holds the behaviour; this file keeps the two things its tests also covered that are not about the warning.
+const moveWarnings = (p) => validateProject(p).filter((x) => /moves the player|long enough Move/.test(x.message));
 const mv = (extra = {}) => ({ op: 'move', who: 'player', dir: 'right', dist: 40, ...extra });
 
-test('Move warning: a player Move on a streamed map warns; the same on an ordinary map does not', () => {
-  const s = project(30, 'fourscreen');
-  withEvent(s, [mv()]);
-  const w = moveWarnings(s);
-  assert.equal(w.length, 1);
-  assert.equal(w[0].where, 'Map Forge');
-  // A rule forgetting to scope to streamed maps would warn here too.
-  const o = project(30, 'fourscreen');
-  withEvent(o, [mv()], { streamed: false });
-  assert.deepEqual(moveWarnings(o), []);
+test('Move warning retired: a player Move on a streamed map raises nothing, on every route a Move can be reached', () => {
+  const direct = project(30, 'fourscreen');
+  withEvent(direct, [mv()]);
+  assert.deepEqual(moveWarnings(direct), []);
+  const route = project(30, 'fourscreen');
+  withEvent(route, [{ op: 'route', who: 'player', legs: [{ op: 'move', dir: 'left', dist: 20 }] }]);
+  assert.deepEqual(moveWarnings(route), []);
+  const call = project(30, 'fourscreen');
+  call.commonEvents = [{ id: 3, name: 'Push', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [mv()] }] } }];
+  call.commonEventSeq = 4;
+  withEvent(call, [{ op: 'call', event: 3 }]);
+  assert.deepEqual(moveWarnings(call), []);
 });
 
-test('Move warning: any positive distance, in every direction, warns', () => {
-  // Wrong implementation caught: a threshold (dist >= 20/40) or a rightward-only test.
-  for (const dir of ['left', 'right', 'up', 'down']) {
-    const p = project(30, 'fourscreen');
-    withEvent(p, [mv({ dir, dist: 1 })]);
-    assert.equal(moveWarnings(p).length, 1, dir);
-    const r = project(30, 'fourscreen');
-    withEvent(r, [{ op: 'route', who: 'player', legs: [{ op: 'move', dir, dist: 1 }] }]);
-    assert.equal(moveWarnings(r).length, 1, `route ${dir}`);
-  }
-});
-
-test('Move warning: found on a map that is not the first, and only the middle of three is streamed', () => {
+test('the streamed-map scan finds the middle one of three, and checkCapacity folds its problems in', () => {
   // Wrong implementation caught: scanning maps[0] only, or the last map only.
-  const p = project(30, 'fourscreen');
-  p.maps.push(createMap(1, 'Middle'), createMap(2, 'Last'));
-  const mid = p.maps[1];
-  mid.streamed = true;
-  const actor = p.sprites.actors[0];
-  mid.screens[0].entities = [{ actorId: actor ? actor.id : 0, x: 32, y: 32, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [mv()] }] } } }];
-  const w = moveWarnings(p);
-  assert.equal(w.length, 1);
-  assert.match(w[0].message, /"Middle"/);
-  // The same event on the ordinary first map of the same project stays silent.
-  p.maps[0].screens[0].entities = structuredClone(mid.screens[0].entities);
-  assert.equal(moveWarnings(p).length, 1);
-  // Refusal and validation both find the middle map (wrong: inspecting only first/last).
   const q = project(0, 'vertical');
   q.maps.push(createMap(1, 'Middle'), createMap(2, 'Last'));
   q.maps[1].streamed = true;
   const found = streamedProblems(q);
   assert.equal(found.length, 1);
   assert.match(found[0].message, /"Middle"/);
-  // checkCapacity folds validateProject's own problems straight in (it spreads
-  // ...validateProject(project)), so the Move check above already proves checkCapacity itself
-  // scans every map too -- no separate "no engine yet" refusal exists any more to re-prove this
-  // against (Part D/E deleted the phase-1 blanket refusal entirely).
-  const built = project(30, 'fourscreen');
+  const built = project(0, 'vertical');
   built.maps.push(createMap(1, 'Middle'), createMap(2, 'Last'));
   built.maps[1].streamed = true;
-  built.maps[1].screens[0].entities = structuredClone(mid.screens[0].entities);
-  const builtRefused = checkCapacity(built).problems.filter((x) => /moves the player/.test(x.message));
-  assert.equal(builtRefused.length, 1);
-  assert.match(builtRefused[0].message, /"Middle"/);
-});
-
-test('Move warning: a leg under a disabled ancestor, or in a choice option past the limit, is not reachable', () => {
-  // Wrong implementation caught: finding routes through allCommands alone, which sees everything
-  // mentioned rather than everything compiled.
-  const leg = { op: 'route', who: 'player', legs: [{ op: 'move', dir: 'right', dist: 1 }] };
-  const wait = { op: 'wait', frames: 10 };
-  const cases = {
-    'route under a disabled branch': [wait, { op: 'branch', off: true, cond: { type: 'none', arg: 0 }, then: [leg], else: [] }],
-    'route in a disabled else': [wait, { op: 'branch', cond: { type: 'none', arg: 0 }, then: [], else: [{ ...leg, off: true }] }],
-    'route past the option limit': [{
-      op: 'choice',
-      prompt: '',
-      options: [
-        ...Array.from({ length: CHOICE_LIMITS.options }, (_, i) => ({ label: `o${i}`, commands: [wait] })),
-        { label: 'late', commands: [leg] }
-      ]
-    }]
-  };
-  for (const [label, commands] of Object.entries(cases)) {
-    const p = project(30, 'fourscreen');
-    withEvent(p, commands);
-    assert.equal(moveWarnings(p).length, 0, label);
-  }
-  // Positive control: the same route under a live branch warns.
-  const live = project(30, 'fourscreen');
-  withEvent(live, [wait, { op: 'branch', cond: { type: 'none', arg: 0 }, then: [leg], else: [] }]);
-  assert.equal(moveWarnings(live).length, 1);
-});
-
-test('Move warning: who, distance and liveness are honoured', () => {
-  const cases = [
-    ['an NPC (self) Move', [mv({ who: 'self' })], 0],
-    ['a zero-distance Move', [mv({ dist: 0 })], 0],
-    ['a switched-off Move', [mv({ off: true })], 0],
-    ['a Move inside a live branch', [{ op: 'branch', cond: { type: 'none', arg: 0 }, then: [mv()], else: [] }], 1],
-    ['a Move inside a choice option', [{ op: 'choice', prompt: '', options: [{ label: 'a', commands: [mv()] }] }], 1]
-  ];
-  for (const [label, commands, expected] of cases) {
-    const p = project(30, 'fourscreen');
-    withEvent(p, commands);
-    assert.equal(moveWarnings(p).length, expected, label);
-  }
-});
-
-test('Move warning: a route leg moving the player, and a call into a common event, both count', () => {
-  // A walk over top-level commands only (or over liveCommands alone, which drops a route's own `who`)
-  // misses both.
-  const route = project(30, 'fourscreen');
-  withEvent(route, [{ op: 'route', who: 'player', legs: [{ op: 'move', dir: 'left', dist: 20 }] }]);
-  assert.equal(moveWarnings(route).length, 1);
-  const npcRoute = project(30, 'fourscreen');
-  withEvent(npcRoute, [{ op: 'route', who: 'self', legs: [{ op: 'move', dir: 'left', dist: 20 }] }]);
-  assert.equal(moveWarnings(npcRoute).length, 0);
-
-  const call = project(30, 'fourscreen');
-  call.commonEvents = [
-    { id: 3, name: 'Push', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [mv()] }] } }
-  ];
-  call.commonEventSeq = 4;
-  withEvent(call, [{ op: 'call', event: 3 }]);
-  assert.equal(moveWarnings(call).length, 1);
-  // A two-hop call chain ending in a player Move (wrong: following one hop only).
-  const hop = project(30, 'fourscreen');
-  hop.commonEvents = [
-    { id: 3, name: 'A', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 4 }] }] } },
-    { id: 4, name: 'B', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [mv({ dist: 1 })] }] } }
-  ];
-  hop.commonEventSeq = 5;
-  withEvent(hop, [{ op: 'call', event: 3 }]);
-  assert.equal(moveWarnings(hop).length, 1);
-  // A common event nobody on a streamed map calls does not warn on its own.
-  const idle = project(30, 'fourscreen');
-  idle.commonEvents = call.commonEvents;
-  idle.commonEventSeq = 4;
-  withEvent(idle, [{ op: 'end' }]);
-  assert.equal(moveWarnings(idle).length, 0);
-  // A self-calling common event terminates.
-  const loop = project(30, 'fourscreen');
-  loop.commonEvents = [{ id: 3, name: 'Loop', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 3 }] }] } }];
-  loop.commonEventSeq = 4;
-  withEvent(loop, [{ op: 'call', event: 3 }]);
-  assert.equal(moveWarnings(loop).length, 0);
+  const refused = checkCapacity(built).problems.filter((x) => /"Middle"/.test(x.message));
+  assert.equal(refused.length, 1);
 });
 
 // ---------------------------------------------------------------- save identity

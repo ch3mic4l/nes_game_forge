@@ -89,6 +89,9 @@ open_menu:
 ; cleared here as well, so this stays the single way out however a conversation
 ; ended.
 close_ui:
+  .if TALKER_ENABLED
+  jsr sw_talker_reset
+  .endif
   lda #NO_ENTITY
   sta <talk_ent
   lda #0
@@ -228,6 +231,9 @@ use_item_apply_none:
 ; engine had before there was a font.
 start_dialog:
   stx <talk_ent
+  .if TALKER_ENABLED
+  jsr sw_talker_capture
+  .endif
   lda #ST_DIALOG
   sta <game_state
   jmp script_start

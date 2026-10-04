@@ -476,12 +476,11 @@ sw_hazard_probe_solid_done:
 ; recompute always reproduces the exact same value -- this is not a second,
 ; independent calculation that could disagree with the first.
 ;
-; Phase 3a S3a: a scripted player Move calls these too (entities.asm's
-; move_tick) with sw_step_nocross raised, and each routine tests it at the
-; one place it would take its crossing branch -- a step that would cross
-; refuses exactly as a missing grid neighbour does, before any commit. That
-; keeps the Move's ownership stop for S3a; S3b deletes the flag. Gated on
-; MOVE_ENABLED: a streamed project with no Move assembles none of it.
+; Phase 3a S3a/S3b: a scripted player Move calls these too (entities.asm's
+; move_tick), and a step that crosses commits exactly as a walking one does --
+; sw_cross_*, sw_locate_current, spawn_entities, screen_fresh, then (a project
+; with a streamed Move) sw_talker_cross, which re-binds the event's talker to
+; the new screen. Only a missing grid neighbour or a solid tile refuses.
 ;
 ; Refuses outright (leaves player_x/y and every crossed/committed field
 ; untouched) when blocked by collision or when the grid has no neighbour in
@@ -514,18 +513,11 @@ sw_pstep_right:
   jsr sw_pr_calc
   lda sw_tmp2
   beq sw_pr_gok
-  .if MOVE_ENABLED
-  lda sw_step_nocross
-  bne sw_pr_refuse
-  .endif
   lda sw_col
   clc
   adc #1
   cmp sw_grid_w
   bcc sw_pr_gok
-  .if MOVE_ENABLED
-sw_pr_refuse:
-  .endif
   rts
 sw_pr_gok:
   lda sw_tmp
@@ -570,6 +562,9 @@ sw_pr_c2:
   jsr spawn_entities
   lda #1
   sta <screen_fresh
+  .if TALKER_ENABLED
+  jsr sw_talker_cross
+  .endif
 sw_pr_done:
   rts
 
@@ -589,15 +584,8 @@ sw_pstep_left:
   jsr sw_pl_calc
   lda sw_tmp2
   beq sw_pl_gok
-  .if MOVE_ENABLED
-  lda sw_step_nocross
-  bne sw_pl_refuse
-  .endif
   lda sw_col
   bne sw_pl_gok
-  .if MOVE_ENABLED
-sw_pl_refuse:
-  .endif
   rts
 sw_pl_gok:
   lda sw_tmp
@@ -642,6 +630,9 @@ sw_pl_c2:
   jsr spawn_entities
   lda #1
   sta <screen_fresh
+  .if TALKER_ENABLED
+  jsr sw_talker_cross
+  .endif
 sw_pl_done:
   rts
 
@@ -705,18 +696,11 @@ sw_pd_c2:
   inc <moving
   rts
 sw_pd_cross:
-  .if MOVE_ENABLED
-  lda sw_step_nocross
-  bne sw_pd_refuse
-  .endif
   lda sw_row
   clc
   adc #1
   cmp sw_grid_h
   bcc sw_pd_cok
-  .if MOVE_ENABLED
-sw_pd_refuse:
-  .endif
   rts
 sw_pd_cok:
   jsr sw_pd_calc_b
@@ -764,6 +748,9 @@ sw_pd_c4:
   jsr spawn_entities
   lda #1
   sta <screen_fresh
+  .if TALKER_ENABLED
+  jsr sw_talker_cross
+  .endif
   rts
 
 sw_pu_calc_noborrow:
@@ -795,15 +782,8 @@ sw_pstep_up:
 ; are +/-128 bytes; long dispatch chains need jmp").
   jmp sw_pu_noborrow              ; carry set = no borrow = no crossing (far)
 sw_pu_borrowed:
-  .if MOVE_ENABLED
-  lda sw_step_nocross
-  bne sw_pu_refuse
-  .endif
   lda sw_row
   bne sw_pu_gok
-  .if MOVE_ENABLED
-sw_pu_refuse:
-  .endif
   rts
 sw_pu_gok:
   jsr sw_pu_calc_b
@@ -888,6 +868,9 @@ sw_pu_c2:
   jsr spawn_entities
   lda #1
   sta <screen_fresh
+  .if TALKER_ENABLED
+  jsr sw_talker_cross
+  .endif
   rts
 sw_pu_noborrow:
   lda <player_x
@@ -2728,9 +2711,10 @@ sw_wedr_c1:
 ; before the clamp, so camScreenRow and camLocalPxY follow from player_y and
 ; sw_row directly (this row, or the row above; row 0 floors at 0,0; the last
 ; row's ceiling pins the local pixel at 0), and the desired window row follows
-; from camLocalPxY>>4 the same way. The cost is the same at every row of every
-; grid (S3a.5; the repeated-subtract loops this replaced cost ~45 cycles per
-; world row, every frame). test/unit/streamworldcamera.test.js holds both the
+; from camLocalPxY>>4 the same way. The cost is flat across rows and grids (S3a.5;
+; the repeated-subtract loops this replaced cost 1,008 / 5,452 / 20,346 cycles at rows 1 / 58 / 254 of a 255-high
+; grid, worst player_y, every frame; the closed form costs 787 / 787 / 828).
+; test/unit/streamworldcamera.test.js holds both the
 ; values (against an independent statement of the rule) and that flat cost.
 ;
 ; In: sw_row, sw_col, sw_grid_w, sw_grid_h, player_x, player_y.
@@ -4554,3 +4538,135 @@ sw_redraw_screen_landing:
   sta $2001
   rts
 sw_redraw_screen_landing_end:
+
+; ==========================================================================
+; Phase 3a S3b: the event's talker across a seam. A scripted Move crossing a seam respawns the
+; screen's actors, so the slot talk_ent named is no longer the talker's. These routines keep the
+; talker by what survives a respawn: talk_rec (its ent_record) on talk_scr (its flat_screen), and
+; talk_crossed, the one key Rule R reads. Kernel-hi, reached by jsr; assembled only under
+; TALKER_ENABLED (a streamed project with a Move). Registers: A and X are clobbered, Y is kept.
+; ==========================================================================
+  .if TALKER_ENABLED
+; start_dialog's capture. In: X = the slot just stored in talk_ent.
+sw_talker_capture:
+  lda ent_record,x
+  sta talk_rec
+  lda <flat_screen
+  sta talk_scr
+  lda #0
+  sta talk_crossed
+  lda #NO_ENTITY
+  sta owed_enter_rec               ; every event start obsoletes whatever an earlier one owed
+  rts
+
+; Re-derives talk_ent from the identity: the live slot of talk_rec on talk_scr, else NO_ENTITY.
+sw_talker_rebind:
+  lda talk_rec
+  cmp #NO_ENTITY
+  beq sw_tr_gone
+  lda talk_scr
+  cmp <flat_screen
+  bne sw_tr_gone
+  ldx #0
+sw_tr_loop:
+  lda ent_active,x
+  beq sw_tr_next
+  lda ent_record,x
+  cmp talk_rec
+  beq sw_tr_found
+sw_tr_next:
+  inx
+  cpx #MAX_ENTITIES
+  bne sw_tr_loop
+sw_tr_gone:
+  ldx #NO_ENTITY
+sw_tr_found:
+  stx <talk_ent
+  rts
+
+; The end of every crossing commit (sw_pstep_*), after spawn_entities. Only while a script runs: a
+; walking crossing has no talker and owes nothing.
+sw_talker_cross:
+  lda <script_active
+  beq sw_tx_done
+  lda #1
+  sta talk_crossed
+  jsr sw_talker_rebind
+  ldx <pending_ent                 ; the destination's enter actor spawn_entities just armed, if any
+  lda #NO_ENTITY                   ; the absent sentinel, loaded explicitly (never a leftover A)
+  cpx #NO_ENTITY
+  beq sw_tx_store
+  lda ent_record,x
+sw_tx_store:
+  sta owed_enter_rec               ; overwritten by every crossing: only the last screen's entry is owed
+sw_tx_done:
+  rts
+
+; battle_end's script_active branch: the battle suspended an event, so rebind its talker and
+; re-arm the entry the redraw's pending_ent clear dropped.
+sw_battle_resume:
+  lda talk_crossed
+  beq sw_br_done
+  lda <talk_ent
+  cmp #NO_ENTITY
+  bne sw_br_rearm
+  jsr sw_talker_rebind
+sw_br_rearm:
+  lda owed_enter_rec
+  cmp #NO_ENTITY
+  beq sw_br_done
+  ldx #0
+sw_or_loop:
+  lda ent_active,x
+  beq sw_or_next
+  lda ent_record,x
+  cmp owed_enter_rec
+  beq sw_or_found
+sw_or_next:
+  inx
+  cpx #MAX_ENTITIES
+  bne sw_or_loop
+  beq sw_or_clear
+sw_or_found:
+  jsr arm_event                    ; the shipped single claim rule: eligibility is not restated here
+  lda <pending_ent
+  cmp #NO_ENTITY
+  bne sw_br_done
+sw_or_clear:
+  lda #NO_ENTITY
+  sta owed_enter_rec
+sw_br_done:
+  rts
+
+; Rule R: a self-command whose talker is not live. After a crossing it is a no-op that continues the
+; page; before one, the shipped defence-in-depth stands (the event ends).
+sw_rr_move:
+  lda talk_crossed
+  beq sw_rr_fin
+  lda #0
+  sta <mv_left                     ; script_op_move already wrote these before its guard:
+  lda #NO_ENTITY                   ; ui_tick's move guard would otherwise index ent_* at $FF
+  sta mv_ent
+  jmp script_run
+sw_rr_turn:
+  lda talk_crossed
+  beq sw_rr_fin
+  jmp script_next3
+sw_rr_visible:
+  lda talk_crossed
+  beq sw_rr_fin
+  jmp script_next2
+sw_rr_fin:
+  jmp script_finish
+
+; Every way an event's identity ends: close_ui, init_session, take_door (after a valid target) and
+; settle_owed's inactive-slot discard. Leaves Z set (settle_owed branches on it).
+sw_talker_reset:
+  lda #NO_ENTITY
+  sta owed_enter_rec
+  sta talk_rec
+  lda #0
+  sta talk_crossed
+  rts
+sw_talker_end:
+  .endif

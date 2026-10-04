@@ -106,10 +106,10 @@ the player far enough that the unfrozen frame finds the camera window behind it 
 
 - **`move_tick`** (`engine/entities.asm`, `move_tick_streamed`..`move_tick_ordinary`): the clip prefix is unchanged
   (`mv_step = min(raw, mv_left)`, the accumulator advanced exactly once in `move_speed_player`); then `cur_speed = mv_step`, `moving = 0`,
-  `inc sw_step_nocross`, `jsr sw_pstep_<dir>`, `dec sw_step_nocross`; `moving == 0` is a blocked step (`move_wall`), anything else calls
+  `inc sw_step_nocross`, `jsr sw_pstep_<dir>`, `dec sw_step_nocross` (S3a; the inc/dec pair is gone since S3b); `moving == 0` is a blocked step (`move_wall`), anything else calls
   `sw_frame_camera_window` and `move_advance`, which subtracts the CLIPPED step. The shared labels `move_wall`/`move_advance`/
   `move_blocked`/`move_finish` are kept, so the ordinary-map path is byte-identical.
-- **The ownership stop** stays, through one new byte: `sw_step_nocross` (`$077F`, `engine/constants.asm`). Each `sw_pstep_*` tests it at its
+- **The ownership stop** (S3a only -- **deleted by S3b, 2026-10-04: see "S3b: measured outcomes" below; the byte, the guards and `move_tick`'s raise/drop no longer exist**) stayed, through one new byte: `sw_step_nocross` (`$077F`, `engine/constants.asm`). Each `sw_pstep_*` tests it at its
   crossing branch and refuses before any commit (`.if MOVE_ENABLED`, 5 bytes each). Slice S3b deletes the flag and enables crossings;
   S3a promises the shipped stop and `streamedmove*.test.js` / `streamworldclosemove.test.js` still assert it **unmodified**.
 - **Deleted:** `sw_move_probe`, `sw_move_probe_solid` and their `_cross`/`_same`/`_no_dy`/`_have_dy`/`_solid_done` labels.
@@ -127,11 +127,11 @@ the player far enough that the unfrozen frame finds the camera window behind it 
 
 | Term | Before | After | Note |
 | --- | --- | --- | --- |
-| `STREAMWORLD_MOVE_KERNEL_ALLOWANCE` (kernel-lo) | 117 | **83** | the 67-byte delegation span + the 16-byte streamed branch of `move_speed_player` |
-| `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` (kernel-hi) | 76 | **20** | the four `sw_step_nocross` guards, 5 bytes each |
-| `contentCeilingBytes`, action, Move | 1151 | **1207** | +56; no-Move shapes unchanged (2861 action, 1560 rpg) |
-| `contentCeilingBytes`, rpg, Move | 1208 | **1264** | |
-| relocated-dialogue ceiling, Move (`streamworlddialogueboundary.test.js`) | 2450 | **2506** | the authored figure moved with the term |
+| `STREAMWORLD_MOVE_KERNEL_ALLOWANCE` (kernel-lo) | 117 | **83** (77 since S3b) | the 67-byte delegation span + the 16-byte streamed branch of `move_speed_player` |
+| `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` (kernel-hi) | 76 | **20** (deleted by S3b) | the four `sw_step_nocross` guards, 5 bytes each |
+| `contentCeilingBytes`, action, Move | 1151 | **1207** | +56; no-Move shapes unchanged (2861 action, 1560 rpg). *S3a.5 +78 on all, then S3b -188 on the Move shapes: 1097 final* |
+| `contentCeilingBytes`, rpg, Move | 1208 | **1264** | *1154 final (same two steps)* |
+| relocated-dialogue ceiling, Move (`streamworlddialogueboundary.test.js`) | 2450 | **2506** | the authored figure moved with the term; *2584 after S3a.5, 2396 after S3b* |
 
 Both allowances stay equality-asserted against nesasm by `kernelbytes.test.js` on action, rpg and action-mixed (the delegation-span test replaced
 S1's probe-stage test).
@@ -172,7 +172,7 @@ and a Say lead is closed before the Move by the close-for-Move barrier); three c
 with a strip already in flight in a reduced chunk, `arm`: the same drain on the body that arms the strip -- the heaviest -- and `pub`: the final body
 publishes Flash's packet). The per-population table is `handoff-next/s3a/fix2/m11-table-saved-campaign.md`.
 
-First sweep (round 0), one population, no bound tile:
+First sweep (round 0), one population, no bound tile (S3a engine **before** S3a.5's camera lever; the S3b-engine figures for the same scenes are in the reconciliation table below, about 4.8k lower on action and 2.4k on rpg):
 
 | Row | action (wide / tight) | rpg (wide / tight) | parent, same scenes |
 | --- | --- | --- | --- |
@@ -242,3 +242,73 @@ ROM (10,893 matched, 643 resolved reuses, 0 mismatches) so the bound curve stays
 `test/fixtures/identity-cert/s3a.json`. **Consequence:** any later engine or generator edit now needs re-certification (about 90 s).
 
 *(S3a.5, 2026-10-02/03, history above not rewritten.)* The camera lever changed every streamed ROM, so that certificate (10,893 of 10,893 direct records mismatched on the new engine, as they must) no longer pins the checked-in curve, and the recorded curve was re-swept on the new engine (12,590 jobs, 68 min for stages A, B, C, R, F plus 2 min for the probe). Under the new engine the S1 rule's second fact could not be met as written: stage F's 500 candidates per curve at 17 / 16 found no failing row (worst 25,130 / 25,227 against the 29,780 gate), the cliff is at n = 56 plain / 54 bound tiles, and an exhaustive partition stage at a certified n there is about 219,000 jobs per curve (about 20 hours). **Chris ruled (2026-10-03, option 1): the shipped bounds stay 15 / 14 and the second fact is amended**: the certified n (16 / 15) is the policy figure, and a bounded probe (`plan P`, the record's `probe`) records the cliff with each failing row confirmed by an isolated re-run, the cliff at least certified+2. Fact 1 (exhaustive at the certified n) is unchanged. The spare cycles stay as headroom for S3b's Move ring and S4. Not chosen: raising the bound, sampling stage C, re-running the old rule at 17 / 16. The rule is written in `test/lua/sw_bound_sweep.mjs`'s header, enforced by `streamtilebound.test.js` and described in `docs/reference-engine.md`; `run_sw_cadence.mjs` keeps its walk at 15; `overrun-p` is the probe shape at the plain cliff (n = 56, Flash x 241) and `overrun-b` is the x = 242 variant at the probe's bound cliff population (n = 54). *(S3a.5 fix round 1, 2026-10-03: `test/fixtures/identity-cert/s3a.json` was deleted as superseded; it bound the pre-lever curve and could not certify the new one. `streamtilebound.test.js` now passes through its exact-current-source branch, the record's recorded engine and generator equalling the live ones, and an absent certificate directory certifies nothing, as that test's own non-vacuity check pins. The text above is kept as the history of S3a.)*
+
+*(S3b fix round 1, 2026-10-03.)* **S9b — the discard reset in `settle_owed` is kept, and is not claimed killed.** Sabotage S9b (the `settle_owed` discard branch
+without `sw_talker_reset`) survives every test, because it is an equivalent mutant on every *reachable* path, not on every path: an event's end resets the talker
+identity through `close_ui` (script end, `box_close`), a Load/Continue/restart through `init_session`, and a valid warp through `take_door`, each before
+`settle_owed` can see an inactive pending slot, and `settle_owed` itself requires gameplay. The five kernel-lo bytes stay as defence in depth against a future
+path that skips those three; there is deliberately no test that "kills" the mutant, because a test would have to poke an unreachable state, and the kernel
+allowance is priced with the bytes in (`TALKER_KERNEL_LO_ALLOWANCE_SETTLE`, 5, equality-asserted by `kernelbytes.test.js`).
+
+## S3b: measured outcomes (2026-10-04)
+
+Slice S3b deletes S3a's ownership stop: a scripted player `Move` on a streamed map crosses a seam exactly as a walking step does, and the
+event it belongs to keeps its talker (`talk_rec`/`talk_scr`/`talk_crossed`/`owed_enter_rec`, Rule R, `sw_battle_resume`; mechanism and pins in
+`docs/reference-engine.md`, "The talker across a seam", and `docs/reference-event-system.md`). The Map Forge's "a Move cannot cross" warning is
+deleted with it. Everything below is **measured on the final tree**, not designed: Mesen runs of step D and RS, 2026-10-03/04. The S3b report
+(`handoff-next/streamed-worlds-phase3a-s3b-report.md`) holds the raw launch tables.
+
+**Kernel (details and the per-site table: `docs/reference-kernel-budget.md`, "Phase 3a slice S3b").** kernel-hi +188 (talker 196 + 12 crossing calls,
+minus the deleted 20); kernel-lo +13 action / +16 RPG (talker call sites 19, +3 for `battle_end` on an RPG, minus 6 from
+`STREAMWORLD_MOVE_KERNEL_ALLOWANCE` 83 -> 77), so an RPG Move scene has 144 free lookup bytes where it had 160. `contentCeilingBytes`, Move shapes:
+action 1,285 -> **1,097**, rpg 1,342 -> **1,154** (every other shape unchanged; the relocated-dialogue Move row 2,584 -> **2,396**).
+The five capacity-refusal groups (74 + 111 + 89 appendix + the 66 originals = 18 `origParentRefused` + 48 `origNewRegression`) are exact-ID, kept apart and
+never coverage; the final aggregate has 13,808 results, 0 problems and 0 refusals outside a group.
+
+**Reconciliation table (the long-`Move` envelope, M11, worst frame G against 29,780).** The numbers that looked contradictory were different workloads
+on different engines, not a regression. Per row: the engine, the workload, the worst M11a (an ordinary **nonfinal, noncrossing** mid-Move step body, pre-seam row-arm bodies included), M11b (the final `move_finish` body; in the S3b rows,
+the **noncrossing** final bodies -- a final body that crosses is M11c) and M11c (the crossing bodies), action / rpg. M11a and M11b are exclusive in the S3b rows.
+
+| Row | Engine | Workload | M11a | M11b | M11c |
+| --- | --- | --- | --- | --- | --- |
+| First sweep (round 0) | S3a, before S3a.5 | one population, no bound tile, distances 200 and 240, no `Say` lead | 25,264-25,462 / 20,330-20,534 | 21,081-21,285 / 17,338-17,542 | (no crossing: the stop) |
+| S3a campaign (`handoff-next/s3a/fix2/m11-table-final.md`) | S3a, before S3a.5 | the `phase` set stops at distance 165; distance-200 cells carry a `Say` lead; many populations incl. bound tiles | 23,113 (25,428 with a `Say` lead) / 19,366 (20,504) | 25,248 / 20,326 | (no crossing) |
+| **S3b long-`Move`** (L1, L3 `x1`-`x3`, L4) | S3b (carries S3a.5's camera lever) | distances 166-230 x four projects x five tails, the six historical P0 rows, touchY phase, a populated destination (`x3`), leads, animations, populations | **21,257** / **18,660** (`x3`, populated destination, pre-seam arm; `x1` alone 20,697 / 18,122; L1 20,668 / 18,080) | **20,865** / **18,297** (`x1`; L1 phase 20,521 / 17,936; L4 20,506 / 17,923) | unpopulated crossing floor `x1` 11,045 / 9,644, `x2` 10,743 / 9,338; populated `x3` 17,375 / 15,962 |
+| **Composed crossing** (L3 `x4`, `x5h`, `x5r`, `x6`) | S3b | a real populated destination (eight actors, an enter `Set`), a Flash/`Say` lead and tails, horizontal classes `hseam-a`/`hseam-b`, a return `Move`, hand-written code | `x5h` 19,721 / 17,163 | `x5r` 16,936 / 15,516 (noncrossing final bodies) | `vseam` `x4` 23,909 / 21,323; `x6` code 23,646 / 21,149; `hseam-a` 23,329 / 20,751; `hseam-b` 26,138 / 23,566; `x5r` `hseam-b` 26,176 / 23,613, `return` 18,030 / 17,220 |
+
+**The worst gated Move/crossing bodies of the phase are composed horizontal crossings, M11c: 26,176 (action, `x5r` `hseam-b`, margin 3,604 under the gate) and 23,613 (rpg, margin 6,167).** No **gated Move or crossing body** exceeds 29,780. (The exempt, ungated `before.*` close-for-`Move` maximum, 38,641 cycles, is a separate pre-existing case: below.) The parent's own Move bodies measured in the same campaign top out at 21,262 / final 20,877 (6,723 parent
+cells). The six historical P0 rows replayed on the S3b engine, against the parent re-measured today and the historical figure:
+
+| Row (distance 200, no `Say` lead) | historical | 15c11b7 today | S3b |
+| --- | ---: | ---: | ---: |
+| action wide / `say` tail | 25,264 | 20,510 | 20,466 |
+| action tight / `say` tail | 25,462 | 20,714 | 20,663 |
+| rpg wide / `flash` tail | 20,330 | 17,926 | 17,916 |
+| rpg tight / `flash` tail | 20,534 | 18,133 | 18,119 |
+
+The drop from the historical column is S3a.5's camera lever (about 4.8k on action, 2.4k on rpg); S3b's step bodies in the four paired rows above are 44, 51, 10 and 14 cycles below the parent's
+(S3b removes a guard per step and adds none). **A pre-existing exception, unchanged and exempt:** the `before.*` close-for-`Move` bodies of an action
+`Say` lead are 38,641 cycles (rpg 28,942), the dialogue-restoration cost documented in S3a; the same cells' own step and final bodies are gated and pass.
+
+**The bound is unchanged: 15 / 14.** `STREAM_TILE_BOUND` 15 and `STREAM_TILE_BOUND_WITH_BOUND_TILES` 14 (certified n 16 / 15, probe cliff n = 56 plain at
+31,253 cycles / n = 54 with bound tiles at 31,243, margins 4,768 / 4,669 against the tightest passing rows 25,012 / 25,111). RS re-swept the whole record on the S3b engine
+(12,590 jobs, 98 probe records, 89 min 42 s) and every `maxG`, `gateFail`, confirmation and probe row came out identical to S3a.5's; the provenance stamp moved
+(engine `aaa235270e07`, generator `e4cd0e975976`) and **seven tied worst-scene witnesses** changed (rows 835, 837, 887, 1101, 1489, 1901 and 1902, each at equal G, e.g. row 835 back split -> front split at 24,009); no timing figure or bound changed. The rebuild check matched 11,712 of 11,712 Mesen-run records, the ROM-identity certificate is
+`test/fixtures/identity-cert/s3b-rs.json` (11,712 / 11,712), the cadence check passes 3/3, and `shared/streambound.js` was not edited
+(`docs/reference-engine.md`, "The S3b re-sweep"). The older `s3b-stepC.json` certified the S3a.5 sweep's records and no longer described a curve file in the tree; **retired after the final review
+(2026-10-04)**, moved to `handoff-next/s3b/impl/retired/s3b-stepC.json` (README there), superseded by `s3b-rs.json`.
+
+**L5 and X5.** L5 (the 24 talker + scripted-`Battle` cases of `streamedtalker.test.js` T5/T6, all RPG, replayed through Mesen's independent core by `test/lua/sw_talker_battle.mjs`): **24 cases, 24
+completed, 0 failed.** X5 (`handoff-next/s3b/impl/fix1/classaprobe.mjs`, a dev probe, not a gate; 312 runs, 0 error rows) confirms the horizontal class-(a)
+composition on the leads that build: action plain, 26 alignments each, hseam-a hits `ref` 26, `lr1` 8, `rl1` 8, `r1` 4, `r2` 8, `l1` 4, `ud1` 8 and `flashflash` 0 (it
+produces no hseam-a body), all 26 runs of every lead crossing; rpg with a bound tile, `lr1`/`rl1`/`r2`/`ud1` 8 hits each. Worst hseam-a G **23,335** (action,
+`r1`) and **20,687** (rpg bound, `lr1`). **The RPG-bound `ref` lead is a capacity refusal, not covered:** it errors on all 26 alignments with the generator's
+"lookup tables need 128 bytes but only 101 are free"; `flashflash`, `r1` and `l1` were never run on RPG-bound.
+
+**No new 6502 trap was hit.** The slice applied two existing ones with their regression tests: a routine answering with a stored sentinel must load it explicitly, never
+leave a leftover accumulator (`sw_talker_cross`'s `lda #NO_ENTITY` before `cpx`, pinned by the decoy-record case in `streamedtalker.test.js` T5), and a
+routine whose caller branches on Z must say what Z holds (`sw_talker_reset` ends with `lda #0`, so `settle_owed`'s `beq` reads it as set).
+
+**Stale statements this slice made false, dated rather than rewritten above:** the "ownership stop stays" bullet, the S3a ledger and the first-sweep table in this file;
+`docs/reference-engine.md`'s "never crosses ... slice S3b deletes the flag" and "S3b headroom" sentences; `docs/reference-kernel-budget.md`'s `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 20`,
+`= 83`, "1207 / 1264" and "2506 after S3a" figures; and the Map Forge warning documented in `docs/reference-event-system.md`.

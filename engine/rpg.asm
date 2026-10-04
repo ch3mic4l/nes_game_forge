@@ -304,6 +304,9 @@ battle_end_no_restore:
   ; pending_ent has already forgotten.
   lda <script_active
   beq battle_end_gameplay
+  .if TALKER_ENABLED
+  jsr sw_battle_resume
+  .endif
   ; The world has to stay frozen for whatever the script does next -- ST_DIALOG
   ; is the same state start_dialog itself sets, so if the next command is
   ; another Say, it draws over a field the player cannot walk around on rather

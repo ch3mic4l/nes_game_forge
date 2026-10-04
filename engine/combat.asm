@@ -127,6 +127,10 @@ init_session_kb_dispatch:
   .endif
   .endif
 init_session_kb_done:
+  .if TALKER_ENABLED
+  jsr sw_talker_reset
+  lda #0
+  .endif
   sta <talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
   ldx #7
 init_session_switches:

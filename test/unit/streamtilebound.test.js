@@ -166,7 +166,8 @@ export function probeProblems(rec) {
     if (new Set(rows.map((r) => r.n)).size !== rows.length) p.push(`probe ${c}: a probed n is recorded twice`);
     for (const r of rows) {
       if (r.sizes?.reduce((a, b) => a + b, 0) !== r.n) p.push(`probe ${c} n=${r.n}: sizes do not add up to n`);
-      if ((r.gateFail > 0) !== (r.maxG > GATE)) p.push(`probe ${c} n=${r.n}: gateFail and maxG disagree about the gate`);
+      if (!Number.isFinite(r.maxG)) p.push(`probe ${c} n=${r.n}: maxG is missing or not a number (a row with no measured figure)`);
+      else if ((r.gateFail > 0) !== (r.maxG > GATE)) p.push(`probe ${c} n=${r.n}: gateFail and maxG disagree about the gate`);
       if (r.confirmed && !(r.gateFail > 0)) p.push(`probe ${c} n=${r.n}: a passing row marked confirmed`);
     }
     const fails = rows.filter((r) => r.gateFail > 0);
@@ -568,6 +569,10 @@ test('COVERAGE: each axis value removed from the candidate n of a curve, and eac
     assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).n = EVID[c] - 1; })).some((m) => /outside the probed range/.test(m)), `${c}: a row below certified+1`);
     assert.ok(coverageProblems(mutProbe((rows) => { cliffRow(rows).n = cliffN + 0.5; })).some((m) => /outside the probed range/.test(m)), `${c}: a non-integer n`);
     assert.ok(coverageProblems(mutProbe((rows, pr) => { pr.rows.push({ ...clone(cliffRow(rows)), curve: 'other' }); pr.jobs = pr.rows.length; })).some((m) => /unknown curve/.test(m)), `${c}: a row for an unknown curve`);
+    // S3b carry-over (S3a.5): a probe row with no maxG, passing or failing, is refused by name (a passing one used to slip through)
+    for (const [what, n] of [['a passing row below the cliff', CAND[c] + 2], ['the cliff row', cliffN]]) {
+      assert.ok(probeProblems(mutProbe((rows) => { delete rows.find((x) => x.n === n).maxG; })).some((m) => /maxG is missing/.test(m)), `${c}: ${what} without maxG`);
+    }
     const over = clone(rec);
     over.probe.rows = over.probe.rows.filter((x) => x.curve !== c);
     for (let n = EVID[c]; n <= PROBE_MAX; n++) over.probe.rows.push({ curve: c, n, id: `${c}-over-${n}`, sizes: [n], maxG: 25000, gateFail: 0, confirmed: false, confirmMaxG: null, project: '0'.repeat(16), rom: '0'.repeat(16) });

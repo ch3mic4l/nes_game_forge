@@ -185,8 +185,8 @@ function baseMoveProject({ dir, dist, startX, startY, moveScreen = 0 } = {}) {
   return project;
 }
 
-function solidProject({ dir, dist, startX, startY, fillSolid = false } = {}) {
-  const project = baseMoveProject({ dir, dist, startX, startY });
+function solidProject({ dir, dist, startX, startY, fillSolid = false, moveScreen = 0 } = {}) {
+  const project = baseMoveProject({ dir, dist, startX, startY, moveScreen });
   if (fillSolid) project.metatiles[project.maps[0].fillMetatileId ?? 0].collision = 'solid';
   return project;
 }
@@ -219,12 +219,14 @@ const boots = { skip: !hasNesasm && 'nesasm not found on PATH' };
 // same way an out-of-range value would).
 // ==========================================================================
 
-test('the streamed rectangle bound holds at the exact 254/255, 238/239 and 0/0 fringes', boots, async () => {
+// Phase 3a S3b: the rectangle is no longer a wall where a neighbouring screen exists (a Move crosses like a walking step), so the
+// right and bottom fringes are tested on the world's own last screen, whose far edges have no neighbour and are walls.
+test('the world edge holds at the exact 254/255, 238/239 and 0/0 fringes (right/down on the last screen, left/up on the first)', boots, async () => {
   const scenarios = [
-    { label: 'RIGHT from 254', dir: 'right', axis: 'x', start: { startX: 254, startY: 112 } },
-    { label: 'RIGHT from 255', dir: 'right', axis: 'x', start: { startX: 255, startY: 112 } },
-    { label: 'DOWN from 238', dir: 'down', axis: 'y', start: { startX: 120, startY: 238 } },
-    { label: 'DOWN from 239', dir: 'down', axis: 'y', start: { startX: 120, startY: 239 } },
+    { label: 'RIGHT from 254', dir: 'right', axis: 'x', start: { startX: 254, startY: 112, moveScreen: LAST_SCREEN } },
+    { label: 'RIGHT from 255', dir: 'right', axis: 'x', start: { startX: 255, startY: 112, moveScreen: LAST_SCREEN } },
+    { label: 'DOWN from 238', dir: 'down', axis: 'y', start: { startX: 120, startY: 238, moveScreen: LAST_SCREEN } },
+    { label: 'DOWN from 239', dir: 'down', axis: 'y', start: { startX: 120, startY: 239, moveScreen: LAST_SCREEN } },
     { label: 'LEFT from 0', dir: 'left', axis: 'x', start: { startX: 0, startY: 112 } },
     { label: 'UP from 0', dir: 'up', axis: 'y', start: { startX: 120, startY: 0 } }
   ];
@@ -306,11 +308,12 @@ test('finding 1, repro 3 (corner): a RIGHT Move at (250,239) is blocked by the B
   assert.equal(mem[PLAYER_X], 250, 'blocked on the very first tick by the diagonal neighbour alone');
 });
 
-test('a crossing probe reading passable (open) neighbour terrain lets the player reach the true edge', boots, async () => {
+test('a crossing probe reading passable (open) neighbour terrain lets the player cross the seam and keep walking (S3b: it used to stop at the true edge)', boots, async () => {
   const project = solidProject({ dir: 'right', dist: 60, startX: 200, startY: 112, fillSolid: false });
   const { nes, mem } = await buildAndBoot(project);
   assert.ok(settleMove(nes));
-  assert.equal(mem[PLAYER_X], 255, 'open neighbour terrain must not block reaching the true edge');
+  assert.equal(mem[FLAT_SCREEN], 1, 'the Move crossed into the right-hand screen');
+  assert.equal(mem[PLAYER_X], 200 + 60 - 256, 'and covered its whole distance there');
 });
 
 // Off-grid crossings: the grid's own far corner (LAST_SCREEN) has no real neighbour past its own
@@ -439,10 +442,12 @@ test('8c: an off-parity step is refused exactly one pixel short of the wall, not
   const scenarios = [
     { label: 'LEFT toward 0', dir: 'left', axis: 'x', sub: SW_SPEED_SUB_X, towardZero: true, ceiling: 255, other: 112 },
     { label: 'UP toward 0', dir: 'up', axis: 'y', sub: SW_SPEED_SUB_Y, towardZero: true, ceiling: 239, other: 120 },
-    { label: 'RIGHT toward 255', dir: 'right', axis: 'x', sub: SW_SPEED_SUB_X, towardZero: false, ceiling: 255, other: 112 },
-    { label: 'DOWN toward 239', dir: 'down', axis: 'y', sub: SW_SPEED_SUB_Y, towardZero: false, ceiling: 239, other: 120 }
+    // S3b: right/down are walls only where no neighbour exists, so they run on the last screen, where the wall is the off-grid
+    // neighbour's solid tile: the leading edge (BODY_R = 13 / BODY_B = 15, engine/constants.asm) may not pass 255 / 239.
+    { label: 'RIGHT toward the off-grid wall', dir: 'right', axis: 'x', sub: SW_SPEED_SUB_X, towardZero: false, ceiling: 255 - 13, other: 112, moveScreen: LAST_SCREEN },
+    { label: 'DOWN toward the off-grid wall', dir: 'down', axis: 'y', sub: SW_SPEED_SUB_Y, towardZero: false, ceiling: 239 - 15, other: 120, moveScreen: LAST_SCREEN }
   ];
-  for (const { label, dir, axis, sub, towardZero, ceiling, other } of scenarios) {
+  for (const { label, dir, axis, sub, towardZero, ceiling, other, moveScreen } of scenarios) {
     const double = firstDoubleStep(sub);
     const start = towardZero ? 1 + double.cumulativeBefore : (ceiling - 1) - double.cumulativeBefore;
     const reg = axis === 'x' ? PLAYER_X : PLAYER_Y;
@@ -451,7 +456,8 @@ test('8c: an off-parity step is refused exactly one pixel short of the wall, not
       dir,
       dist: 60,
       startX: axis === 'x' ? start : other,
-      startY: axis === 'y' ? start : other
+      startY: axis === 'y' ? start : other,
+      moveScreen
     });
     const { nes, mem } = await buildAndBoot(project);
     const started = awaitMoveStart(nes, mem);

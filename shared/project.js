@@ -6759,46 +6759,12 @@ export function projectWithoutMiss(project) {
 export const MISS_OAM_TILES = 4;
 
 /**
- * The player Moves a streamed map's events could run that might reach a
- * screen's ownership edge (docs/design-streamed-worlds.md §5, "Movement"; the
- * phase-1 warning). `liveCommands`/`allCommands` -- never a page's own top
- * level -- and a `call` is followed into its common event. A legal starting
- * position can be one pixel short of any edge, so the check can only ever
- * bound the authored distance: any Move of at least a pixel qualifies, in
- * every direction. Returns true if `event` holds one.
- */
-function eventMovesPlayer(event, commonById, seen) {
-  for (const page of compiledPages(event)) {
-    // liveCommands yields a route's admitted legs without the route's own `who` (legs store none),
-    // so ownership comes from allCommands and liveness stays liveCommands' own: a leg counts only if
-    // it is both yielded live and belongs to a player route. A disabled ancestor, a switched-off
-    // route or a choice option past the compiled limit is never yielded, whoever owns it.
-    const playerLegs = new Set();
-    for (const command of allCommands(page.commands)) {
-      if (command.op === 'route' && command.who === 'player') for (const leg of routeLegs(command.legs)) playerLegs.add(leg);
-    }
-    for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
-      if (command.op === 'move' && command.dist > 0 && (command.who === 'player' || playerLegs.has(command))) return true;
-      if (command.op === 'call') {
-        const target = commonById.get(commonEventId(command.event));
-        if (target && !seen.has(target)) {
-          seen.add(target);
-          if (eventMovesPlayer(target, commonById, seen)) return true;
-        }
-      }
-    }
-  }
-  return false;
-}
-
-/**
  * Phase 2 slice 2b: does `event` reach a live command whose op is in `ops`
- * (a Set), following `call` into common events the same way eventMovesPlayer
- * does? Used by validateStreamedMaps for the Say/Choice half of item 4's own
+ * (a Set), following `call` into common events? Used by validateStreamedMaps for the Say/Choice half of item 4's own
  * text-and-move combination refusal (phase 2 slice 7b lifted the plain
  * Say/Choice refusal once the streamed dialogue lifecycle shipped) and the
  * Fight (item 6) refusal, itself already lifted as of phase 2 slice 6 --
- * unlike eventMovesPlayer, ownership (who runs the command) does not matter
+ * ownership (who runs the command) does not matter
  * for either of those: a Say opens a text box no matter who is "speaking,"
  * and a scripted Fight starts a battle no matter who triggers it, so this is
  * a plain reachability walk with no route/player bookkeeping of its own.
@@ -6940,10 +6906,8 @@ function validateStreamedMaps(project, add) {
   // this case (the player-mover's own 0-255/0-239 ownership rectangle, carry-
   // safe, plus sw_move_probe_solid reading the neighbour screen's terrain at
   // the seam) -- the thing this refusal existed to prevent is now handled at
-  // runtime, so item 3 lifts back to the phase-1 warning below, the way
-  // ruling 7 always said it eventually would once the actor was addressed by
-  // identity (mv_ent) rather than live talk_ent.
-  const commonById = new Map(liveCommonEvents(project).map(({ entry, id }) => [id, entry.event]));
+  // runtime, so item 3 lifted back to a phase-1 warning, and slice S3b (a scripted Move crosses the seam
+  // like a walking step) deleted that warning too.
   // Fix round 1, finding 4: every command that opens the text overlay
   // (engine/text.asm's box_begin/box_choose), not just Say -- Choice
   // dispatches straight to box_choose (engine/script.asm's script_op_choice,
@@ -6974,48 +6938,10 @@ function validateStreamedMaps(project, add) {
             'this map ordinary.'
         );
       }
-      for (const entity of screen.entities ?? []) {
-        // Item 6 (both halves -- authored contact and scripted Fight, plus
-        // the random-encounter half below) is LIFTED as of phase 2 slice 6:
-        // battle entry now cancels any in-flight strip before call_battle
-        // (engine/banks.asm) and battle return resyncs the window through
-        // the ordinary redraw_screen path (battle_end's own unconditional
-        // jsr redraw_screen, engine/rpg.asm, already suppresses the entry
-        // event and re-settles screen_fresh, both game-type-agnostic and
-        // predating streamed worlds), so a reachable battle entry on a
-        // streamed screen is no longer refused. See test/unit/
-        // streamworld.test.js's own D.6 positive tests.
-        const event = entity.props?.event;
-        if (!event) continue;
-        // Item 3, lifted to a warning by phase 2 slice 3 (see the header
-        // comment above): move_tick now bounds and probes this case at
-        // runtime, so it no longer refuses the build -- but a scripted Move
-        // that reaches the ownership rectangle's own edge still cannot cross
-        // it (ownership itself never changes mid-page, ruling 7), so an
-        // author who wants a real screen change still needs a Warp instead.
-        if (eventMovesPlayer(event, commonById, new Set([event]))) {
-          add(
-            'warning',
-            'Map Forge',
-            `${label()}: the event on ${entityLabel(project, entity)} moves the player, and a long enough Move ` +
-              'can walk them to the edge of the screen. The engine now bounds and stops this at the edge, but it ' +
-              'cannot cross to a new screen -- keep player Moves within the screen, or use a Warp to change screen.'
-          );
-        }
-        // Item 4, lifted by phase 2 slice 8: an event that both shows text
-        // and moves the player used to be refused outright here, because the
-        // camera-nudge hold a dialogue box takes (sw_dlg15_pending_step) and
-        // a scripted Move's own edge-bounding (item 3, above) were two
-        // streamed-specific mechanisms nothing had arbitrated between yet.
-        // ui_tick's own priority patch (engine/ui.asm's
-        // ui_tick_move_guard_start) now closes the box first (draw-down
-        // preserving script_active/talk_ent/game_state), draining the close
-        // before ever handing the frame to move_tick -- see
-        // docs/design-streamed-worlds.md §7/§8 and
-        // test/unit/streamworldclosemove.test.js. The item-3 warning above
-        // (a long enough Move can still reach the screen edge) stays; only
-        // the outright combination refusal is gone.
-      }
+      // Items 4 and 6 are lifted (phase 2 slices 6 and 8: ui_tick's priority patch closes a text box before a Move
+      // and a battle entry cancels any in-flight strip -- docs/design-streamed-worlds.md section 7/8), and item 3's
+      // warning that a scripted Move cannot cross a seam is gone with S3b: the Move crosses exactly as a walking
+      // step does (test/unit/streamedcross.test.js; test/unit/streamedwarning.test.js pins that nothing replaced it).
     });
   }
 

@@ -31,6 +31,7 @@ import { makeMutate } from './sw_sweep_mutate.mjs';
 import { mkJob, ANIM_PRESETS } from './sw_bound_sweep.mjs';
 import { MESEN_DEFAULT } from './run_sw_manifest.mjs';
 import { EXEC_FLAGS } from './sw_provenance.mjs';
+import { parseFlags, oneOf, assertRoom, countMesen } from './sw_move_policy.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const held = (...names) => Object.fromEntries(names.map((n) => [n, true]));
@@ -138,11 +139,17 @@ export function problems(r) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  const a = Object.fromEntries(process.argv.slice(2).map((s) => { const [k, v] = s.replace(/^--/, '').split('='); return [k, v ?? true]; }));
-  const breakMode = a.break ?? null;
   let bad = 0;
+  let a; let names; let breakMode;
   try {
-    const names = a.scene ? [a.scene] : Object.keys(SCENES);
+    // the shared strict parser and the machine-wide Mesen check (fix round 2, finding 4): an unknown option or scene stops before any build or launch,
+    // and the room check uses the number of scenes this command will actually run at once
+    a = parseFlags(process.argv.slice(2), { scene: 'value', break: 'value', mesen: 'value', json: 'bool' });
+    breakMode = a.break === undefined ? null : oneOf(a.break, 'break', ['eor', 'beq', 'ungate', 'starve']);
+    names = a.scene === undefined ? Object.keys(SCENES) : [oneOf(a.scene, 'scene', Object.keys(SCENES))];
+    assertRoom(names.length, countMesen());
+  } catch (e) { console.error(`error: ${e.message}`); process.exit(2); }
+  try {
     const results = await Promise.all(names.map((n) => runScene(n, { mesen: a.mesen ?? MESEN_DEFAULT, breakMode })));
     for (const r of results) {
       const p = problems(r);

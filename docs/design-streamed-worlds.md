@@ -178,6 +178,8 @@ session's own code the comment lives in, never whose choice the code encodes.
   identity addressing and bound math within it); the crossing revisit is phase 3/4, and narrowing the
   coarse edge warning (it fires whenever a scripted player `Move` *can* reach an edge — it over-fires,
   never under-fires) is phase 4.
+  **(Dated 2026-10-04: superseded. Phase 3a slice S3b deleted the ownership stop and the warning together -- a scripted player `Move`
+  crosses a seam and its talker is re-bound by identity; `docs/design-streamed-worlds-phase3a.md`, "S3b: measured outcomes".)**
 - **[Accepted by Chris for phases 1-2, 2026-09-21; revisit: phase 2 measured RPG]** A streamed project's own music+SFX+text budget (kernel-hi) drops to 6,075 bytes with no
   dialogue or Move at all, 4,459 with dialogue alone, 4,336 once dialogue AND a scripted Move are
   both live on a streamed map (the fullest, most common case)**, from the ordinary 8,128 — a
@@ -644,7 +646,7 @@ every addend `streamworldHiBytesFor` sums for an RPG project with dialogue and a
   (`generate.js:1407`) + `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520
   (`generate.js:1439-1442`, `1446`) + `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222
   (`generate.js:1475`) = 613+520+222 = **1355**.
-- Move (gated on `projectUsesMove`): `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`generate.js:1827`)
+- Move (gated on `projectUsesMove`): `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`generate.js:1827`; *dated 2026-10-04: 20 after S3a, deleted by S3b and replaced by the talker's 196 + 12*)
   + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE` 14 (`generate.js:2053`) +
   `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`generate.js:2065`) = 76+14+31 = **121**.
 - Save (gated on `projectUsesSave`, not charged in this combination): `STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE`
@@ -2146,7 +2148,9 @@ unaffected by any of this — the close-for-Move detector only ever arms for `mv
 `mv_left`, i.e., the player.
 
 **A scripted player `Move` on a streamed map never crosses a screen-ownership boundary at all — but an
-earlier draft of this section got the *bound* wrong.** The hazard this
+earlier draft of this section got the *bound* wrong.** *(Dated 2026-10-04: the "never crosses" half was true of phases 2 and 3a-S3a only;
+slice S3b deleted the stop. The slot-index hazard described next is real and is what S3b's talker identity -- `talk_rec`/`talk_scr`/`talk_crossed`, Rule R --
+answers; `docs/reference-engine.md`, "The talker across a seam".)* The hazard this
 closes: `OP_MOVE`/`OP_TURN` read and write the mover's position and facing through `talk_ent`
 (`move_get_x/y`, the setters, and `move_face`, `engine/entities.asm:807-864`) — a slot **index**, not a
 stable identity. If a player `Move` crossed a screen boundary, the crossing would repopulate the

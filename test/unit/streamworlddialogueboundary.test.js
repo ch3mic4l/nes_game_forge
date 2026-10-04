@@ -60,10 +60,16 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 // (relocation removes the dialogue mapper/lifecycle/relocated terms and adds the banked shim, never the window term):
 // 8128 - 6799 = 1329 -> 8128 - 6721 = 1407; 8128 - 5557 = 2571 -> 8128 - 5479 = 2649; 8128 - 5672 = 2456 -> 8128 - 5594 =
 // 2534; 8128 - 5622 = 2506 -> 8128 - 5544 = 2584 (each reservation 78 smaller).
+//
+// Phase 3a slice S3b moved ONLY the Move row DOWN, by exactly 188 bytes (relocated 2584 -> 2396). Cause: the Move's own kernel-hi
+// allowance (STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE, 20: the four sw_step_nocross guards) is deleted with the ownership stop, and the talker
+// bookkeeping a streamed Move now carries (TALKER_KERNEL_HI_ALLOWANCE 196 + TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE 12 = 208) replaces it:
+// 208 - 20 = 188 fewer bytes of music + sfx + dialogue fit beside the resident set (8128 - 5544 = 2584 -> 8128 - 5732 = 2396). The rows
+// without a Move carry neither term and do not move.
 const CEILINGS = {
   nosave: { resident: 1407, relocated: 2649 },
   save: { relocated: 2534 },
-  move: { relocated: 2584 }
+  move: { relocated: 2396 }
 };
 const VARIANT_NAME = { nosave: 'no-Save', save: 'Save', move: 'Move' };
 

@@ -9,9 +9,10 @@
 // here -- not read from the engine), the scroll the PPU actually holds, the strip/window state and
 // the terrain under the viewport.
 //
-// B5 (review 3): a 200-pixel command from x = 100 covers 154 px of ONE screen (the ownership stop
-// ends it at x = 255); what T1 exercises is scroll and completed strips within a screen. T1v spans the
-// screen's full vertical extent within one 240-px camera window. Multi-window travel is S3b's.
+// B5 (review 3) / S3b: a 200-pixel command from x = 100 used to stop at x = 255 (the ownership stop, 154 px of ONE screen).
+// S3b deleted the stop: the Move crosses the seam like a walking step and covers the whole 200 px, so T1 now exercises the
+// camera, the scroll and the strips across a crossing. T1v spans the screen's full vertical extent within one 240-px camera
+// window.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -94,13 +95,14 @@ for (const gameType of ['action', 'rpg']) {
         const x0 = mem[A.PLAYER_X];
         const trace = walk(nes, project, { gridW: 3, gridH: 2, label: `T1 ${gameType} screen ${screen} ${phase}` });
         const end = trace.at(-1);
-        // B5: what it covers is ~154 px of ONE screen (the ownership stop), not 200 px and not a second window
-        assert.equal(end.col, screen, 'the walk stays on its own screen (the ownership stop)');
-        assert.ok(end.px >= 254 && end.px - x0 >= 150, `the Move covers ~154 px: ended at ${end.px}`);
+        // S3b: the Move crosses into the next screen and covers its whole 200 px (the ownership stop is gone)
+        assert.equal(end.col, screen + 1, 'the walk crossed into the next screen');
+        const covered = (end.col - screen) * 256 + end.px - x0;
+        assert.ok(covered >= 196 && covered <= 204, `the Move covers its 200 px across the seam: ${covered}`);
         // screen 0 starts clamped at the world's left edge (origin 0 until the player passes x = 120), so the camera
-        // moves only as far as the unclamped formula says: 134 px there, the player's own 154 px mid-map
+        // moves only as far as the unclamped formula says
         assert.equal(end.originX - trace[0].originX, end.expected.x - trace[0].expected.x, 'the camera moved exactly as far as the formula says');
-        assert.equal(end.originX, Math.max(0, screen * 256 + end.px - 120), 'and ended where the player is, clamped at the left edge');
+        assert.equal(end.originX, Math.max(0, end.col * 256 + end.px - 120), 'and ended where the player is, clamped at the left edge');
         assert.ok(end.originX - trace[0].originX >= 130, 'a substantial scroll (>= 130 px)');
         assert.equal(end.scroll.x, torusOf(end.expected).x, 'the published scroll ended on the camera');
         // strip progress: the window advanced a block at a time to its desired origin, strips completed, then went idle
@@ -132,7 +134,7 @@ for (const gameType of ['action', 'rpg']) {
       const bottom = all[turn];
       const top = all.at(-1);
       assert.ok(bottom.py - y0 >= 200 && bottom.py <= 239, `down covered the screen's height: ${y0} -> ${bottom.py}`);
-      assert.equal(bottom.row, 1, 'still on the same screen row (the ownership stop)');
+      assert.equal(bottom.row, 1, 'still on the same screen row (the Move ends inside it)');
       assert.ok(bottom.originY - down[0].originY >= 100, `a substantial vertical scroll: ${down[0].originY} -> ${bottom.originY}`);
       assert.ok(windowAdvance(down, 'y') >= 6, 'at least six row blocks were streamed in on the way down');
       assert.ok(bottom.py - top.py >= 200, `up covered the screen's height: ${bottom.py} -> ${top.py}`);

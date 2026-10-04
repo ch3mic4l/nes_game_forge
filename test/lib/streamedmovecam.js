@@ -23,8 +23,7 @@ export const A = {
   SW_CAM_X_LO: 0x35c, SW_CAM_X_HI: 0x35d, SW_CAM_Y_LO: 0x35e, SW_CAM_Y_HI: 0x35f,
   SW_WALK_ACC_X: 0x3d8, SW_WALK_ACC_Y: 0x3d9,
   WIN_COL_SCREEN: 0x5b1, WIN_COL_LOCAL: 0x5b2, WIN_ROW_SCREEN: 0x5b3, WIN_ROW_LOCAL: 0x5b4,
-  ST_ACTIVE: 0x5b5, ST_CUR: 0x5b6, ST_LEN: 0x5b7,
-  SW_STEP_NOCROSS: 0x77f // S3a: engine/constants.asm sw_step_nocross
+  ST_ACTIVE: 0x5b5, ST_CUR: 0x5b6, ST_LEN: 0x5b7
 };
 export const SW_SPEED_SUB_X = 128; // engine/streamworld.asm
 export const SW_SPEED_SUB_Y = 112;

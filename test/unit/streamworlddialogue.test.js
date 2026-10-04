@@ -3714,44 +3714,10 @@ test('case 13 positive control: the identical common-event chain with the nested
   assert.ok(fs.existsSync(built.romPath), 'the positive control (identical chain, no Move at the end) must actually produce a ROM');
 });
 
-// Phase 2 slice 8 lifted the item-4 error this sabotage test used to target, but eventMovesPlayer's
-// own call-recursion is still load-bearing: it also feeds the item-3 WARNING (shared/project.js,
-// "a long enough Move can walk them to the edge of the screen"), which fires on any event that
-// moves the player regardless of text, nested behind OP_CALL or not. Repurposed to demonstrate that
-// warning instead of the removed error, so the recursion's own regression coverage survives the
-// refusal it originally guarded going away.
-test('case 13 validator sabotage: disabling eventMovesPlayer\'s own recursion into a call target lets the identical nested-Move chain wrongly validate with no item-3 warning', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
-  // A scratch COPY of the whole shared/ directory (never the repository file itself), so the
-  // mutated project.js's own relative imports ('./chr.js', './eventrules.js', etc.) still resolve,
-  // and it can be dynamically imported as an independent module instance with its own
-  // eventMovesPlayer/validateProject -- side by side with, never replacing, the real
-  // shared/project.js this file already imports at its own top for every other test.
-  const shadowSharedDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworlddlg-c13validator-'));
-  t.after(() => fs.promises.rm(shadowSharedDir, { recursive: true, force: true }));
-  await fs.promises.cp(path.resolve('shared'), shadowSharedDir, { recursive: true });
-
-  const projectJsPath = path.join(shadowSharedDir, 'project.js');
-  const source = await fs.promises.readFile(projectJsPath, 'utf8');
-  const needle = "      if (command.op === 'move' && command.dist > 0 && (command.who === 'player' || playerLegs.has(command))) return true;\n"
-    + "      if (command.op === 'call') {\n"
-    + "        const target = commonById.get(commonEventId(command.event));\n"
-    + "        if (target && !seen.has(target)) {\n"
-    + "          seen.add(target);\n"
-    + "          if (eventMovesPlayer(target, commonById, seen)) return true;\n"
-    + "        }\n"
-    + "      }\n";
-  const mutant = mutateOnce(
-    source,
-    needle,
-    needle.replace('          if (eventMovesPlayer(target, commonById, seen)) return true;\n', ''),
-    'eventMovesPlayer call-recursion removal (case 13 validator sabotage)'
-  );
-  await fs.promises.writeFile(projectJsPath, mutant, 'utf8');
-
-  const { validateProject: sabotagedValidateProject } = await import(pathToFileURL(projectJsPath).href);
-
-  // Identical project shape to case 13's own negative test: a Say that reaches a player Move only
-  // through two levels of OP_CALL (entity event -> common 0 -> common 1 -> Move).
+// Phase 3a S3b retired the item-3 warning and with it eventMovesPlayer, whose call-recursion this test used to sabotage
+// (it fed only that warning). The sabotage cannot be written against a function that no longer exists, so what survives is
+// the claim that the nested-Move chain validates with no such warning, and that neither the function nor the warning is back.
+test('case 13 (retired sabotage): the nested-Move chain raises no item-3 warning, and eventMovesPlayer and its message are gone from shared/project.js', () => {
   const project = createStreamedProject({});
   interactEntity(project, { x: 200, y: 112, commands: [{ op: 'say', text: 'Hi' }, { op: 'call', event: 0 }] });
   project.commonEvents = [
@@ -3759,18 +3725,9 @@ test('case 13 validator sabotage: disabling eventMovesPlayer\'s own recursion in
     { id: 1, name: 'Walk', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'player', dir: 'up', dist: 16 }] }] } }
   ];
   project.commonEventSeq = 2;
-
-  const realWarnings = validateProject(project).filter((x) => x.severity === 'warning');
-  assert.ok(
-    realWarnings.some((w) => /moves the player, and a long enough Move/.test(w.message)),
-    'sanity: the real, unmutated validateProject must still flag this exact project with the item-3 warning (case 13 positive already proves this builds clean through the real pipeline; this re-confirms the warning fires directly against validateProject)'
-  );
-
-  const sabotagedWarnings = sabotagedValidateProject(project).filter((x) => x.severity === 'warning');
-  assert.ok(
-    !sabotagedWarnings.some((w) => /moves the player, and a long enough Move/.test(w.message)),
-    'with eventMovesPlayer\'s own recursion into a call target disabled, the identical nested-Move chain must wrongly validate with no item-3 warning -- a correct-looking test that could not tell this apart from the real validator\'s own warning (above) would be worthless'
-  );
+  assert.deepEqual(validateProject(project).filter((x) => /moves the player|long enough Move/.test(x.message)), []);
+  const source = fs.readFileSync(path.resolve('shared/project.js'), 'utf8');
+  assert.ok(!/eventMovesPlayer|long enough Move/.test(source), 'the retired function and warning text are not back in shared/project.js');
 });
 
 // ---------------------------------------------------------------------------------------------

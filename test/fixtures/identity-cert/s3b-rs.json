@@ -1,0 +1,112 @@
+{
+ "kind": "rom-identity-certificate",
+ "version": 1,
+ "certifier": {
+  "name": "test/lua/sw_identity_cert.mjs",
+  "version": 1,
+  "sha256": "68ff7584f9d554c9bd376ed7a3ef8777746a508c8ce573e21387f756a36beae7"
+ },
+ "scope": "S3a engine: the recorded sweep (no streamHandover flag in any recorded job; S2 is shelved); every recorded Mesen-run job rebuilt byte-identical on the current engine and generator; measurement script and bindings unchanged",
+ "date": "2026-10-04",
+ "partial": false,
+ "curve": {
+  "file": "test/fixtures/streambound-curve.json",
+  "sha256": "05982f617febe323a96eb1c8e3fccb1eaaaaf375824d3e877a025c3572dda5a3",
+  "jobs": 12590,
+  "reused": 880,
+  "confirms": 2,
+  "provenance": {
+   "engine": "aaa235270e07ee1f15db100e785085b1563383ffc1e3619ef337a717929f3435",
+   "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+   "generator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "stages": {
+  "A": {
+   "file": "handoff-next/s3b/impl/D/RS/out-A.jsonl",
+   "sha256": "d39bfd0f81c6c7266478874e61af46c1f57078bdeabf915ab6e6387244917fdb",
+   "lines": 658
+  },
+  "B": {
+   "file": "handoff-next/s3b/impl/D/RS/out-B.jsonl",
+   "sha256": "5fdd6597f18dd0d4f5b40a389d4fed1a26b042a1aec369f246f3a56215f3cd2e",
+   "lines": 5120
+  },
+  "C": {
+   "file": "handoff-next/s3b/impl/D/RS/out-C.jsonl",
+   "sha256": "586b7eb21197451589d94ebd3ef6b45b129c51c42b85945583f3264ea6650005",
+   "lines": 5312
+  },
+  "F": {
+   "file": "handoff-next/s3b/impl/D/RS/out-F.jsonl",
+   "sha256": "fa2708de34b59fc1b6e7e6af33f8764aba07109e7a2640e01f984e4c7fce02c8",
+   "lines": 1000
+  },
+  "R": {
+   "file": "handoff-next/s3b/impl/D/RS/out-R.jsonl",
+   "sha256": "5d6a9de26a7e890ae55cd6d843cac33eb523511ea9d9a18331dc40061f004c46",
+   "lines": 500
+  },
+  "P": {
+   "file": "handoff-next/s3b/impl/D/RS/out-P.jsonl",
+   "sha256": "ae2a14cdca0d46ee825ad497e34f80bc78ad35123da2183d210bcb1b6469b1a4",
+   "lines": 98
+  }
+ },
+ "fingerprints": {
+  "old": {
+   "engine": "aaa235270e07ee1f15db100e785085b1563383ffc1e3619ef337a717929f3435",
+   "generator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896"
+  },
+  "current": {
+   "engine": "aaa235270e07ee1f15db100e785085b1563383ffc1e3619ef337a717929f3435",
+   "generator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896"
+  }
+ },
+ "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+ "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+ "execFlags": {
+  "args": [
+   "--testRunner",
+   "--enableStdout"
+  ],
+  "killMs": 600000
+ },
+ "counts": {
+  "expected": 11712,
+  "answered": 11712,
+  "matched": 11712,
+  "mismatched": 0,
+  "errored": 0,
+  "directCount": 11712,
+  "reuseCount": 880,
+  "confirms": 2,
+  "reusesResolved": 880,
+  "keysReproduced": 11712
+ },
+ "directDigest": "ca010f7377f8d281f25e93f3c7016228327ae27685a38935bcaebb8ffc851fd7",
+ "reuseDigest": "8111e43ab61733c90d0cd9b94f3f6ecd2119bc0d284886646df2a3db085a9738",
+ "bindings": {
+  "luaDigest": "90978588aace7d733d38c7a7436f6325b694c0ff41b2ff8d240b0282f793bad8",
+  "symDigest": "631334504ecfbef3d8db423beeece632fbd3787225981e877d77aa2c31eb545c",
+  "distinctScripts": 1484,
+  "distinctSymbolTables": 423
+ },
+ "sources": {
+  "before": {
+   "engine": "aaa235270e07ee1f15db100e785085b1563383ffc1e3619ef337a717929f3435",
+   "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+   "generator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  },
+  "after": {
+   "engine": "aaa235270e07ee1f15db100e785085b1563383ffc1e3619ef337a717929f3435",
+   "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+   "generator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "workers": 12,
+ "selfDigest": "531432662b6b77a34e6ca7cdc95c9ad196bf7f74cb107a8b3f9df22082e67b5e"
+}

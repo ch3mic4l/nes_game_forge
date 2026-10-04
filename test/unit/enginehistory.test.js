@@ -210,3 +210,37 @@ test('S3a.5 aside: the closed-form camera Y regions and the retired loops are cu
   assert.throws(() => dropS3a5RetiredFromOld(old.replace('sw_fcw_ydiv_done:\n', 'sw_fcw_ydiv_done_x:\n')), /not found exactly once/);
   assert.throws(() => stripS3a5FromStreamworld(current.replace('stash bit0 across the Y half', 'stash')), /stash line was not found exactly once/);
 });
+
+// Phase 3a S3b: the talker block appended after B1's final label is bounded by its own marker and its own pinned label
+// list, never folded into "B1", and the four sw_talker_cross calls and S3a's retired guards are accounted for explicitly.
+import { restoreS3bBlock, validateS3bBlock, stripS3bFromStreamworld, stripS3aFromStreamworld, EXPECTED_S3B_LABELS } from '../lib/enginehistory.js';
+
+test('S3b: B1 excludes the talker block, the talker block validates on its own, and neither contains the other\'s labels', () => {
+  const s3b = restoreS3bBlock(currentStreamworld);
+  assert.doesNotThrow(() => validateS3bBlock(s3b));
+  assert.ok(!/^sw_talker_capture:/m.test(realB1Block), 'the B1 block does not include the talker routines');
+  assert.ok(!/^sw_redraw_screen_landing_end:/m.test(s3b), 'the talker block does not include B1\'s final label');
+  assert.ok(currentStreamworld.endsWith(s3b) && currentStreamworld.includes(`${realB1Block}\n${s3b}`), 'the two blocks tile the tail of the file exactly');
+});
+
+test('S3b: a label added to, removed from, or reordered in the talker block, or a byte after its .endif, is refused', () => {
+  const s3b = restoreS3bBlock(currentStreamworld);
+  assert.throws(() => validateS3bBlock(s3b + '\nsw_extra_after:\n  rts\n'), /no longer match the fixed expected list/);
+  assert.throws(() => validateS3bBlock(s3b.replace(/^sw_tx_done:/m, 'sw_tx_done_renamed:')), /no longer match the fixed expected list/);
+  assert.throws(() => validateS3bBlock(s3b.replace(/\n  \.endif\s*$/, '\n  nop\n')), /must open with `\.if TALKER_ENABLED` and close/);
+  assert.equal(EXPECTED_S3B_LABELS.length, new Set(EXPECTED_S3B_LABELS).size, 'the pinned list has no duplicates');
+});
+
+test('S3b: stripS3bFromStreamworld removes exactly the block and the four calls; a missing call throws instead of cutting something else', () => {
+  const stripped = stripS3bFromStreamworld(currentStreamworld);
+  assert.ok(!/sw_talker_cross|TALKER_ENABLED/.test(stripped.replace(/;.*/g, '')), 'no talker call or flag remains in any instruction');
+  assert.ok(stripped.length < currentStreamworld.length);
+  const missingCall = currentStreamworld.replace('  .if TALKER_ENABLED\n  jsr sw_talker_cross\n  .endif\n', '');
+  assert.throws(() => stripS3bFromStreamworld(missingCall), /four sw_talker_cross calls not found \(3\)/);
+});
+
+test('S3b: S3a\'s ownership-stop guards are asserted gone, and a resurrected guard or label is refused', () => {
+  assert.equal(stripS3aFromStreamworld(currentStreamworld), currentStreamworld);
+  assert.throws(() => stripS3aFromStreamworld(currentStreamworld + '\n  lda sw_step_nocross\n'), /retired by S3b/);
+  assert.throws(() => stripS3aFromStreamworld(currentStreamworld + '\nsw_pr_refuse:\n'), /retired by S3b/);
+});

@@ -570,7 +570,12 @@ script_op_move:
   lda <talk_ent
   cmp #NO_ENTITY
   bne script_op_move_ready
+  .if TALKER_ENABLED
+  jmp sw_rr_move
+  .endif
+  .if !TALKER_ENABLED
   jmp script_finish
+  .endif
 script_op_move_ready:
   lda <mv_left
   bne script_op_move_wait
@@ -602,7 +607,12 @@ script_op_turn:
   lda <talk_ent
   cmp #NO_ENTITY
   bne script_op_turn_ready
+  .if TALKER_ENABLED
+  jmp sw_rr_turn
+  .endif
+  .if !TALKER_ENABLED
   jmp script_finish
+  .endif
 script_op_turn_ready:
   iny
   lda [script_ptr_lo],y
@@ -687,7 +697,12 @@ script_op_visible:
   lda <talk_ent
   cmp #NO_ENTITY
   bne script_op_visible_ready
+  .if TALKER_ENABLED
+  jmp sw_rr_visible
+  .endif
+  .if !TALKER_ENABLED
   jmp script_finish
+  .endif
 script_op_visible_ready:
   ldx <talk_ent
   ldy #1

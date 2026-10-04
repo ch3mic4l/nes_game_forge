@@ -117,17 +117,19 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   phase 2 slice 3's `mv_ent` identity capture (docs/design-streamed-worlds.md §7, ruling 7):
   `script_op_move`'s own 5-byte capture plus six call sites each trading a 2-byte `ldx <talk_ent`
   for a 3-byte `ldx mv_ent` — unconditional on `MOVE_ENABLED` itself, paid by every project using
-  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 83` (117 before phase 3a S3a, 159 before S1 (a1); kernel-lo only, gated
+  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 77` (**S3b, 2026-10-04: 83 from S3a, minus the 6 bytes of the `sw_step_nocross` inc/dec pair
+  the slice deleted**; 117 before S3a, 159 before S1 (a1); kernel-lo only, gated
   `usesStreaming && usesMove`) is the streaming-only remainder on top. Since S3a it is exactly two measured
-  pieces: the 67-byte DELEGATION span of `move_tick` (`move_tick_streamed` .. `move_tick_ordinary`: the
+  pieces: the DELEGATION span (67 bytes at S3a, **61 since S3b**, `S3A_DELEGATION_SPAN_BYTES` in `kernelbytes.test.js`) of `move_tick` (`move_tick_streamed` .. `move_tick_ordinary`: the
   `cur_speed`/`moving` setup, the `sw_step_nocross` raise and drop, the four `jsr sw_pstep_<dir>` arms and the
   camera call) and the 16-byte streamed branch of `move_speed_player`'s accumulator dispatch. Before S3a it paid
   for a private probe stage (the four per-direction copies, then S1 (a1)'s fold into `move_tick_probe_v_streamed`/
   `move_tick_probe_h_streamed`, 4 x 25 = 100 -> 58, which paid for `MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7`);
   that stage and its kernel-hi twin are deleted. A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 20`
-  (`main/build/streamplacement.js`; kernel-hi, same gate; 76 before S3a, 80 before fix round 2) is now the four
+  (`main/build/streamplacement.js`; kernel-hi, same gate; 76 before S3a, 80 before fix round 2) was, from S3a, the four
   `sw_step_nocross` guards in `sw_pstep_right/left/down/up`, 5 bytes each (`lda abs` + `bne`), gated
-  `.if MOVE_ENABLED` so a streamed project with no live Move pays nothing extra. Both are equality-asserted
+  `.if MOVE_ENABLED` so a streamed project with no live Move paid nothing extra. **S3b deleted the term with the guards**
+  (the symbol is gone from `streamplacement.js`; the talker terms below are the Move's whole kernel-hi cost now). Both are equality-asserted
   against nesasm's own usage by `kernelbytes.test.js` on action, rpg and action-mixed (the delegation-span test replaced
   S1's probe-stage test). The deleted `sw_move_probe`/`sw_move_probe_solid` pair is recorded in the history
   below (fix round 1 findings 1 and 4 replaced the clamp-to-the-edge bound arms with the ordinary wall's shape at a wider bound:
@@ -135,7 +137,9 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   kernel-hi probe from 80 to 76 by `sw_terrain_or_fill_solid_type`, which `sw_hazard_probe_cross` still inlines).
   Kernel-lo and kernel-hi are two different regions of the ROM, never added into one figure: S3a's -34 and -56 are
   separate decreases. Content ceilings after S3a (`contentCeilingBytes`, Move shapes): action 1151 -> 1207, rpg 1208 -> 1264
-  (+56, the kernel-hi term); the no-Move shapes are unchanged (2861 action, 1560 rpg).
+  (+56, the kernel-hi term); the no-Move shapes are unchanged (2861 action, 1560 rpg). **Dated 2026-10-04: S3a.5 added 78 to
+  every one of these (1285 / 1342 Move, 2939 / 1638 no-Move) and S3b took 188 off the Move shapes (1097 / 1154): see "Phase 3a
+  slice S3b" below for the final figures.**
 - `SPLIT_KERNEL_ALLOWANCE = 151`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — including a project whose only live event is a Move or a Sting, not just dialogue.
   Pinned by a text-on/off isolation on a fresh action project, plus a zero-delta control on every
@@ -305,7 +309,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   | rpg | on | on | off | 1439 |
   | rpg | on | on | on | — (refused by kernel-lo, not this ceiling) |
 
-  (This table is the 2026-09-28 record, before phase 3a: S1 moved every streamed-actors row down by 231 and S3a moved the Move rows up by 56 -- the current figures are in the S1 and S3a notes below and in `test/unit/streamedceiling.test.js`.)
+  (This table is the 2026-09-28 record, before phase 3a: S1 moved every streamed-actors row down by 231 and S3a moved the Move rows up by 56 -- the current figures are in the S1, S3a and S3b notes below (`test/unit/streamedceiling.test.js` derives its ceilings at run time and verifies the computed boundaries; it holds no literal ceiling). S3a.5 then added 78 to every row, and S3b (2026-10-04) took 188 off every Move row -- measured directly for the plain Move shapes, 1,285 -> 1,097 action and 1,342 -> 1,154 rpg, "Phase 3a slice S3b" below.)
   (RPG's `text` is always on — `projectUsesText` hardcodes true for `gameType === 'rpg'`,
   `shared/font.js` — so "RPG + text off" does not exist, matching the "reachable" framing above.)
   **2026-09-28, fix round 1 (item 2):** the real per-category byte model
@@ -386,7 +390,13 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`; 20 since phase 3a S3a, which lifts this table row's Move figures by 56) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
   14 (`:2053`) + `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`:2065`) = **121**. Sum
   5135+1355+121 = 6611; `contentCeilingBytes` = `BANK_SIZE`(8192, `:231`) − 64 − 6611 = **1517**,
-  which is the table row's 1439 plus the 78 S3a.5 gave back (the row itself is the 2026-09-28 record). Save's own four terms (not charged in this row, since Save is not
+  which is the table row's 1439 plus the 78 S3a.5 gave back (the row itself is the 2026-09-28 record).
+  **Dated 2026-10-04 (S3b): this decomposition is a 2026-09-28 record and is not re-run.** It predates S1's entity
+  projection (+231) and both Move-term changes, so its Move term (76 + 14 + 31) and its totals no longer describe the tree.
+  The current Move shapes are measured directly, by building the streamed Move project on 15c11b7 and on the S3b tree
+  (`streamworldHiBytesFor` / `contentCeilingBytes`): action 6,843 -> 7,031 / 1,285 -> 1,097, rpg 6,786 -> 6,974 / 1,342 ->
+  1,154 (+188 each; the whole delta is `TALKER_KERNEL_HI_ALLOWANCE` 196 + `TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE` 12 = 208 added and
+  the 20 of `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` deleted). Save's own four terms (not charged in this row, since Save is not
   live): `STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE` 6 (`:2082`) +
   `STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE` 52 (`:2097`) +
   `STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE` 12 (`:2109`) +
@@ -680,7 +690,7 @@ Measured consequences for the author (before → after, S1 with (a1)'s gate on):
 | kernel-hi content ceiling, resident dialogue | 1560 | 1329 |
 | kernel-hi ceiling, relocated dialogue, no Save | 2802 | 2571 |
 | kernel-hi ceiling, relocated dialogue, Save | 2687 | 2456 |
-| kernel-hi ceiling, relocated dialogue, Move | 2681 | 2450 (2506 after S3a, which deleted the private Move probe: `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 -> 20) |
+| kernel-hi ceiling, relocated dialogue, Move | 2681 | 2450 (2506 after S3a, which deleted the private Move probe: `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 -> 20; 2584 after S3a.5; **2396 after S3b**, `streamworlddialogueboundary.test.js`) |
 | kernel-lo on a Save project with streamed actors | — | +21 (18 + 3) |
 | maximum placed actors, the Save inventory project | 24 | 21 (8 lookup bytes per actor; 22 actors need 288 against 289 free before (a1)'s gate and 282 after it; `S1_SAVE_ACTORS_DROPPED` = 3, accepted 2026-09-30) |
 | accepted-boundary ordinary maps, Move family | 31 | 31 |
@@ -705,3 +715,57 @@ mappers and game types, equality-asserted in `kernelbytes.test.js`. In a streame
 `docs/reference-engine.md`, "The mover parity gate, and the two bounds"; it also costs the author a placed
 actor of the Save inventory project: S1 had already taken the capacity from 24 to 22 (the flag, the setup call and the
 projection's lookup bytes), and the gate takes it from 22 to 21, so the combined drop is 24 to 21 (table above).
+
+**Phase 3a slice S3b — the talker bookkeeping (2026-10-04; every figure below is measured on the final tree).**
+A live `Move` on a streamed map switches on `TALKER_ENABLED` (`projectUsesTalker` = streaming AND a Move anywhere in the project,
+`main/build/streamplacement.js`: the one predicate for the generated flag and every allowance; an NPC-only Move pays the same,
+`talkerflag.test.js`). A project with no Move, or no streamed map, assembles none of it (`identitymatrix.test.js`, ROMs byte-identical
+to the parent's). The mechanism is `docs/reference-engine.md`, "The talker across a seam"; the cost is:
+
+| Term | Region | Bytes | Gate |
+| --- | --- | ---: | --- |
+| `TALKER_KERNEL_HI_ALLOWANCE` (`sw_talker_capture`..`sw_talker_end`, one span) | kernel-hi | 196 | streaming and Move, every board and game type |
+| `TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE` (the four `jsr sw_talker_cross` ending `sw_pstep_*`) | kernel-hi | 12 | same |
+| `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` (the four `sw_step_nocross` guards) | kernel-hi | 20 -> **deleted** | (was streaming and Move) |
+| `TALKER_KERNEL_LO_ALLOWANCE_START_DIALOG` (`start_dialog`'s `jsr`) | kernel-lo | 3 | same |
+| `TALKER_KERNEL_LO_ALLOWANCE_CLOSE` (`close_ui`'s `jsr`) | kernel-lo | 3 | same |
+| `TALKER_KERNEL_LO_ALLOWANCE_SCRIPT` (Rule R's three entries swap a 3-byte `jmp` for a 3-byte `jmp`) | kernel-lo | **0** (a measured zero) | same |
+| `TALKER_KERNEL_LO_ALLOWANCE_SETTLE` (`settle_owed`'s `bne / jsr / beq`) | kernel-lo | 5 | same |
+| `TALKER_RESET_KERNEL_LO_ALLOWANCE_INIT_SESSION` (`jsr` plus the `lda #0` it needs after it) | kernel-lo | 5 | same |
+| `TALKER_RESET_KERNEL_LO_ALLOWANCE_TAKE_DOOR` | kernel-lo | 3 | same |
+| `TALKER_BATTLE_KERNEL_LO_ALLOWANCE` (`battle_end`'s `jsr sw_battle_resume`) | kernel-lo | 3 | also needs the battle base (RPG) |
+| `STREAMWORLD_MOVE_KERNEL_ALLOWANCE` | kernel-lo | 83 -> **77** | the `inc/dec sw_step_nocross` pair is gone |
+
+Each is equality-asserted against nesasm's own usage by `test/unit/kernelbytes.test.js`: the supplement sums for a live Move on a
+streamed map (kernel-lo, each tested board, action and rpg), the kernel-hi span and the four crossing calls
+(`TALKER_KERNEL_HI_ALLOWANCE` + `TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE` equal the real kernel-hi cost of the Move, on
+UNROM 512, both game types and the mixed shape; the same double difference as before isolates it), and **site by site** (`TALKER_SITES`: each kernel-lo site measured by removing its own
+lines from a Code Forge override of the file). Net kernel-lo: **+13 bytes** on an action project (19 - 6) and **+16** on an RPG (22 - 6),
+which is exactly the measured fall of the RPG Move scenes' free lookup bytes from **160 to 144**
+(`test/fixtures/crossstage/exclusions-conditional.json`, `finalAllowance`). Net kernel-hi: **+188** (208 - 20).
+
+**`contentCeilingBytes` after S3b.** The ceiling is `BANK_SIZE - 64 - streamworldHiBytesFor`, so the +188 comes straight off the Move
+shapes and nothing else: action **1,285 -> 1,097**, rpg **1,342 -> 1,154** (the 1,285 / 1,342 are the S3a figures plus S3a.5's 78;
+re-derived 2026-10-04 by building the streamed Move project on 15c11b7 and on this tree; `streamworldHiBytesFor` 6,843 -> 7,031 and
+6,786 -> 6,974). The no-Move shapes are unchanged (2,939 action, 1,638 rpg, same method) and so are the Save and no-Move dialogue rows;
+the relocated-dialogue Move row moves **2,584 -> 2,396**, the one ceiling literal pinned by `streamworlddialogueboundary.test.js`
+(its comment records the arithmetic: 208 - 20 = 188). An author's cost: 188 fewer bytes of music + sfx + dialogue fit beside a streamed Move.
+
+**The capacity-refusal set (RPG with a switch-bound tile; all kernel-lo lookup bytes, free 144 against 160 on the parent).** The kernel-lo
+tax makes a set of composed cross-stage scenes the generator refuses on the S3b tree. They are held as five **exact-ID groups, kept apart,
+never merged and never counted as coverage** (`test/fixtures/crossstage/exclusions-*.json`, per-id need / free / shortfall and parent receipt
+in `exclusions-evidence.json`; the counts are asserted by `crossstages.test.js`, `crossevidence.test.js`):
+
+| Group | ids | What it means | Shortfall on the new tree |
+| --- | ---: | --- | --- |
+| `approved74` (`streamedmove-unreachable.json`) | 74 | Chris's S3a ruling; the parent refuses them too | 19-21 bytes |
+| `conditional111` | 111 | Chris's 2026-10-02 conditional acceptance of the S3b tax; **the parent builds every one**, only S3b's +16 refuses it; final since step C regenerated it from the real allowances (4,016 existing-stage cells built, 185 refused = these 111 + the 74; no id added or removed) | 3-11 |
+| `appendix` | 89 | 11 F1 + 78 class (a); Chris 2026-10-02; the parent refuses them too; **grants no population or shape exclusion and does not certify the unmeasured RPG-bound class-(a) composition** | 19-72 |
+| `origParentRefused` | 18 | Chris 2026-10-03: originals of composed cross-stage scenes (17 x4, 1 x6 with hand-written code) the unchanged parent refuses too | 18-38 |
+| `origNewRegression` | 48 | Chris 2026-10-03: originals (33 x4, 13 x5h, 1 x5r, 1 x6 with code) that **build on the parent** and are refused on S3b | 1-14 |
+
+The last two are the **66 originals** (2 with hand-written code, all RPG + bound-tile): an exact-ID acceptance with no population, shape or
+game-type exclusion, conditional on every other buildable composition passing, and no substitute or "damage-merged" scene stands for any of
+them (those were tried, removed, and are not coverage). The final aggregate (`node test/lua/run_sw_cross.mjs --aggregate=<the six launch files>`, run 2026-10-04; `handoff-next/s3b/impl/D/aggregate.json`): **13,808 planned results, 0 problems, 0 refusals outside every group, evidence 7,526 raw and
+5,761 historical, `complete: true`**. The RPG-bound class-(a) composition (`ref` lead) is a capacity refusal, *not covered*: see
+`docs/design-streamed-worlds-phase3a.md`, "S3b: measured outcomes", for the X5 probe that confirms hseam-a on the leads that do build.

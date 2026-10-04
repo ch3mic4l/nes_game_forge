@@ -244,7 +244,8 @@ helpers. In brief:
 - `switch_test`/`switch_set`/`switch_clear` preserve X and Y.
 
 Also there: `Move`'s three rules, questions and branches on the wire, `OP_CALL` and
-`CALL_STACK_DEPTH`, `resolveEntityByte`, the player's modular parts, battle animation references.
+`CALL_STACK_DEPTH`, `resolveEntityByte`, the player's modular parts, battle animation references, and a streamed
+`Move`'s talker identity across a seam (`TALKER_ENABLED`, Rule R; `talkeraudit.test.js` pins every `talk_ent` reader and writer).
 
 ### The starter library
 

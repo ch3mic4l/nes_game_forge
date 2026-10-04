@@ -94,9 +94,10 @@ export function relocateTouchActor(project, y = TOUCH.y) {
 }
 
 /** The scene's authored mutation: the touch actor relocated, and (bound) the one switch-bound tile on an ordinary second map. */
-export function sceneMutation({ y = TOUCH.y, bound = false } = {}) {
+export function sceneMutation({ y = TOUCH.y, bound = false, code = null } = {}) {
   return (project, { createMap, createScreen } = {}) => {
     relocateTouchActor(project, y);
+    if (code) project.code = structuredClone(code);
     if (bound) {
       if (!createMap || !createScreen) throw new Error('a bound-tile scene needs createMap/createScreen');
       const om = createMap(1, 'Ordinary');
@@ -117,7 +118,10 @@ export function marksFor({ lead = 'none', tail = 'none' } = {}) {
 
 export async function measureMove({
   gt = 'action', tail = 'none', lead = 'none', dist = 150, root = REPO, wide = true, tiles = 15, pop = 'many-small', anim = null, bound = false, touchY = TOUCH.y,
-  tail2Frames = 120, mesen = MESEN_DEFAULT, outDir = null
+  tail2Frames = 120, mesen = MESEN_DEFAULT, outDir = null,
+  // Phase 3a S3b (the cross stage, test/lua/sw_cross_scene.mjs): marks beyond marksFor's, a project carrying hand-written 6502 (project.code), and a build-only run.
+  // The defaults leave every S3a cell exactly what it was.
+  extraMarks = [], customCode = null, prepareOnly = false
 }) {
   if (!(tail in TAILS) || !(lead in LEADS)) throw new Error(`unknown lead/tail ${lead}/${tail}`);
   const sizes = populations(tiles)[pop];
@@ -140,9 +144,10 @@ export async function measureMove({
     ...measured
   ];
   const res = await runManifest({
-    root, gt, sizes, wide, anim: anim ? ANIM_PRESETS[anim] : null, flashCmds, mutate: sceneMutation({ y: touchY, bound }), phases,
-    ...(bound && gt === 'action' ? { gridH: BOUND_GRID_H } : {}), marks: marksFor({ lead, tail }), mesen, outDir
+    root, gt, sizes, wide, anim: anim ? ANIM_PRESETS[anim] : null, flashCmds, mutate: sceneMutation({ y: touchY, bound, code: customCode }), phases,
+    ...(bound && gt === 'action' ? { gridH: BOUND_GRID_H } : {}), marks: [...new Set([...marksFor({ lead, tail }), ...extraMarks])], mesen, outDir, prepareOnly
   });
+  if (prepareOnly) return { res, summary: null };
   return { res, summary: classify(res, { lead, tail }) };
 }
 

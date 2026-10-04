@@ -1,0 +1,690 @@
+{
+ "final": true,
+ "note": "FINAL under Chris's 2026-10-02 conditional acceptance (an exact-ID pin, existing-stage cells only). Plan 6 C.8 regenerated it from the REAL final allowances (S3b step C, 2026-10-03; 4,016 new existing-stage cells built, 185 refused = these 111 plus the approved 74, identical ids and identical needs, free 144): no difference from the provisional set, so nothing was added or removed. It grants an exact-ID exclusion and nothing wider; the per-id need/free/shortfall and the parent success provenance are in exclusions-evidence.json.",
+ "parent": "every one has a successful S3a parent (the parent builds; only the S3b tax makes the new engine refuse)",
+ "finalAllowance": {
+  "talkerKernelLo": {
+   "startDialog": 3,
+   "close": 3,
+   "script": 0,
+   "settle": 5,
+   "initSession": 5,
+   "takeDoor": 3,
+   "total": 19
+  },
+  "talkerBattleKernelLoRpg": 3,
+  "rpgFreeBeforeS3b": 160,
+  "rpgFreeFinal": 144,
+  "source": "main/build/generate.js TALKER_* allowances; equality-asserted by test/unit/kernelbytes.test.js",
+  "regeneration": "handoff-next/s3b/impl/c/regen-conditional.json (+ .mjs, .log)"
+ },
+ "evidence": "test/fixtures/crossstage/exclusions-evidence.json",
+ "rows": [
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d3/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d12/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d2/y61/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d3/y71/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d12/y63/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d2/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d10/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d3/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d12/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d2/y61/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d3/y71/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d12/y63/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d2/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d10/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-none/tail-flash/d150/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-none/tail-flash/d159/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d3/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d12/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d2/y61/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d3/y71/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d12/y63/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d2/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d10/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d3/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d12/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d2/y61/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d3/y71/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d12/y63/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d2/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d10/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d3/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d12/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d2/y61/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d3/y71/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d12/y63/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d2/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d10/y60/compact",
+   "need": 155,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-none/tail-flash/d150/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-none/tail-flash/d159/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-none/tail-flash/d150/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-none/tail-flash/d159/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d3/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d12/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d2/y61/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d3/y71/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d12/y63/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d2/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d10/y60/compact",
+   "need": 147,
+   "s3aFree": 160,
+   "s3bFree": 144
+  }
+ ]
+}

@@ -361,7 +361,15 @@ settle_owed:
   ; across a frame boundary, and a stale one would speak for something that is
   ; not there without saying so. If it is gone the frame is an ordinary one.
   lda ent_active,x
+  .if TALKER_ENABLED
+  bne settle_owed_live
+  jsr sw_talker_reset       ; the owed actor is gone: nothing may re-arm it later
+  beq settle_owed_none      ; sw_talker_reset leaves Z set
+settle_owed_live:
+  .endif
+  .if !TALKER_ENABLED
   beq settle_owed_none
+  .endif
   jsr start_dialog          ; X = the slot whose event the frame owes
   lda #1
   rts
@@ -455,6 +463,9 @@ take_door:
   sta <player_x
   lda <warp_y
   sta <player_y
+  .if TALKER_ENABLED
+  jsr sw_talker_reset
+  .endif
   jmp redraw_screen
 take_door_done:
   rts

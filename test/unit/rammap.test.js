@@ -471,27 +471,44 @@ test(
 );
 
 test(
-  'phase 3a S3a: sw_step_nocross is the single byte at $077F -- free before it, ending the gap before sw_fc_wy_lo at $0780 -- and moving it onto a neighbour is caught',
+  'phase 3a S3b: sw_step_nocross (S3a\'s byte at $077F) is deleted -- no definition, and $077F is unallocated again',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    // Hand-written from the S3a design (handoff-next/streamed-worlds-phase3a-plan.md section 2.3's RAM table), not
-    // read from the file under test: $077F is the one confirmed-free byte between the save-flash buffer's end ($077E)
-    // and sw_fc_wy_lo ($0780). The generic audit above already proves it overlaps nothing; this pins WHERE.
     const stock = await buildAndRead(t);
     const pending = new Map();
     scanEquates(stock.constantsText, pending);
     scanEquates(stock.configText, pending);
     const symbols = new Map();
     resolveEquates(pending, symbols);
-    assert.equal(symbols.get('sw_step_nocross'), 0x077f, 'sw_step_nocross must stay at $077F');
-    assert.equal(symbols.get('sw_fc_wy_lo'), 0x0780, 'its upper neighbour');
+    assert.equal(symbols.has('sw_step_nocross'), false, 'sw_step_nocross is gone from the allocation map');
+    assert.ok(![...symbols.entries()].some(([, v]) => v === 0x077f), '$077F is unallocated');
+    assert.equal(symbols.get('sw_fc_wy_lo'), 0x0780, 'its former neighbour has not moved');
+    assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText));
+  }
+);
+
+test(
+  'phase 3a S3b: the talker identity is four bytes at $07F2-$07F5, in this order, between sw_dlg17_move_close and sw_dlg20_save_pending -- and moving one onto a neighbour is caught',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // Hand-written from the S3b plan (handoff-next/streamed-worlds-phase3a-s3b-plan.md section 2, reconciliation row 1): the spec's
+    // six bytes at $07F2-$07F7 became four, because the talker's screen is flat_screen (one byte), not a column and a row, and no
+    // held talker exists with the handover off. $07F1 and $07F8 are the neighbours that were already claimed.
+    const stock = await buildAndRead(t);
+    const pending = new Map();
+    scanEquates(stock.constantsText, pending);
+    scanEquates(stock.configText, pending);
+    const symbols = new Map();
+    resolveEquates(pending, symbols);
+    const want = { sw_dlg17_move_close: 0x07f1, talk_rec: 0x07f2, talk_scr: 0x07f3, talk_crossed: 0x07f4, owed_enter_rec: 0x07f5, sw_dlg20_save_pending: 0x07f8 };
+    for (const [name, addr] of Object.entries(want)) assert.equal(symbols.get(name), addr, `${name} must stay at $${addr.toString(16).toUpperCase().padStart(4, '0')}`);
     assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText));
 
-    // negative control: the same byte moved onto its upper neighbour is a collision the audit names
+    // negative control: owed_enter_rec moved onto sw_dlg20_save_pending is a collision the audit names
     const stockText = await fs.readFile(path.join(ROOT, 'engine', 'constants.asm'), 'utf8');
-    const moved = stockText.replace(/^sw_step_nocross(\s*)= \$077F/m, 'sw_step_nocross$1= $0780 ; TEST OVERRIDE');
-    assert.notEqual(moved, stockText, 'the sw_step_nocross line to replace was not found');
+    const moved = stockText.replace(/^owed_enter_rec(\s*)= \$07F5/m, 'owed_enter_rec$1= $07F8 ; TEST OVERRIDE');
+    assert.notEqual(moved, stockText, 'the owed_enter_rec line to replace was not found');
     const broken = await buildAndRead(t, moved);
-    assert.throws(() => auditRamMap(broken.constantsText, broken.configText), /sw_step_nocross.*sw_fc_wy_lo|sw_fc_wy_lo.*sw_step_nocross/, 'a collision with sw_fc_wy_lo must be reported');
+    assert.throws(() => auditRamMap(broken.constantsText, broken.configText), /owed_enter_rec.*sw_dlg20_save_pending|sw_dlg20_save_pending.*owed_enter_rec/, 'a collision with sw_dlg20_save_pending must be reported');
   }
 );

@@ -1,0 +1,277 @@
+{
+ "final": true,
+ "ruling": "Chris 2026-10-03 (the review-2 capacity decision): accept the exact 66 original capacity outcomes below, pinned by exact ID, as two separate groups",
+ "scope": "An exact-ID acceptance of capacity outcomes of the ORIGINAL composed cross-stage scenes (RPG with a switch-bound tile: the x4/x6 vertical compositions, two of them with hand-written code, and the x5h horizontal rows with the one x5r return row), each with the original scene's own need/free/shortfall (1-38 bytes against the 144 free of an S3b RPG Move) and its parent receipt in exclusions-evidence.json. It grants NO population, shape or game-type exclusion, is never merged with the approved 74, the conditional 111 or the approved 89 appendix, and is NEVER counted as coverage: no substitute, damage-merged or otherwise changed scene stands for any of these IDs. The acceptance is CONDITIONAL on every other buildable composition, and the applicable bound and custom-code evidence, passing in D (an exact-set, unexpected-refusal and all-excluded check holds the campaign to it).",
+ "counts": {
+  "origParentRefused": 18,
+  "origNewRegression": 48
+ },
+ "origParentRefused": [
+  {
+   "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 173
+  },
+  {
+   "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed/code",
+   "need": 173
+  },
+  {
+   "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 173
+  },
+  {
+   "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 173
+  },
+  {
+   "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 173
+  },
+  {
+   "id": "new/rpg/wide/few-large-1/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 173
+  },
+  {
+   "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 171
+  },
+  {
+   "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 171
+  },
+  {
+   "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 171
+  },
+  {
+   "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 171
+  },
+  {
+   "id": "new/rpg/wide/few-large-3/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 171
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 163
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 163
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 163
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 163
+  },
+  {
+   "id": "new/rpg/wide/few-large-4/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 163
+  },
+  {
+   "id": "new/rpg/wide/many-small/P5/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 162
+  },
+  {
+   "id": "new/rpg/wide/many-small/P8/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 182
+  }
+ ],
+ "origNewRegression": [
+  {
+   "id": "new/rpg//tight/few-large-1/P1/bound/tail-flash/enter-set/x246y210d10",
+   "need": 149
+  },
+  {
+   "id": "new/rpg//tight/few-large-1/P1/bound/tail-move2/enter-set/x246y210d10",
+   "need": 149
+  },
+  {
+   "id": "new/rpg//tight/few-large-1/P1/bound/tail-none/enter-set/x246y210d10",
+   "need": 149
+  },
+  {
+   "id": "new/rpg//tight/few-large-1/P1/bound/tail-say/enter-set/x246y210d10",
+   "need": 149
+  },
+  {
+   "id": "new/rpg//tight/few-large-1/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 149
+  },
+  {
+   "id": "new/rpg//wide/few-large-2/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 145
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-flash/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-move2/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-none/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-ret/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-say/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/few-large-5/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/few-large-6/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 155
+  },
+  {
+   "id": "new/rpg//wide/front/P1/bound/tail-switch/enter-set/x246y210d10",
+   "need": 148
+  },
+  {
+   "id": "new/rpg/tight/few-large-1/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 149
+  },
+  {
+   "id": "new/rpg/tight/few-large-1/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed/code",
+   "need": 149
+  },
+  {
+   "id": "new/rpg/tight/few-large-1/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 149
+  },
+  {
+   "id": "new/rpg/tight/few-large-1/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 149
+  },
+  {
+   "id": "new/rpg/tight/few-large-1/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 149
+  },
+  {
+   "id": "new/rpg/tight/few-large-1/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 149
+  },
+  {
+   "id": "new/rpg/tight/few-large-3/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 147
+  },
+  {
+   "id": "new/rpg/tight/few-large-3/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 147
+  },
+  {
+   "id": "new/rpg/tight/few-large-3/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 147
+  },
+  {
+   "id": "new/rpg/tight/few-large-3/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 147
+  },
+  {
+   "id": "new/rpg/tight/few-large-3/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 147
+  },
+  {
+   "id": "new/rpg/tight/many-small/P8/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 158
+  },
+  {
+   "id": "new/rpg/wide/few-large-2/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 145
+  },
+  {
+   "id": "new/rpg/wide/few-large-2/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 145
+  },
+  {
+   "id": "new/rpg/wide/few-large-2/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 145
+  },
+  {
+   "id": "new/rpg/wide/few-large-2/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 145
+  },
+  {
+   "id": "new/rpg/wide/few-large-2/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 145
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-5/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/few-large-6/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 155
+  },
+  {
+   "id": "new/rpg/wide/front/P1/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 148
+  },
+  {
+   "id": "new/rpg/wide/front/P1/bound/lead-flash/tail-move2/d11/y239/compact/composed",
+   "need": 148
+  },
+  {
+   "id": "new/rpg/wide/front/P1/bound/lead-flash/tail-none/d11/y239/compact/composed",
+   "need": 148
+  },
+  {
+   "id": "new/rpg/wide/front/P1/bound/lead-flash/tail-say/d11/y239/compact/composed",
+   "need": 148
+  },
+  {
+   "id": "new/rpg/wide/front/P1/bound/lead-flash/tail-switch/d11/y239/compact/composed",
+   "need": 148
+  },
+  {
+   "id": "new/rpg/wide/many-small/P4/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 150
+  },
+  {
+   "id": "new/rpg/wide/many-small/P7/bound/lead-flash/tail-flash/d11/y239/compact/composed",
+   "need": 154
+  }
+ ]
+}

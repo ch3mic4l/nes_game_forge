@@ -144,7 +144,8 @@ import {
   STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
   battleEnabledFor,
   streamworldDialogueBanked,
-  streamworldResidentHiBytes
+  streamworldResidentHiBytes,
+  projectUsesTalker
 } from './streamplacement.js';
 export {
   STREAMWORLD_KERNEL_HI_ALLOWANCE,
@@ -160,7 +161,8 @@ export {
   STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_WIN_ARM_FLASH_GUARD_KERNEL_HI_ALLOWANCE,
-  STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
+  TALKER_KERNEL_HI_ALLOWANCE,
+  projectUsesTalker,
   STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE,
@@ -1618,7 +1620,7 @@ export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 17;
 // own streamed-player bound/crossing-probe arms in engine/entities.asm
 // (kernel-lo only -- the resident sw_move_probe/sw_move_probe_solid pair
 // this code calls into is a SEPARATE kernel-hi term,
-// STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE, below; fix round 1, finding 2
+// the Move's kernel-hi term (deleted by S3b); fix round 1, finding 2
 // corrected this comment, which previously folded the resident helper's own
 // bytes into this kernel-lo figure by mistake). Every byte here is gated
 // `.if STREAMING_ENABLED`, so an ordinary (non-streamed) project pays
@@ -1646,11 +1648,29 @@ export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 17;
 // MOVER_PARITY_GATE_KERNEL_ALLOWANCE's 7 bytes in a streamed Move project (docs/reference-kernel-budget.md).
 // Phase 3a S3a (docs/design-streamed-worlds-phase3a.md): the streamed player Move no longer carries its own
 // bound arms and probe stages. move_tick's streamed branch is the shared-driver delegation (clip kept; cur_speed,
-// the moving flag, sw_step_nocross raised and lowered around one of four `jsr sw_pstep_<dir>`, the blocked test,
+// the moving flag, one of four `jsr sw_pstep_<dir>`, the blocked test,
 // `jsr sw_frame_camera_window`) -- and the ordinary arms below it are the ones an NPC and an ordinary map already
 // use. Re-measured (no direction precommitted): 117 -> 83 (-34), flat across action, RPG and the mixed shape;
 // kernelbytes.test.js subtracts the same dialogue/OAM/close-for-move/projection terms as before.
-export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 83;
+// Phase 3a S3b: the inc/dec pair of sw_step_nocross around the shared step is gone with the ownership stop: 83 -> 77 (-6, re-measured
+// by removing the two instructions, flat across action, RPG and the mixed shape).
+export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 77;
+// Phase 3a slice S3b: the kernel-lo CALL SITES of the talker bookkeeping (the bodies are kernel-hi,
+// TALKER_KERNEL_HI_ALLOWANCE, main/build/streamplacement.js). Each is a `jsr` (or the bytes around one) in
+// a kernel-lo routine, gated projectUsesTalker, so a project without a streamed Move assembles none of it.
+// Kept as separate terms because each lives in a different routine, and the plan's S3b-I identity row and
+// the equality tests measure them site by site (each by removing its own lines from a Code Forge override of the file and taking the
+// kernel-lo shift): start_dialog's `jsr` 3, close_ui's 3, settle_owed's `bne / jsr / beq` where there was one `beq` 5, init_session's
+// `jsr` and the `lda #0` it needs after it 5, take_door's `jsr` 3, battle_end's `jsr` 3 (RPG only). Rule R's three entries swap a
+// `jmp script_finish` for a `jmp sw_rr_<op>` of the same three bytes, so SCRIPT is a measured 0.
+export const TALKER_KERNEL_LO_ALLOWANCE_START_DIALOG = 3; // start_dialog: jsr sw_talker_capture
+export const TALKER_KERNEL_LO_ALLOWANCE_CLOSE = 3; // close_ui: jsr sw_talker_reset
+export const TALKER_KERNEL_LO_ALLOWANCE_SCRIPT = 0; // script_op_move/turn/visible: Rule R's three entries
+export const TALKER_KERNEL_LO_ALLOWANCE_SETTLE = 5; // settle_owed's inactive-slot discard
+export const TALKER_RESET_KERNEL_LO_ALLOWANCE_INIT_SESSION = 5; // init_session: jsr sw_talker_reset
+export const TALKER_RESET_KERNEL_LO_ALLOWANCE_TAKE_DOOR = 3; // take_door: jsr sw_talker_reset after a valid target
+// RPG only (battle_end lives in the kernel on an RPG's battle-capable boards): the owed-entry resume.
+export const TALKER_BATTLE_KERNEL_LO_ALLOWANCE = 3;
 // Phase 2 slice 4b (docs/design-streamed-worlds.md §5, the continuous
 // movement driver): engine/player.asm's update_player_knock own streamed
 // dispatch branch -- `lda <map_is_streamed / bne` into the capped (1px,
@@ -2123,6 +2143,15 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesMove ? STREAMWORLD_MOVE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesMove
+      ? TALKER_KERNEL_LO_ALLOWANCE_START_DIALOG +
+        TALKER_KERNEL_LO_ALLOWANCE_CLOSE +
+        TALKER_KERNEL_LO_ALLOWANCE_SCRIPT +
+        TALKER_KERNEL_LO_ALLOWANCE_SETTLE +
+        TALKER_RESET_KERNEL_LO_ALLOWANCE_INIT_SESSION +
+        TALKER_RESET_KERNEL_LO_ALLOWANCE_TAKE_DOOR
+      : 0) +
+    (usesStreaming && usesMove && usesBattleBase ? TALKER_BATTLE_KERNEL_LO_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_NMI_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesPaletteFx ? STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_PROJECT_KERNEL_ALLOWANCE : 0) +
@@ -4252,6 +4281,9 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // projectUsesMove (shared/project.js) for the measured numbers and why this
     // could not simply be added to every ROM the way Heal and Damage were.
     `MOVE_ENABLED = ${usesMove ? 1 : 0}`,
+    // Phase 3a slice S3b: the talker bookkeeping of a scripted Move that may cross a seam -- ONE
+    // predicate (projectUsesTalker, main/build/streamplacement.js) for this flag and every allowance.
+    `TALKER_ENABLED = ${projectUsesTalker(project) ? 1 : 0}`,
     // Whether engine/streamworld.asm (the streamed-worlds resident set) is
     // assembled at all, from ONE predicate, projectUsesStreaming
     // (shared/streamlayout.js) -- docs/design-streamed-worlds.md, phase 2

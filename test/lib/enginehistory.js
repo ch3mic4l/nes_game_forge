@@ -28,8 +28,62 @@ export function restoreB1Routines(currentText) {
   const markerLine = currentText.split('\n').findIndex((line) => line.includes(B1_MARKER));
   if (markerLine < 0) throw new Error(`B1 marker not found in current engine/streamworld.asm: "${B1_MARKER}"`);
   const lines = currentText.split('\n');
-  // the marker comment's own "====" divider sits one line above it.
-  return lines.slice(markerLine - 1).join('\n');
+  // the marker comment's own "====" divider sits one line above it. Phase 3a S3b appended its own block after B1's final
+  // label; it is bounded by its own marker and its own pinned label list (S3B_MARKER, EXPECTED_S3B_LABELS, validateS3bBlock),
+  // and is cut off here so it is never folded into "B1": the ancestor-plus-B1 reconstruction must not carry S3b's routines.
+  const s3bLine = lines.findIndex((line) => line.includes(S3B_MARKER));
+  return lines.slice(markerLine - 1, s3bLine < 0 ? lines.length : s3bLine - 1).join('\n');
+}
+
+// Phase 3a slice S3b's talker block: everything from its own marker comment (and the "====" divider above it) to the end of
+// the file, wrapped in one `.if TALKER_ENABLED`. Pinned the way B1's block is: an exact label list in order, and nothing
+// after the last instruction but the closing `.endif`. A later slice appending more has to say so here.
+const S3B_MARKER = "; Phase 3a S3b: the event's talker across a seam.";
+export const EXPECTED_S3B_LABELS = [
+  'sw_talker_capture', 'sw_talker_rebind', 'sw_tr_loop', 'sw_tr_next', 'sw_tr_gone', 'sw_tr_found',
+  'sw_talker_cross', 'sw_tx_store', 'sw_tx_done',
+  'sw_battle_resume', 'sw_br_rearm', 'sw_or_loop', 'sw_or_next', 'sw_or_found', 'sw_or_clear', 'sw_br_done',
+  'sw_rr_move', 'sw_rr_turn', 'sw_rr_visible', 'sw_rr_fin',
+  'sw_talker_reset', 'sw_talker_end'
+];
+
+export function restoreS3bBlock(currentText) {
+  const lines = currentText.split('\n');
+  const at = lines.findIndex((line) => line.includes(S3B_MARKER));
+  if (at < 0) throw new Error(`S3b marker not found in current engine/streamworld.asm: "${S3B_MARKER}"`);
+  return lines.slice(at - 1).join('\n');
+}
+
+export function validateS3bBlock(block) {
+  const labels = [...block.matchAll(/^([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]);
+  if (labels.join(',') !== EXPECTED_S3B_LABELS.join(',')) {
+    throw new Error(
+      `S3b block's own top-level labels no longer match the fixed expected list -- a later slice may have appended code after it.\n` +
+      `  expected: ${EXPECTED_S3B_LABELS.join(', ')}\n  found:    ${labels.join(', ')}`
+    );
+  }
+  const code = block.split('\n').map((l) => l.replace(/;.*/, '').trimEnd()).filter((l) => l.trim() !== '');
+  if (code[0].trim() !== '.if TALKER_ENABLED' || code[code.length - 1].trim() !== '.endif') {
+    throw new Error("S3b's block must open with `.if TALKER_ENABLED` and close with its `.endif`, with nothing after it");
+  }
+  if (code.filter((l) => /^\s*\.if\b/.test(l)).length !== code.filter((l) => /^\s*\.endif\b/.test(l)).length) {
+    throw new Error("S3b's block has unbalanced .if/.endif");
+  }
+}
+
+// S3b changed streamworld.asm outside B1 in two ways this pin must see past, in the S1 manner: it APPENDED the talker block
+// (above) and one `.if TALKER_ENABLED / jsr sw_talker_cross / .endif` at the end of each sw_pstep_<dir>. Cutting both from the
+// current text gives the file as it stood before S3b (and S3a's guards, which S3b deleted, are asserted gone by
+// stripS3aFromStreamworld). Each shape must occur exactly as S3b wrote it, or the helper throws rather than cut other lines.
+export function stripS3bFromStreamworld(text) {
+  validateS3bBlock(restoreS3bBlock(text));
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => line.includes(S3B_MARKER));
+  const head = lines.slice(0, at - 1).join('\n').replace(/\n+$/, '') + '\n';
+  const call = /^  \.if TALKER_ENABLED\n  jsr sw_talker_cross\n  \.endif\n/gm;
+  const calls = head.match(call) ?? [];
+  if (calls.length !== 4) throw new Error(`S3b's four sw_talker_cross calls not found (${calls.length})`);
+  return head.replace(call, '');
 }
 
 // fix round 1c, item 2 (and round 2, finding A4): restoreB1Routines identifies the block purely as
@@ -300,18 +354,15 @@ export function stripS1FromStreamworld(text) {
 }
 
 // Phase 3a S3a changed streamworld.asm in two ways this pin must see past, in the S1 manner. It ADDED the
-// four sw_step_nocross guards (one per sw_pstep_<dir>, each wrapped in `.if MOVE_ENABLED`), which
-// stripS3aFromStreamworld removes from the current text; and it DELETED the scripted Move's probe pair
-// (sw_move_probe_solid .. sw_move_probe_same), which dropS3aRetiredFromOld removes from an older text.
-// Each pattern must match the exact number of times S3a wrote it, or the helper throws rather than strip
-// the wrong lines.
+// four sw_step_nocross guards (one per sw_pstep_<dir>, each wrapped in `.if MOVE_ENABLED`) and DELETED the scripted
+// Move's probe pair (sw_move_probe_solid .. sw_move_probe_same), which dropS3aRetiredFromOld removes from an older text.
+// Phase 3a S3b deleted the guards again (a Move crosses like a walking step), so the current text carries none:
+// stripS3aFromStreamworld now asserts exactly that -- no guard, no `_refuse` label, no sw_step_nocross -- and throws if one
+// has come back, so a resurrected ownership stop cannot hide behind a pin that used to expect it.
 export function stripS3aFromStreamworld(text) {
-  const guard = /^  \.if MOVE_ENABLED\n  lda sw_step_nocross\n  bne sw_p[lrdu]_refuse\n  \.endif\n/gm;
-  const label = /^  \.if MOVE_ENABLED\nsw_p[lrdu]_refuse:\n  \.endif\n/gm;
-  const guards = text.match(guard) ?? [];
-  const labels = text.match(label) ?? [];
-  if (guards.length !== 4 || labels.length !== 4) throw new Error(`S3a's four sw_step_nocross guards not found (${guards.length}/${labels.length})`);
-  return text.replace(guard, '').replace(label, '');
+  const left = text.match(/sw_step_nocross|^sw_p[lrdu]_refuse:/gm) ?? [];
+  if (left.length !== 0) throw new Error(`S3a's sw_step_nocross guards were retired by S3b but ${left.length} reference(s) are back: ${left.join(', ')}`);
+  return text;
 }
 
 export function dropS3aRetiredFromOld(text) {

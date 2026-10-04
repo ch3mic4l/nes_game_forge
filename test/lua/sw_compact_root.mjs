@@ -2,13 +2,17 @@
 //
 // `runManifest`/`buildScene` build whatever `root` supplies (`root/shared/project.js`, `root/main/build/pipeline.js`) and run the scene's art
 // assertions BEFORE the build; the harness files are provenance-pinned (test/fixtures/streambound-curve.json pins their hash), so the compaction
-// cannot be a harness option. `compactRoot(realRoot)` returns a directory that is `realRoot` seen through symlinks except for one file:
-// `main/build/pipeline.js`, whose `buildProject` compacts a COPY of the project (the scene's own, already asserted, project is untouched) and
-// then calls the real one. Everything else -- the engine, the generator, the shared modules -- is the real tree's own file.
+// cannot be a harness option. `compactRoot(realRoot)` returns a directory holding a COPY of every `main/build` file of `realRoot` -- real files, never
+// symlinks, so that `generatorHash` (sw_provenance.mjs `walk()` only reads real files) hashes the actual generator bytes under stable logical names
+// (review 1 finding 7: with symlinked files only the wrapper was hashed, ten generator modules were not, so a change behind them left the hash alone).
+// The one difference is `main/build/pipeline.js`: a wrapper whose `buildProject` compacts a COPY of the project (the scene's own, already asserted,
+// project is untouched) and then calls the copy of the real pipeline, `pipeline.real.js`. The compactor (sw_compact_actors.mjs) is copied in beside it,
+// so its bytes are hashed too. The wrapper holds no absolute path. `engine/` and `shared/` stay directory symlinks (their files are read through the
+// directory, so they are hashed and fingerprinted as the real tree's own files).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const made = new Map();
@@ -21,12 +25,14 @@ export function compactRoot(realRoot) {
   fs.symlinkSync(path.join(real, 'engine'), path.join(dir, 'engine'));
   fs.symlinkSync(path.join(real, 'shared'), path.join(dir, 'shared'));
   const build = path.join(dir, 'main', 'build');
-  fs.mkdirSync(build, { recursive: true });
-  for (const e of fs.readdirSync(path.join(real, 'main', 'build'))) if (e !== 'pipeline.js') fs.symlinkSync(path.join(real, 'main', 'build', e), path.join(build, e));
+  fs.mkdirSync(path.join(dir, 'main'), { recursive: true });
+  fs.cpSync(path.join(real, 'main', 'build'), build, { recursive: true, dereference: true });
+  fs.renameSync(path.join(build, 'pipeline.js'), path.join(build, 'pipeline.real.js'));
+  fs.copyFileSync(path.join(HERE, 'sw_compact_actors.mjs'), path.join(build, 'sw_compact_actors.mjs'));
   fs.writeFileSync(path.join(build, 'pipeline.js'), [
-    `import * as real from ${JSON.stringify(pathToFileURL(path.join(real, 'main/build/pipeline.js')).href)};`,
-    `import { compactActors } from ${JSON.stringify(pathToFileURL(path.join(HERE, 'sw_compact_actors.mjs')).href)};`,
-    'export * from ' + JSON.stringify(pathToFileURL(path.join(real, 'main/build/pipeline.js')).href) + ';',
+    "import * as real from './pipeline.real.js';",
+    "import { compactActors } from './sw_compact_actors.mjs';",
+    "export * from './pipeline.real.js';",
     'export async function buildProject({ project, ...rest }) {',
     '  const compacted = structuredClone(project);',
     '  compactActors(compacted);',

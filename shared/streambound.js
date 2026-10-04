@@ -43,7 +43,8 @@
 //                   new cliff's own certified n (13,708 partitions at 52) would be about 219,000 jobs per curve, about 20 hours.
 //                   The spare cycles stay as headroom for the Move ring and the later slices, which re-sweep anyway. The cadence
 //                   check (test/lua/run_sw_cadence.mjs) keeps its walk scene at 15 because the bound stays 15; its two overrun scenes
-//                   are the probe's first failing n of each curve.
+//                   sit at the probe's cliff populations: plain n = 56 with the probe's own Flash x 241, and bound tiles n = 54 with
+//                   Flash x 242 (the variant of the probe's bound-cliff population, not the probe's x 241 row).
 //   sampled         everything else, and said so in the record (`sampling`): every other n; the partitions of P3/P4/P5/P7 and
 //                   of y other than 225/234; odd k on 36 jobs per curve; Flash x other than 241/242; one bound tile (row 0,
 //                   col 0, switch 0, metatile 2); frame counts and durations outside the presets P0-P8 (the editor admits up

@@ -106,9 +106,9 @@ export async function runCampaign({ cells, measure, jobs, onProgress = () => {},
       if (!c) return;
       try {
         const { summary } = await measure(c);
-        out.push({ id: cellId(c), cell: c, summary });
+        out.push({ id: c.id ?? cellId(c), cell: c, summary });
       } catch (e) {
-        out.push({ id: cellId(c), cell: c, error: String(e?.message ?? e).slice(0, 300) });
+        out.push({ id: c.id ?? cellId(c), cell: c, error: String(e?.message ?? e).slice(0, 300) });
       }
       onResult(out[out.length - 1]);
       onProgress(++done, cells.length);

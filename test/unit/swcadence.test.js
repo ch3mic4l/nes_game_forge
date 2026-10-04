@@ -136,3 +136,14 @@ test('the gate\'s bytes are in a built streamed ROM exactly once, at the gate la
     assert.deepEqual([...rom.slice(at, at + 6)], [0x8a, 0x45, built.symbols.ram.frame_cnt, 0x29, 0x01, 0xd0]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the CLI parses strictly and stops before any build or launch: an unknown option, scene or break mode is exit 2 (S3b fix round 2, finding 4)', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const run = (...args) => spawnSync(process.execPath, [path.join(REPO, 'test/lua/run_sw_cadence.mjs'), ...args], { encoding: 'utf8', timeout: 20000 });
+  for (const [arg, re] of [['--bogus=1', /unknown option --bogus/], ['--scene=nope', /--scene must be one of/], ['--break=zzz', /--break must be one of/], ['--scene', /needs a value|--scene/], ['stray', /unexpected argument/]]) {
+    const r = run(arg);
+    assert.equal(r.status, 2, `${arg}: ${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, re, arg);
+    assert.equal(r.stdout, '', `${arg}: nothing was run`);
+  }
+});

@@ -1,11 +1,11 @@
 {
  "version": 1,
- "what": "The Mesen measurements of streambound-curve.json were taken on the generator in curve.provenance.generator. This record certifies they stand for the generator in finalGenerator: every record that ran Mesen was rebuilt on that tree, with no Mesen, by the sweep's own scene builder, and its project hash and ROM hash equal the recorded ones. A later generator-only change is certified by re-running test/lua/sw_rebuild_check.mjs; a change whose ROMs differ needs a re-sweep. (Re-made 2026-10-03, S3a.5 round 3, on the S3a.5 engine: the record was swept on the generator it is certified for, so recordedGenerator equals finalGenerator; stage P, the probe, is part of it.)",
+ "what": "The Mesen measurements of streambound-curve.json were taken on the generator in curve.provenance.generator. This record certifies they stand for the generator in finalGenerator: every record that ran Mesen was rebuilt on that tree, with no Mesen, by the sweep's own scene builder, and its project hash and ROM hash equal the recorded ones. A later generator-only change is certified by re-running test/lua/sw_rebuild_check.mjs; a change whose ROMs differ needs a re-sweep. (Re-made 2026-10-04, S3b step D row 9 (RS), on the S3b engine: the record was swept on the generator it is certified for, so recordedGenerator equals finalGenerator; stage P, the probe, is part of it.)",
  "script": "test/lua/sw_rebuild_check.mjs",
- "date": "2026-10-03",
- "recordedGenerator": "433de291feae8781ad37678f9fba7010e272febf29a6ecf057bca23403126355",
- "finalGenerator": "433de291feae8781ad37678f9fba7010e272febf29a6ecf057bca23403126355",
- "engine": "5c38e1a6ddd2d38e333c99be3a0bbec1f89c16fdad31811b5464633eab68a5a1",
+ "date": "2026-10-04",
+ "recordedGenerator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896",
+ "finalGenerator": "e4cd0e97597665ccf3a38bafc819e161bdb39c75f2439e32ac74a940b7114896",
+ "engine": "aaa235270e07ee1f15db100e785085b1563383ffc1e3619ef337a717929f3435",
  "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
  "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
  "jobs": 12590,
@@ -28,16 +28,16 @@
    "checked": 5312,
    "mismatched": 0
   },
-  "R": {
-   "checked": 500,
-   "mismatched": 0
-  },
   "F": {
    "checked": 760,
    "mismatched": 0
   },
   "P": {
    "checked": 98,
+   "mismatched": 0
+  },
+  "R": {
+   "checked": 500,
    "mismatched": 0
   }
  }

@@ -49,7 +49,7 @@ import { engineFingerprint } from '../lib/enginefingerprint.js';
 
 export const CERTIFIER_VERSION = 1;
 export const CERT_KIND = 'rom-identity-certificate';
-export const STAGES = ['A', 'B', 'C', 'F', 'R'];
+export const STAGES = ['A', 'B', 'C', 'F', 'R', 'P']; // P: the bounded probe stage (S3a.5); a curve recorded since then counts its jobs
 export const MAX_WORKERS = 12;
 export const CURVE_REL = 'test/fixtures/streambound-curve.json';
 export const CERT_DIR_REL = 'test/fixtures/identity-cert';
