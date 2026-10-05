@@ -497,7 +497,7 @@ sw_dlg_acb_done:
 
 ; ==========================================================================
 ; sw_dlg_origin_capture -- phase 2 slice 7b: Chris ruled (2026-09-25) this
-; slice owns sw_dlg_metatile, the close-path terrain-tile accessor, and this
+; slice owns the close-path terrain read (now sw_dlg_close_row's per-run reads), and this
 ; is its companion. Captures this open/close transaction's own box origin
 ; into sw_dlg_ocol/ocol_l/orow/orow_l (engine/constants.asm), once, from
 ; sw_cam_origin_x_lo/hi and sw_cam_origin_y_lo/hi -- the streamed camera's
@@ -507,7 +507,7 @@ sw_dlg_acb_done:
 ; origin floored to a 16px boundary and in lockstep with cam_x_lo/cam_y_lo
 ; for as long as a box stays open, and the world is frozen for the whole
 ; transaction (docs/design-streamed-worlds.md §7's own DLG_PENDING rule),
-; so one capture serves every sw_dlg_metatile call of that transaction --
+; so one capture serves every close row of that transaction --
 ; the identical "compute once, consult many times" shape sw_dlg_attr_
 ; precompute already has, above.
 ;
@@ -565,78 +565,6 @@ sw_dlgoc_ydiv_done:
   sta sw_dlg_orow_l
   rts
 
-; ==========================================================================
-; sw_dlg_metatile -- the close-path terrain-tile accessor: composes
-; sw_terrain_or_fill with the caller-supplied origin sw_dlg_origin_capture
-; (above) already resolved, exactly as docs/design-streamed-worlds.md §7's
-; own "On close ... via sw_dlg_metatile (composing sw_terrain_or_fill with a
-; caller-supplied origin ...)" describes. sw_dlg_origin_capture must already
-; have run for this transaction; this routine does not call it, so a
-; caller's every close-path cell lookup pays only this routine's own small
-; add/wrap arithmetic, not a fresh divmod per cell.
-;
-; In: A = box-relative metatile row (0-2, BOX_MT_ROW's own three bands);
-;     X = box-relative metatile column (0-15).
-; Out: A = the metatile id at that cell (sw_terrain_or_fill's own fill-aware
-;     read). Clobbers X, Y (as sw_terrain_or_fill's real-read case does) and
-;     this routine's own sw_dlg_scr0-3 scratch.
-; ==========================================================================
-sw_dlg_metatile:
-  sta sw_dlg_scr1          ; stash box-relative row; A is about to be reused
-  txa
-  clc
-  adc sw_dlg_ocol_l
-  cmp #16
-  bcc sw_dlgmt_col_ok
-  sbc #16
-  sta sw_dlg_scr0
-  lda sw_dlg_ocol
-  clc
-  adc #1
-  sta sw_dlg_scr2
-  jmp sw_dlgmt_row
-sw_dlgmt_col_ok:
-  sta sw_dlg_scr0
-  lda sw_dlg_ocol
-  sta sw_dlg_scr2
-sw_dlgmt_row:
-  lda sw_dlg_scr1          ; the stashed box-relative row
-  clc
-  adc #BOX_MT_ROW
-  clc
-  adc sw_dlg_orow_l
-  cmp #15
-  bcc sw_dlgmt_row_ok
-  sbc #15
-  sta sw_dlg_scr1
-  lda sw_dlg_orow
-  clc
-  adc #1
-  sta sw_dlg_scr3
-  jmp sw_dlgmt_offset
-sw_dlgmt_row_ok:
-  sta sw_dlg_scr1
-  lda sw_dlg_orow
-  sta sw_dlg_scr3
-sw_dlgmt_offset:
-  lda sw_dlg_scr1          ; local row (0-14)
-  asl a
-  asl a
-  asl a
-  asl a                     ; * 16 metatiles per row
-  clc
-  adc sw_dlg_scr0          ; + local col -- offset within the target screen
-  tay
-  ldx sw_dlg_scr3          ; screenRow
-  lda sw_dlg_scr2          ; screenCol
-  .if SW_DLG_BANKED
-  ; H2 (slice 10b): sw_terrain_or_fill reads map data THROUGH the $8000
-  ; window this code is running from, so a banked caller goes through the one
-  ; resident routine that re-selects BATTLE_BANK before returning here.
-  jmp sw_dlg_terrain_read
-  .else
-  jmp sw_terrain_or_fill
-  .endif
 
 ; ==========================================================================
 ; sw_dlg_run_open/push/reopen -- the split-aware run writer, generalised
@@ -743,15 +671,17 @@ sw_dlgwb_loop:
   jmp vram_end
 
 ; ==========================================================================
-; sw_dlg_close_row -- rebuild one 32-tile-wide tile row from terrain via
-; sw_dlg_metatile, split-aware -- text_close_step's own metatile math
-; (box-relative tile row 0-5 maps to metatile row (tile_row>>1)+BOX_MT_ROW,
-; top/bottom half = tile_row&1), reusing sw_dlgw_edge as the metatile-column
-; loop counter (0-15) -- safe because a border write and a close-row rebuild
-; never run in the same transaction (opposite ends of the box's own
-; open/close lifecycle).
-; In: A = box-relative tile row (0-5). Clobbers A, X, Y, sw_dlgw_mtrow/half/
-; edge, sw_dlg_metatile's own scratch.
+; sw_dlg_close_row -- rebuild one 32-tile-wide tile row from terrain, split-
+; aware (box-relative tile row 0-5 maps to metatile row (tile_row>>1)+BOX_MT_ROW,
+; top/bottom half = tile_row&1). The row is one metatile row of one screen row
+; in at most two screens, so it is read in segments (at most 8 cells, ending at
+; the next multiple-of-8 local column, so never over sw_read_run's 8 bytes and
+; never across a screen): one sw_dlg_terrain_read per in-grid segment, straight
+; into sw_run_buf, instead of sixteen per-cell walks. Off-grid segments are the
+; fill id and read nothing. sw_dlgw_edge is the cells-left counter; the three
+; sw_dlgcr_* bytes (engine/constants.asm) are lent for this row only.
+; In: A = box-relative tile row (0-5). Clobbers A, X, Y, sw_dlgw_edge/half,
+; sw_dlgcr_lc/sc/row, sw_dlg_scr1, sw_run_len and sw_run_buf.
 ; ==========================================================================
 sw_dlg_close_row:
   tax
@@ -759,34 +689,100 @@ sw_dlg_close_row:
   sta <sw_dlgw_half
   txa
   lsr a
-  sta <sw_dlgw_mtrow
+  pha                       ; box-relative metatile row (0-2)
   txa
   ldx #0
   jsr sw_dlg_run_open
-  lda #0
-  sta <sw_dlgw_edge
-sw_dlgcr_loop:
-  lda <sw_dlgw_mtrow
-  ldx <sw_dlgw_edge
-  jsr sw_dlg_metatile
+  ; The row's first cell: its local row (x16) in sw_dlg_scr1, its screen row in sw_dlgcr_row.
+  pla
+  clc
+  adc #BOX_MT_ROW
+  clc
+  adc sw_dlg_orow_l
+  ldx sw_dlg_orow
+  cmp #15
+  bcc sw_dlgcr_rowok
+  sbc #15
+  inx
+sw_dlgcr_rowok:
+  asl a
+  asl a
+  asl a
+  asl a
+  sta sw_dlg_scr1           ; local row * 16
+  stx <sw_dlgcr_row         ; screenRow
+  lda sw_dlg_ocol_l
+  sta <sw_dlgcr_lc           ; local col of the next cell
+  lda sw_dlg_ocol
+  sta <sw_dlgcr_sc           ; its screen col
+  lda #16
+  sta <sw_dlgw_edge         ; cells left
+sw_dlgcr_seg:
+  lda <sw_dlgcr_lc
+  and #7
+  eor #7
+  sec
+  adc #0                    ; 8 - (col & 7)
+  cmp <sw_dlgw_edge
+  bcc sw_dlgcr_n
+  lda <sw_dlgw_edge
+sw_dlgcr_n:
+  sta sw_run_len
+  lda <sw_dlgcr_sc
+  cmp sw_grid_w
+  bcs sw_dlgcr_fill
+  ldx <sw_dlgcr_row
+  cpx sw_grid_h
+  bcs sw_dlgcr_fill
+  lda sw_dlg_scr1
+  clc
+  adc <sw_dlgcr_lc
   tay
+  lda <sw_dlgcr_sc
+  jsr sw_dlg_terrain_read
+  jmp sw_dlgcr_push
+sw_dlgcr_fill:
+  ldx #0
+  lda sw_fill_metatile_id
+sw_dlgcr_fl:
+  sta sw_run_buf,x
+  inx
+  cpx sw_run_len
+  bne sw_dlgcr_fl
+sw_dlgcr_push:
+  ldx #0
+sw_dlgcr_cell:
+  ldy sw_run_buf,x
   lda <sw_dlgw_half
   bne sw_dlgcr_bottom
   lda mt_tl,y
   jsr sw_dlg_run_push
   lda mt_tr,y
-  jsr sw_dlg_run_push
-  jmp sw_dlgcr_next
+  jmp sw_dlgcr_pushed
 sw_dlgcr_bottom:
   lda mt_bl,y
   jsr sw_dlg_run_push
   lda mt_br,y
+sw_dlgcr_pushed:
   jsr sw_dlg_run_push
-sw_dlgcr_next:
-  inc <sw_dlgw_edge
+  inx
+  cpx sw_run_len
+  bne sw_dlgcr_cell
+  lda <sw_dlgcr_lc
+  clc
+  adc sw_run_len
+  and #15
+  sta <sw_dlgcr_lc
+  bne sw_dlgcr_nowrap
+  inc <sw_dlgcr_sc
+sw_dlgcr_nowrap:
   lda <sw_dlgw_edge
-  cmp #16
-  bne sw_dlgcr_loop
+  sec
+  sbc sw_run_len
+  sta <sw_dlgw_edge
+  beq sw_dlgcr_end
+  jmp sw_dlgcr_seg
+sw_dlgcr_end:
   jmp vram_end
 
 ; ==========================================================================
@@ -867,8 +863,8 @@ sw_dlg15_pending_step:
   sta sw_cam_origin_y_lo
   ; Fix round 1, finding A2: capture this transaction's own terrain-restore
   ; origin now, the instant the camera has settled at its floored value --
-  ; the only production call site sw_dlg_close_row's own sw_dlg_metatile
-  ; call depends on.
+  ; the only production call site sw_dlg_close_row's terrain reads
+  ; depend on.
   ; Fix round 1, finding A4: sw_dlg_lifecycle_open_start/_end brackets only
   ; this fix round's own new bytes (A1's rebuild-before-release call pair
   ; plus A2's origin capture) -- kept OUT of the pre-existing

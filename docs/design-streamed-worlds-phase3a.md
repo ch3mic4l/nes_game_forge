@@ -164,7 +164,7 @@ the Down target and its event replaced by `[lead] + Move player down <dist> + [t
 **Maxima of the saved campaign (round 1, before round 2's additional cells; margins to 29,780).** Without a Say lead: M11a **action 23,113**
 (`new/action/wide/back/P8/plain/tail-say/d159`), **rpg 19,366** (`wide/back/P8/plain/tail-flash/d159`); M11b **action 25,248** (`tight/many-small/P1/
 tail-move2/d164`), **rpg 20,326** (`tight/many-small/P8/tail-move2/d164`). A Say lead's own step and final bodies are M11 rows too (only its pre-Move
-close bodies are `before.*`) and reach **25,428** (action step, tight/many-small/P1/d200) and 16,113 (action final); rpg 20,504 and 13,549. **All-M11
+close bodies were `before.*` then; they are gated rows since the Say/Move overrun fix) and reach **25,428** (action step, tight/many-small/P1/d200) and 16,113 (action final); rpg 20,504 and 13,549. **All-M11
 maxima: action step 25,428 (margin 4,352), final 25,248 (4,532); rpg step 20,504 (9,276), final 20,326 (9,454).** No new-engine cell exceeds the gate.
 (The first version of this paragraph quoted 22,702 / 18,946 for the no-Say-lead M11a maxima; the saved campaign holds the higher numbers above.)
 The final-body coincidence is reachable only with a Flash LEAD (a Flash tail publishes a body late; a Say tail's 38-byte packet drains at the next NMI,
@@ -219,7 +219,7 @@ cells the parent could build: e.g. rpg wide bound few-large-5/-6 has 8 of its 45
 - *One policy, fail closed.* `sw_move_policy.mjs` is the only definition of the options, the cell's identity, its required composition and which rows
   are gated; the campaign (`verdict`) and the standalone command (`run_sw_move_manifest.mjs`, now exit 2 on any unknown or malformed option or a full
   machine, exit 1 on an unsound or over-gate cell) both use it. **A Say lead's step and final bodies are gated**; only its pre-Move close bodies
-  (`before.*`) are diagnostic. A new-engine refusal fails unless it is one of the explicitly approved 74 cells with its matching parent refusal. `--reuse` re-validates saved results under the
+  (`before.*`) were diagnostic until the Say/Move overrun fix (2026-10-04), after which every streamed close is gated by its own expectations (six row bodies then three attribute bodies on consecutive frames, the tail label reached, each published queue drained by the next NMI). The close marks are collected in every cell and the close is gated at a finite maximum <= 29,780 in every new-engine cell, whether or not the cell authors a close (review 3, 2026-10-04: a close an ordinary Move cell did not expect is checked as a close, never ignored; a cell that does expect one also keeps its declared count). A new-engine refusal fails unless it is one of the explicitly approved 74 cells with its matching parent refusal. `--reuse` re-validates saved results under the
   current policy, `<out>.partial` makes a long run resumable, and `--only` (an unverifiable subset) is gone.
 
 **A pre-existing failure the sweep found, not caused by S3a (known, out of scope).** A `Say` *before* the `Move` (the close-for-Move barrier) on
@@ -227,7 +227,7 @@ an **action** project has six consecutive bodies of ~38.6k cycles (`main` ~37.2k
 frames, to within 15 cycles, on the parent (38,646 against 38,633). The RPG rows pass. Review 1's attribution: the close span is **29,227
 cycles** and contains **16 `sw_peek_byte` reads**, i.e. the dialogue-restoration path re-reading the streamed world while it restores the
 screen under the box. It is a **dialogue-restoration performance issue**, outside M11(a) (a mid-Move step) and M11(b) (the final Move frame),
-which `run_sw_move_sweep.mjs` classes separately (`before.*`, the pre-Move close bodies, are the only exempt ones; the same cell's own step and final bodies are gated). The text-box Move is behaviourally unchanged
+which `run_sw_move_sweep.mjs` classed separately (`before.*`, the pre-Move close bodies, were the only exempt ones; the same cell's own step and final bodies were gated). **Superseded 2026-10-04 by the Say/Move overrun fix:** the close now resolves each screen run once in chunks of up to 8 cells, every streamed close is a gated row (`--stage=closes`, plus the `lead` stage's close-for-`Move`), and the exemption is gone -- the closes measure 15,193-15,801 (rpg) and 16,581-17,175 (action) against the parent's 28,357-36,293 and 38,056-45,259. The text-box Move is behaviourally unchanged
 (`streamworldclosemove.test.js` is green and unmodified); its frame cost is a shipped property that S3a neither created nor changes.
 
 ## Tests
@@ -287,8 +287,8 @@ cells). The six historical P0 rows replayed on the S3b engine, against the paren
 | rpg tight / `flash` tail | 20,534 | 18,133 | 18,119 |
 
 The drop from the historical column is S3a.5's camera lever (about 4.8k on action, 2.4k on rpg); S3b's step bodies in the four paired rows above are 44, 51, 10 and 14 cycles below the parent's
-(S3b removes a guard per step and adds none). **A pre-existing exception, unchanged and exempt:** the `before.*` close-for-`Move` bodies of an action
-`Say` lead are 38,641 cycles (rpg 28,942), the dialogue-restoration cost documented in S3a; the same cells' own step and final bodies are gated and pass.
+(S3b removes a guard per step and adds none). **A pre-existing exception, unchanged and exempt *at the time of S3b*:** the `before.*` close-for-`Move` bodies of an action
+`Say` lead were 38,641 cycles (rpg 28,942), the dialogue-restoration cost documented in S3a; the same cells' own step and final bodies are gated and pass. *(Dated note, 2026-10-04: the Say/Move overrun fix removed the exemption -- the close-for-`Move` bodies now measure 16,666-17,175 action and 15,301-15,801 rpg and are gated at 29,780; S3b's figures above are the history they were.)*
 
 **The bound is unchanged: 15 / 14.** `STREAM_TILE_BOUND` 15 and `STREAM_TILE_BOUND_WITH_BOUND_TILES` 14 (certified n 16 / 15, probe cliff n = 56 plain at
 31,253 cycles / n = 54 with bound tiles at 31,243, margins 4,768 / 4,669 against the tightest passing rows 25,012 / 25,111). RS re-swept the whole record on the S3b engine
@@ -297,6 +297,7 @@ The drop from the historical column is S3a.5's camera lever (about 4.8k on actio
 `test/fixtures/identity-cert/s3b-rs.json` (11,712 / 11,712), the cadence check passes 3/3, and `shared/streambound.js` was not edited
 (`docs/reference-engine.md`, "The S3b re-sweep"). The older `s3b-stepC.json` certified the S3a.5 sweep's records and no longer described a curve file in the tree; **retired after the final review
 (2026-10-04)**, moved to `handoff-next/s3b/impl/retired/s3b-stepC.json` (README there), superseded by `s3b-rs.json`.
+*(Dated note, 2026-10-04: the Say/Move overrun fix changed every swept ROM, so this record was re-swept in full (70 min 44 s) and replaced: margins 4,768 / 4,665 (the bound-tile row's tightest passing G is 25,115, was 25,111), probe cliff n = 56 / 54 at 31,253 / 31,245. The bound stays 15 / 14. The certificate and equivalence record named above were retired, not restamped; see `docs/reference-engine.md`.)*
 
 **L5 and X5.** L5 (the 24 talker + scripted-`Battle` cases of `streamedtalker.test.js` T5/T6, all RPG, replayed through Mesen's independent core by `test/lua/sw_talker_battle.mjs`): **24 cases, 24
 completed, 0 failed.** X5 (`handoff-next/s3b/impl/fix1/classaprobe.mjs`, a dev probe, not a gate; 312 runs, 0 error rows) confirms the horizontal class-(a)

@@ -45,7 +45,10 @@ import {
   stripS3bFromStreamworld,
   stripS3a5FromStreamworld,
   dropS3aRetiredFromOld,
-  dropS3a5RetiredFromOld
+  dropS3a5RetiredFromOld,
+  stripOverrunFromStreamworld,
+  stripOverrunCloseFromFlat,
+  dropOverrunRetiredFromOld
 } from '../lib/enginehistory.js';
 import { buildCommittedInventory } from '../lib/streamedinventory.js';
 import {
@@ -96,10 +99,14 @@ test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 
   // compared is every CODE line, in order: comment-only and blank lines are ignored, because S3a
   // retired the prose that described the deleted routines (and streamdialog.asm's own header comment
   // and the blank line at its include's end were always the only other additions).
-  const flat = stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS3bFromStreamworld(stripS1FromStreamworld(readEngineSource('streamworld.asm')))));
+  const flat = stripOverrunCloseFromFlat(
+    stripOverrunFromStreamworld(
+      stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS3bFromStreamworld(stripS1FromStreamworld(readEngineSource('streamworld.asm')))))
+    )
+  );
   const codeLines = (text) => text.split('\n').filter((l) => l.trim() !== '' && !/^\s*;/.test(l));
   const stripped = codeLines(flat);
-  const oldLines = codeLines(dropS3a5RetiredFromOld(dropS3aRetiredFromOld(old.stdout)));
+  const oldLines = codeLines(dropOverrunRetiredFromOld(dropS3a5RetiredFromOld(dropS3aRetiredFromOld(old.stdout))));
   const bad = stripped.findIndex((l, k) => l !== oldLines[k]);
   assert.equal(bad, -1, `flattening must reproduce the pre-slice engine/streamworld.asm code exactly (first difference at code line ${bad + 1}: ${JSON.stringify(stripped[bad])} vs ${JSON.stringify(oldLines[bad])})`);
   assert.equal(stripped.length, oldLines.length, 'flattening must not add or drop any other code line');
@@ -270,8 +277,8 @@ function symbolTable(text) {
 }
 
 // Relocated labels that must resolve inside the banked range / resident ones that must not.
-const MUST_BE_BANKED = ['sw_dlg_origin_capture', 'sw_dlg_metatile', 'sw_dlg_be_put_char', 'sw_dlg_be_close_step', 'sw_dlg_be_camrelease', 'sw_dlg15_pending_step', 'be_dlg_dispatch', 'be_dlg_table', 'sw_dlg_relocated_end'];
-const MUST_BE_RESIDENT = ['sw_dlg_shim_start', 'sw_dlg_shim_end', 'sw_dlg_hi_open_row', 'sw_dlg_hi_put_char', 'sw_dlg_hi_close_step', 'sw_dlg_hi_text_tick', 'sw_dlg17_camrelease', 'sw_dlg17cr_done', 'sw_dlg_terrain_read', 'sw_dlg_mapper_start', 'sw_dlg_mapper_end'];
+const MUST_BE_BANKED = ['sw_dlg_origin_capture', 'sw_dlg_close_row', 'sw_dlgcr_seg', 'sw_dlg_be_put_char', 'sw_dlg_be_close_step', 'sw_dlg_be_camrelease', 'sw_dlg15_pending_step', 'be_dlg_dispatch', 'be_dlg_table', 'sw_dlg_relocated_end'];
+const MUST_BE_RESIDENT = ['sw_dlg_shim_start', 'sw_dlg_shim_end', 'sw_dlg_hi_open_row', 'sw_dlg_hi_put_char', 'sw_dlg_hi_close_step', 'sw_dlg_hi_text_tick', 'sw_dlg17_camrelease', 'sw_dlg17cr_done', 'sw_dlg_terrain_read', 'sw_dlg_read_chunk', 'sw_dlg_read_chunk_end', 'sw_dlg_mapper_start', 'sw_dlg_mapper_end'];
 
 for (const variant of VARIANTS) {
   test(`H3 [${variant}]: game.fns puts every relocated label in the banked range and every shim/resident label above $C000; the twin has no banked labels`, { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
@@ -477,7 +484,7 @@ const override = (name, text) => (project) => {
   project.code = { overrides: [{ name, text }], files: [] };
 };
 
-const TERRAIN_RESELECT = 'sw_dlg_terrain_read:\n  jsr sw_terrain_or_fill\n  pha\n  lda #BATTLE_BANK\n  jsr switch_prg_bank\n  pla\n  rts\n';
+const TERRAIN_RESELECT = 'sw_dlg_terrain_read:\n  jsr sw_dlg_read_chunk\n  lda #BATTLE_BANK\n  jsr switch_prg_bank\n  rts\n';
 
 /** Sabotage 4a/4b/4c: `mutate`/`romPatch` build a wrong terrain re-select; the run must die at the
  * banked-return assertion -- a BankedReturnError thrown at the first fetch after the routine's rts
@@ -510,7 +517,7 @@ function copyBattleBankIntoUnusedBank(rom, { battleBank }) {
 }
 
 test('sabotage 4a: a terrain routine that skips its re-select dies at the banked-return assertion, naming the next instruction and the field bank', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
-  const mutant = mutateOnce(engine('streamworld.asm'), TERRAIN_RESELECT, 'sw_dlg_terrain_read:\n  jsr sw_terrain_or_fill\n  pha\n  pla\n  rts\n', '4a');
+  const mutant = mutateOnce(engine('streamworld.asm'), TERRAIN_RESELECT, 'sw_dlg_terrain_read:\n  jsr sw_dlg_read_chunk\n  rts\n', '4a');
   await assertDiesAtBankedReturn({ mutate: override('streamworld.asm', mutant), expectBank: (stock) => stock.before.bank });
 });
 

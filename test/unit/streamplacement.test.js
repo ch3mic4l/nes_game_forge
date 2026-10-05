@@ -8,7 +8,7 @@
 //   1. that closure stays renderer-safe (no Node builtin, no import of generate.js);
 //   2. the panel's own source asks for the placed figure (a revert to the two-argument
 //      battleRegionBytes call fails here);
-//   3. what the panel would show: the pinching RPG includes the 1,385-byte overlay, its resident twin
+//   3. what the panel would show: the pinching RPG includes the 1,402-byte overlay, its resident twin
 //      does not, in every variant;
 //   4. that figure is what nesasm really put in the battle bank, and the same figure checkCapacity's
 //      own region refusal quotes.
@@ -33,7 +33,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 const MAPPER = resolveMapper(30);
 const VARIANTS = ['nosave', 'save', 'move'];
-const OVERLAY_BYTES = 1385; // the relocated overlay's own share of the battle region, literal
+const OVERLAY_BYTES = 1402; // the relocated overlay's own share of the battle region, literal (1,385 until the Say/Move overrun fix grew the close routine by 17)
 
 // ---------------------------------------------------------------------------------------------
 // 1. Renderer safety of the module the panel imports.
@@ -94,7 +94,7 @@ test('F1: renderer/forges/build/build.js feeds the Battle system meter battleReg
 // 3. What the panel would show.
 // ---------------------------------------------------------------------------------------------
 
-test('F1: a pinching streamed RPG shows the 1,385-byte overlay in its battle meter; its resident twin does not (every variant)', () => {
+test('F1: a pinching streamed RPG shows the 1,402-byte overlay in its battle meter; its resident twin does not (every variant)', () => {
   assert.equal(STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE, OVERLAY_BYTES);
   for (const variant of VARIANTS) {
     const { project } = buildPinching(variant);

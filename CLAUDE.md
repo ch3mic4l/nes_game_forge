@@ -201,7 +201,7 @@ Supported: NROM, CNROM, GxROM, Color Dreams, UxROM, MMC1, MMC3, UNROM 512. Read
 - **Nothing but `text.asm` may write to the nametable while rendering is on**; everything else
   queues packets in `vram_buf`. A packet that is opened must be pushed to at least once (a count of
   zero drains as 256), and NMI rewrites `$2000` after draining. `flip_tick`, `flash_tick` and one
-  frozen-world tick are the three producers that can share a frame (worst case 81 of 256 bytes) —
+  frozen-world tick are the three producers that can share a frame (worst case 88 of 256 bytes) —
   a fourth independent producer must re-open that accounting.
 - MMC3's scanline IRQ gives the font its own CHR bank (`engine/split.asm`): interrupt-time code
   only ever selects MMC3 register 1, mapper-register pairs run only under forced blank or

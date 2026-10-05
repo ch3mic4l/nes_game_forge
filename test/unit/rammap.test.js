@@ -177,7 +177,15 @@ const KNOWN_MAX_SIZES = {
  */
 const KNOWN_ALIASES = new Map([
   ['bdptr_lo', 'esptr_lo'],
-  ['bdptr_hi', 'esptr_hi']
+  ['bdptr_hi', 'esptr_hi'],
+  // The streamed text-box close row's three private bytes (engine/constants.asm, the
+  // Say/Move overrun fix): row-scoped scratch, initialised afresh by every close row and
+  // never preserved between rows, borrowed from bytes the border writer and the attribute
+  // precompute own only OUTSIDE a close row. test/unit/streamworlddialogue.test.js's alias
+  // lifetime test pins the "never live at once" half of the claim; this entry pins the bytes.
+  ['sw_dlgcr_lc', 'sw_dlgw_fill'],
+  ['sw_dlgcr_sc', 'sw_dlgw_mtrow'],
+  ['sw_dlgcr_row', 'sw_dlgw_tmp']
 ]);
 
 function isKnownAlias(a, b) {
@@ -467,6 +475,24 @@ test(
       /attr_shadow.*size is 128.*pins it at 256/,
       'the guard should have caught attr_shadow no longer matching KNOWN_PARTIAL_OVERLAPS\' own pinned containing size'
     );
+  }
+);
+
+test(
+  'the close row\'s three aliases (sw_dlgcr_lc/sc/row) are pinned to their owners\' bytes: moving one onto a neighbour, or aliasing a byte not in KNOWN_ALIASES, is caught',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const stockConstantsText = await fs.readFile(path.join(ROOT, 'engine', 'constants.asm'), 'utf8');
+    // (1) sw_dlgcr_sc moved onto sw_dlgw_half: no longer the byte it claims to alias.
+    const moved = stockConstantsText.replace(/^sw_dlgcr_sc\s*= sw_dlgw_mtrow.*$/m, 'sw_dlgcr_sc      = $EB ; TEST OVERRIDE (sw_dlgw_half\'s own byte)');
+    assert.notEqual(moved, stockConstantsText, 'the sw_dlgcr_sc alias line was not found -- did constants.asm change shape?');
+    let built = await buildAndRead(t, moved);
+    assert.throws(() => auditRamMap(built.constantsText, built.configText), /sw_dlgcr_sc.*sw_dlgw_half|sw_dlgw_half.*sw_dlgcr_sc/, 'an alias moved onto the wrong byte must be reported');
+    // (2) a brand-new overlap that is not a documented alias at all.
+    const extra = stockConstantsText.replace(/^sw_dlgcr_lc\s*= sw_dlgw_fill.*$/m, 'sw_dlgcr_lc      = sw_dlgw_edge ; TEST OVERRIDE');
+    assert.notEqual(extra, stockConstantsText, 'the sw_dlgcr_lc alias line was not found -- did constants.asm change shape?');
+    built = await buildAndRead(t, extra);
+    assert.throws(() => auditRamMap(built.constantsText, built.configText), /sw_dlgcr_lc.*sw_dlgw_edge|sw_dlgw_edge.*sw_dlgcr_lc/, 'an undocumented alias must be reported');
   }
 );
 

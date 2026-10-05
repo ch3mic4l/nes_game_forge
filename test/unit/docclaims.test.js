@@ -434,3 +434,25 @@ test('docs.test.js and this file agree on the doc set: CLAUDE.md pointers are tr
   const out = execFileSync('git', ['ls-files', 'README.md', 'CLAUDE.md'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n');
   assert.deepEqual(out.sort(), ['CLAUDE.md', 'README.md']);
 });
+
+// T-close (the Say/Move overrun fix): the vram_buf worst case is a derived number, the close exemption is gone from every current-state doc.
+test('T-close: the current-state docs give the worst-case vram_buf frame as 88 (10+35+4+38+1), never the old 81, and no current-state doc keeps the before.* exemption', () => {
+  const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+  const claude = read('CLAUDE.md');
+  const engine = read('docs/reference-engine.md');
+  assert.match(claude, /worst case 88 of 256 bytes/);
+  assert.doesNotMatch(claude, /worst case 81 of 256/);
+  assert.match(engine, /now 88 of `vram_buf`'s 256 bytes/);
+  assert.match(engine, /10 \+ 35 \+ 4 \+ 38 \+ 1 = 88/);
+  assert.doesNotMatch(engine, /now 81 of `vram_buf`/);
+  // current-state docs (reference-*, CLAUDE.md, README) never describe a before.* carve-out; the design records may, with their dated supersession
+  for (const f of ['CLAUDE.md', 'README.md', ...fs.readdirSync(path.join(ROOT, 'docs')).filter((n) => n.startsWith('reference-')).map((n) => `docs/${n}`)]) {
+    assert.doesNotMatch(read(f), /`before\.\*`/, `${f} still names the before.* close exemption`);
+  }
+  // the design record keeps its history, but the exemption is dated as superseded where it is stated
+  const design = read('docs/design-streamed-worlds-phase3a.md');
+  assert.doesNotMatch(design, /are the only exempt ones/);
+  assert.doesNotMatch(design, /are diagnostic\. A new-engine refusal/);
+  assert.doesNotMatch(design, /unchanged and exempt:\*\* the/);
+  assert.match(design, /Superseded 2026-10-04 by the Say\/Move overrun fix/);
+});

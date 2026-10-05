@@ -66,10 +66,17 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 // bookkeeping a streamed Move now carries (TALKER_KERNEL_HI_ALLOWANCE 196 + TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE 12 = 208) replaces it:
 // 208 - 20 = 188 fewer bytes of music + sfx + dialogue fit beside the resident set (8128 - 5544 = 2584 -> 8128 - 5732 = 2396). The rows
 // without a Move carry neither term and do not move.
+//
+// The Say/Move overrun fix then moved EVERY one of these DOWN: the resident ceiling by exactly 23 (1407 -> 1384) and each
+// relocated ceiling by exactly 4 (2649 -> 2645, 2534 -> 2530, 2396 -> 2392). Cause: the text-box close now resolves each screen
+// run once through the bounded sw_read_run chunk, which costs 6 resident bytes (STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE)
+// plus 17 more in the close row itself (the lifecycle/terrain/consumer allowance 523/520 -> 540/537). A resident build charges all
+// 23; a relocated build keeps only the chunk read's 6 and the shim's own change (113 -> 111) resident, so it is 4 bytes down, and its
+// battle-bank overlay grew 17 (STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE 1385 -> 1402). The figures below are measured, not derived.
 const CEILINGS = {
-  nosave: { resident: 1407, relocated: 2649 },
-  save: { relocated: 2534 },
-  move: { relocated: 2396 }
+  nosave: { resident: 1384, relocated: 2645 },
+  save: { relocated: 2530 },
+  move: { relocated: 2392 }
 };
 const VARIANT_NAME = { nosave: 'no-Save', save: 'Save', move: 'Move' };
 
@@ -127,7 +134,7 @@ const report = (row, variant, project, extra = '') =>
 
 // ---- rows 1-2: the resident edge (no-Save) --------------------------------------------------
 
-test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1407) stays resident and builds', { skip }, async () => {
+test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1384) stays resident and builds', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), false, 'content == the resident ceiling fits it: the overlay must stay resident');
@@ -138,7 +145,7 @@ test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1407) stays r
   report(1, 'nosave', project, ' -> stays resident, builds');
 });
 
-test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1408) relocates and builds under the relocated ceiling', { skip }, async () => {
+test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1385) relocates and builds under the relocated ceiling', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident + 1 });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), true, 'content one byte over the resident ceiling must relocate');

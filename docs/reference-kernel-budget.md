@@ -405,24 +405,41 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   Against the design's own original 2053+1616+123 split for base/dialogue/Move, the growth is +3082
   (base) −261 (dialogue) −2 (Move) = **+2819** (+3160 / +2897 until S3a.5), entirely inside the resident package's measured
   growth since the design estimate (`docs/design-streamed-worlds.md`'s own matching note).
+- **The Say/Move overrun fix (2026-10-04, Chris's ruling): the text-box close reads each screen run once.** `sw_dlg_close_row` used to re-walk the
+  streamed world per cell (O(row): 38,056-45,259 cycles an action close body at depth, six bodies each overrunning its frame); it now resolves each screen
+  run once through `sw_read_run`/`sw_run_buf` in chunks of up to 8 cells, reaching the 6 resident bytes of `sw_dlg_read_chunk` (`jsr sw_read_run / jmp
+  sw_locate_current`). It adds no RAM (the three row-scoped aliases `$E2`/`$E9`/`$EA` are initialised afresh by every row and not preserved between rows) and
+  no kernel-lo. Its cost, each a named allowance equality-asserted against nesasm (`kernelbytes.test.js`, `bankedbytes.test.js`):
+
+  | placement | kernel-hi | overlay (battle bank) | allowance |
+  |---|---|---|---|
+  | resident | +23 | -- | lifecycle/terrain/consumer 523/520 -> 540/537 (+17, action/rpg) and `STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE` 6 (gated on `usesText`, charged by `streamworldResidentHiBytes` in both placements) |
+  | banked | +4 | +17 | shim 113 -> 111 (-2) plus the same 6; `STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE` 1,385 -> 1,402 |
+
+  Measured boundaries (`test/unit/streamworlddialogueboundary.test.js`, exact-fit and one-over): the resident no-Save ceiling 1,407 -> 1,384; the relocated
+  ceilings 2,649 -> 2,645 (no-Save), 2,534 -> 2,530 (Save), 2,396 -> 2,392 (Move). The battle-bank region of a relocated no-Save build holds exactly 8,172
+  bytes (`streamoverruncapacity.test.js`: 8,172 builds, 8,173 is refused by `checkCapacity` naming the Sound/Map Forge); the reviewer's counterexample (a HEAD-resident
+  88-actor project, content 1,407, that relocates and needs 8,197 against 8,172) is now refused with the capacity message, not an assembler overflow. A project not
+  using streamed dialogue assembles byte-for-byte as before. The earlier ceiling table (above) is the 2026-09-28 record and is not re-run.
+
 - **Phase 2 slice 10b — the dialogue overlay relocated (`streamworldDialogueBanked`,
   `main/build/streamplacement.js:584`, the one predicate, re-exported by `generate.js`; it also writes the generated `SW_DLG_BANKED`).**
   For a pinching project (streamed + text + battle bank + content over the resident ceiling) the three
-  overlay terms above (613 + lifecycle/terrain consumer + 222 = 1,355) are **not charged to kernel-hi at
-  all**; instead `STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE` 113 (`generate.js:1311`, the resident shim block
+  overlay terms above (613 + lifecycle/terrain consumer + 222 = 1,372 rpg / 1,375 action; 1,355 / 1,358 until the Say/Move overrun fix) are **not charged to kernel-hi at
+  all**; instead `STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE` 111 (113 until the Say/Move overrun fix; `generate.js`, the resident shim block
   `sw_dlg_shim_start..end` less the `.if SAVE_FLASH` check the Save allowance already charges) and
   `STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE` 4 (`generate.js:1315`, kernel-lo: `call_battle`'s
   `cmp #BE_DLG_FIRST / bcs`) are, and the overlay's own bytes are charged to the battle region as
-  `STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE` 1,385 (`main/build/battletables.js:777`, passed to
+  `STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE` 1,402 (1,385 until the Say/Move overrun fix; `main/build/battletables.js:777`, passed to
   `battleRegionBytes` as `{streamDialogueBanked}` because that file must stay renderer-safe and cannot
   import the predicate; the Build panel's meter reaches the predicate through `battleRegionBytesPlaced`,
   `streamplacement.js:645`, which the renderer may import because that module and everything it
   imports is pure — the predicate and the resident kernel-hi allowances it sums moved there verbatim,
   and `generate.js` re-exports every name it used to export; `test/unit/streamplacement.test.js` pins
-  the import closure, the panel's call and the 1,385-byte difference against the resident twin). Each is equality-asserted against nesasm: the 1,385 by
-  `test/unit/bankedbytes.test.js` (per variant, no-Save/Save/Move, against the resident twin), the 113 and
+  the import closure, the panel's call and the 1,402-byte difference against the resident twin). Each is equality-asserted against nesasm: the 1,402 by
+  `test/unit/bankedbytes.test.js` (per variant, no-Save/Save/Move, against the resident twin), the 111 and
   the 4 by `test/unit/kernelbytes.test.js`. `residentContentCeilingBytes` (`generate.js:3200`) is the ceiling the
-  predicate compares against; `contentCeilingBytes` is the relocated one (resident + 1,242). The
+  predicate compares against; `contentCeilingBytes` is the relocated one (resident + 1,261; 1,242 until the Say/Move overrun fix). The
   region-fit check (`checkCapacity`) and `switchableMappers` both pass the predicate, so a candidate
   mapper is never offered on the resident ceiling's arithmetic. Measured figures: see
   `docs/design-streamed-worlds.md`'s slice 10b note.

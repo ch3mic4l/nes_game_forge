@@ -3653,6 +3653,19 @@ sw_update_player_end:
 ; before it ever opens a box. Neither mapper re-floors; a caller that
 ; violates the precondition gets an address computed from whatever
 ; cam_x_lo/cam_y_lo actually hold, unchecked.
+  .if TEXT_ENABLED
+; The text-box close's bounded terrain read, resident in BOTH placements (the overlay never names
+; sw_locate_current or switch_prg_bank: scanBankSelects). In: A = screen col, X = screen row,
+; Y = metatile offset in the screen, sw_run_len = cells (1-8, never crossing the screen).
+; Out: sw_run_buf. sw_read_run ends by selecting sw_caller_bank (never written by engine code);
+; sw_locate_current then supersedes that, restoring the field bank the caller was in, exactly as
+; sw_terrain_or_fill's own callers rely on. Its own bytes are STREAMWORLD_DIALOGUE_READ_CHUNK_
+; KERNEL_HI_ALLOWANCE (sw_dlg_read_chunk..sw_dlg_read_chunk_end), outside the mapper span.
+sw_dlg_read_chunk:
+  jsr sw_read_run
+  jmp sw_locate_current
+sw_dlg_read_chunk_end:
+  .endif
 sw_dlg_mapper_start:
   .if TEXT_ENABLED
   .if SW_DLG_BANKED
@@ -3755,14 +3768,13 @@ sw_dlg17cr_done:
 ; back through switch_prg_bank (never a direct mapper write) before it returns
 ; into the bank.
 sw_dlg_terrain_read:
-  jsr sw_terrain_or_fill
-  pha
+  jsr sw_dlg_read_chunk
   lda #BATTLE_BANK
   jsr switch_prg_bank
-  pla
   rts
 sw_dlg_shim_end:
   .else
+sw_dlg_terrain_read = sw_dlg_read_chunk
   .include "streamdialog.asm"
   .endif
 

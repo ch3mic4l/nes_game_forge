@@ -8,18 +8,20 @@
 // reduced-chunk drain where the cell claims it) and no new-engine M11 row exceeds the gate G <= 29,780. A missing mark, a thrown build or
 // harness error, a nonzero Mesen status, a timeout, a non-finite figure, a missing or duplicated cell, an over-gate row and a capacity refusal
 // (which never discharges a required workload) are each a nonzero exit. The rules are test/lua/sw_move_policy.mjs, shared with the standalone cell command.
-// Not gated, by design: parent-engine cells (their F6 post-Move redraw is the defect S3a removes) and the pre-Move text-box close bodies of a
-// Say lead (`before.*`: a separately classified, known dialogue-restoration cost outside M11(a)/(b), docs/design-streamed-worlds-phase3a.md). A Say
-// lead's own step and final bodies ARE gated.
+// Not gated, by design: parent-engine cells (their F6 post-Move redraw is the defect S3a removes). EVERY new-engine text-box close IS gated
+// (the Say/Move overrun fix removed the old `before.*` exemption): the `lead` stage's close-for-Move and the `closes` stage's plain Say, multi-page,
+// choice, End, deferred Save and Say tail, each with fail-closed expectations (the expected number of closes, six row bodies then three attribute bodies
+// on consecutive frames, the tail label reached, every published queue drained by the next NMI).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { populations, GATE } from './run_sw_move_manifest.mjs';
+import { SCENARIO_NAMES } from './sw_close_scenarios.mjs';
 import { REPO } from './sw_manifest_scene.mjs';
 import { MACHINE_CEILING, countMesen, assertRoom, parseFlags, wholeNumber, cellId, expectFor, gated, cellProblems, measureCell, needsCompact } from './sw_move_policy.mjs';
 
 export { MACHINE_CEILING, countMesen, cellId, expectFor, gated, needsCompact };
-export const STAGES = ['phase', 'coincide', 'pops', 'anims', 'lead'];
+export const STAGES = ['phase', 'coincide', 'pops', 'anims', 'lead', 'closes'];
 export const PHASE_DISTS = Array.from({ length: 16 }, (_, i) => 150 + i); // every strip-arm phase (a strip arms every 16 px)
 export const TAIL_NAMES = ['none', 'say', 'flash', 'switch', 'move2'];
 
@@ -83,8 +85,11 @@ export function planStage(stage, { tiles = 15, withParent = true } = {}) {
   } else if (stage === 'anims') {
     for (const p of projects) for (const pop of ['many-small', 'few-large-1', 'back']) for (const tail of TAIL_NAMES) for (const dist of WORST_DISTS[`${p.gt}/${tail}`] ?? PHASE_DISTS.slice(0, 1)) add({ ...p, anim: 'P8', pop, tail, dist });
   } else if (stage === 'lead') {
-    // the text-box Move (close-for-Move): a Say before the Move, no tail -- only its pre-Move close bodies are exempt from the gate; its step and final bodies are gated
+    // the text-box Move (close-for-Move): a Say before the Move, no tail -- its close bodies, its step and its final bodies are ALL gated (no exemption)
     for (const p of projects) for (const dist of [150, 157, 164, 200]) add({ ...p, lead: 'say', tail: 'none', dist });
+  } else if (stage === 'closes') {
+    // every other kind of close (test/lua/sw_close_scenarios.mjs): plain Say, multi-page, choice, End, deferred Save and a Say tail
+    for (const p of projects) for (const scenario of SCENARIO_NAMES) add({ ...p, scenario, lead: 'none', tail: 'none', dist: 150 });
   } else throw new Error(`unknown stage ${stage}`);
   const seen = new Set();
   for (const c of cells) { const id = cellId(c); if (seen.has(id)) throw new Error(`the plan lists ${id} twice`); seen.add(id); }
@@ -179,7 +184,7 @@ export function verdict(results, planned, { gate = GATE } = {}) {
     const found = cellProblems(r.summary, c, { gate });
     for (const p of found) bad(r.id, p);
     if (!found.length) measured++;
-    if (gated(c)) rows += 2;
+    if (gated(c)) rows += 3; // step, final and the close (gated in every new-engine cell; a cell that authors no close has an empty close population, which passes)
   }
   const refused = new Set(excluded.map((e) => e.id));
   const c0 = (id) => want.get(id);

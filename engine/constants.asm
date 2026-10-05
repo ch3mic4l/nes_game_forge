@@ -660,9 +660,21 @@ sw_dlgw_col      = $E7     ; the column (0-31) sw_dlg_run_push is about to write
                             ; caller between pushes; also sw_dlg_run_reopen's own tile_addr input
 sw_dlgw_edge     = $E8     ; sw_dlg_write_border's own left/right-edge tile id
 sw_dlgw_fill     = $E9     ; sw_dlg_write_border's own interior-fill tile id
-sw_dlgw_mtrow    = $EA     ; sw_dlg_close_row's own box-relative metatile row (box row >> 1)
+sw_dlgw_mtrow    = $EA     ; the old per-cell close counter's metatile row; the close row no longer keeps it (sw_dlgcr_sc's byte)
+; The text-box close row's three working bytes (sw_dlg_close_row) are other code's bytes, lent for ONE terrain-row
+; transaction: each is initialised afresh after sw_dlg_run_open and never carried to the next row or the attribute work.
+;   sw_dlgcr_lc   local column of the next cell        (sw_dlgw_fill: the border interior tile, written only by the open path)
+;   sw_dlgcr_sc   its screen column                    (sw_dlgw_mtrow: the retired per-cell counter)
+;   sw_dlgcr_row  the row's screen row                 (sw_dlgw_tmp: ALSO sw_dlgw_shadowlo+1, rebuilt by every attribute
+;                 writer before its indirect reads; sw_dlg_run_open writes it BEFORE the row initialises it, and the seam
+;                 reopen's sw_dlg_tile_addr uses $CD-$D0, never this byte)
+; They are NOT free RAM: $E2 is live again in the attribute work that follows the terrain rows. test/unit/rammap.test.js
+; pins each alias to its owner's byte; test/unit/streamdialogclose.test.js runs the row across seam reopens.
+sw_dlgcr_lc      = sw_dlgw_fill
+sw_dlgcr_sc      = sw_dlgw_mtrow
+sw_dlgcr_row     = sw_dlgw_tmp
 sw_dlgw_half     = $EB     ; sw_dlg_close_row's own metatile vertical half (box row & 1) --
-                            ; selects the tl/tr vs bl/br pair of sw_dlg_metatile's own result
+                            ; selects the tl/tr vs bl/br pair of each metatile the close row reads
 ; Phase 3a slice S1: the streamed entity projection's per-frame origin and per-actor base
 ; (sw_ent_setup, draw_one_entity_show_sw -- engine/streamworld.asm), and the OAM-busy flag.
 ; oam_busy is stored INVERTED: 0 = the sprite shadow at $0200 is a complete frame (the reset
@@ -852,18 +864,17 @@ sw_walk_acc_y = $03D9
 sw_dlg_cam_x_lo = $03DA
 sw_dlg_cam_y_lo = $03DB
 ;
-; The other eight are sw_dlg_metatile's own scratch (engine/streamworld.asm,
-; sw_dlg_mapper_start..end block), allocated by this commit. sw_dlg_ocol/
+; The other eight were sw_dlg_metatile's own scratch (that accessor is gone: the Say/Move overrun fix replaced it with
+; sw_dlg_close_row's per-run reads) and are now the capture's and the close row's. sw_dlg_ocol/
 ; ocol_l/orow/orow_l are the persistent capture of "this transaction's box
 ; origin" (sw_dlg_origin_capture, streamworld.asm) -- the world screenCol/
 ; localCol/screenRow/localRow sitting at the camera's own top-left edge,
 ; valid for the whole open/close transaction because the world is frozen
 ; throughout it (docs/design-streamed-worlds.md §7's own DLG_PENDING rule).
 ; sw_dlg_scr0-3 are shared transient scratch: sw_dlg_origin_capture's own
-; 16-bit divmod working copy (scr0/scr1 only) and sw_dlg_metatile's own
-; per-call local-col/local-row/screenCol/screenRow workspace (all four) --
-; safe to share because capture always finishes before the first metatile
-; call of a transaction, and no other code calls either routine between.
+; 16-bit divmod working copy (scr0/scr1 only) and sw_dlg_close_row's own
+; per-row row-offset byte (scr1) -- safe to share because capture always
+; finishes before the first close row of a transaction.
 sw_dlg_ocol   = $03DC  ; origin: world screenCol at the camera's own left edge
 sw_dlg_ocol_l = $03DD  ; origin: local metatile col (0-15) of that edge
 sw_dlg_orow   = $03DE  ; origin: world screenRow at the camera's own top edge

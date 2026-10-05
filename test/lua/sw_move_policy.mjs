@@ -7,10 +7,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { measureMove, validateCell, populations, CONTINUATION, GATE, TAILS, LEADS, TOUCH } from './run_sw_move_manifest.mjs';
+import { measureMove, validateCell, closeEpisodeProblems, populations, CONTINUATION, GATE, TAILS, LEADS, TOUCH } from './run_sw_move_manifest.mjs';
 import { ANIM_PRESETS } from './sw_bound_sweep.mjs';
 import { REPO } from './sw_manifest_scene.mjs';
 import { compactRoot } from './sw_compact_root.mjs';
+import { scenarioExpect, scenarioCloses, scenarioScript } from './sw_close_scenarios.mjs';
 
 export const MACHINE_CEILING = 20; // Chris's limit: Mesen processes at once, all runs together
 export const COINCIDENCE_KINDS = ['strip', 'arm', 'pub'];
@@ -74,11 +75,16 @@ export const oneOf = (raw, name, allowed, dflt) => {
 /** A cell is measured on a COMPACTED copy of its scene when it is an RPG project with a switch-bound tile and a Flash command (below). */
 export const needsCompact = (c) => c.gt === 'rpg' && Boolean(c.bound) && (c.lead === 'flash' || c.tail === 'flash');
 
-export const cellId = (c) => [c.which, c.gt, c.wide ? 'wide' : 'tight', c.pop, c.anim ?? 'P0', c.bound ? 'bound' : 'plain', `lead-${c.lead}`, `tail-${c.tail}`, `d${c.dist}`, `y${c.touchY}`, ...(needsCompact(c) ? ['compact'] : [])].join('/');
+export const cellId = (c) => [...(c.scenario ? ['close', c.scenario] : []), c.which, c.gt, c.wide ? 'wide' : 'tight', c.pop, c.anim ?? 'P0', c.bound ? 'bound' : 'plain', `lead-${c.lead}`, `tail-${c.tail}`, `d${c.dist}`, `y${c.touchY}`, ...(needsCompact(c) ? ['compact'] : [])].join('/');
 
 /** What a cell must show for its figures to count (validateCell's `expect`). */
 export function expectFor(c) {
   const e = { step: 'strip', final: true, continuation: CONTINUATION[c.tail] ? c.tail : undefined };
+  // a close scenario (test/lua/sw_close_scenarios.mjs) names the closes it authors; a Say lead authors exactly one (the close-for-Move)
+  // (the parent engine is the BEFORE measurement: its close overruns the frame, so its rows land two frames apart and its structure is not the one
+  // required of the new engine; a parent cell need only run and report)
+  if (c.scenario) { const { ran, ...move } = scenarioExpect(c.scenario); return c.which === 'parent' ? move : { ...move, ran, closes: scenarioCloses(c.scenario) }; }
+  if (c.lead === 'say') e.closes = 1;
   // The parent never calls the camera window during a Move (finding F6), so no strip is armed there: it only has to have timed its step and final
   // bodies and run the tail's continuation; the strip/coincidence compositions are properties of the new engine.
   if (c.which === 'parent') return { step: c.lead === 'flash' ? false : true, final: true, continuation: e.continuation }; // a Flash-lead arrangement is a short Move: the final body alone
@@ -88,17 +94,29 @@ export function expectFor(c) {
 }
 
 /**
- * Whether the gate G <= 29,780 applies to a cell's step and final rows: EVERY new-engine cell, whatever its lead. The only bodies a Say lead
- * exempts are its pre-Move text-box close bodies, which `classify` already files under `before.*` (a separately classified, known
- * dialogue-restoration cost, docs/design-streamed-worlds-phase3a.md); the Move's own step and final bodies stay M11.
+ * Whether the gate G <= 29,780 applies to a cell's rows: EVERY new-engine cell, whatever its lead. Its step and final rows (M11a/b) AND every
+ * text-box close body (`classify` files them under `close.*`; there is no exemption: the earlier `before.*` carve-out for a Say lead's pre-Move
+ * close, a "known dialogue-restoration cost", is gone because the close no longer has one -- the Say/Move overrun fix).
  */
 export const gated = (c) => c.which === 'new';
 
-/** Every problem that makes a measured cell unusable or over the gate: validateCell's composition rules plus the gate on its gated rows. */
+/**
+ * Every problem that makes a measured cell unusable or over the gate: validateCell's composition rules plus the gate on its gated rows. The close
+ * is gated in EVERY new-engine cell, whatever the cell declares: the close marks are collected everywhere (marksFor), so a close the cell did not
+ * author is still observed, held to the close structure (closeEpisodeProblems) and to a finite maximum <= the gate -- through the class maxima, the
+ * episode maxima and the summary's own maxClose, so a summary that understates any one of them is caught by the others. A close the cell DOES
+ * expect keeps its declared count (validateCell), so a required close that never ran still fails.
+ */
 export function cellProblems(summary, cell, { gate = GATE } = {}) {
   const out = validateCell(summary, expectFor(cell));
   if (gated(cell)) {
-    for (const [row, g] of [['M11a step', summary.maxStep], ['M11b final', summary.maxFinal]]) if (!(g <= gate)) out.push(`${row} G = ${g} exceeds the gate ${gate}`);
+    // a figure under the gate is a FINITE NUMBER <= gate: `null <= 29780` and `'16000' <= 29780` are true in JavaScript, so a bare comparison would pass them
+    const over = (g) => !(typeof g === 'number' && Number.isFinite(g) && g <= gate);
+    const rows = [['M11a step', summary.maxStep], ['M11b final', summary.maxFinal], ['text-box close', summary.maxClose]];
+    for (const [row, g] of rows) if (over(g)) out.push(`${row} G = ${g} exceeds the gate ${gate}`);
+    for (const [name, c] of Object.entries(summary.classes ?? {})) if (name.startsWith('close.') && over(c.maxG)) out.push(`text-box close class ${name} G = ${c.maxG} exceeds the gate ${gate}`);
+    for (const e of summary.closes ?? []) if (over(e.maxG)) out.push(`text-box close at frame ${e.first} G = ${e.maxG} exceeds the gate ${gate}`);
+    if (expectFor(cell).closes === undefined) out.push(...closeEpisodeProblems(summary.closes));
   }
   return out;
 }
@@ -108,7 +126,7 @@ export const cellTiles = (c, tiles) => (c.bound ? tiles - 1 : tiles);
 
 /** One measurement of a cell (the compaction, when the cell needs it, goes through the compacting root). */
 export function measureCell(c, { tiles = 15, root = REPO } = {}) {
-  return measureMove({ ...c, tiles: cellTiles(c, tiles), root: needsCompact(c) ? compactRoot(root) : root });
+  return measureMove({ ...c, tiles: cellTiles(c, tiles), root: needsCompact(c) ? compactRoot(root) : root, ...(c.scenario ? { script: scenarioScript(c.scenario) } : {}) });
 }
 
 // ----------------------------------------------------------------- the standalone command's options

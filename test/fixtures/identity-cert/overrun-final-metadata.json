@@ -1,0 +1,112 @@
+{
+ "kind": "rom-identity-certificate",
+ "version": 1,
+ "certifier": {
+  "name": "test/lua/sw_identity_cert.mjs",
+  "version": 1,
+  "sha256": "68ff7584f9d554c9bd376ed7a3ef8777746a508c8ce573e21387f756a36beae7"
+ },
+ "scope": "S3a engine: the recorded sweep (no streamHandover flag in any recorded job; S2 is shelved); every recorded Mesen-run job rebuilt byte-identical on the current engine and generator; measurement script and bindings unchanged",
+ "date": "2026-10-05",
+ "partial": false,
+ "curve": {
+  "file": "test/fixtures/streambound-curve.json",
+  "sha256": "31323ba032886b7d32881afe6f1abef12d1ae2b1cf0b0f8c0ef91594b34ae7fd",
+  "jobs": 12590,
+  "reused": 832,
+  "confirms": 2,
+  "provenance": {
+   "engine": "278413769d4f925bdd219ccdf151ad7dc4cf6e7c61c39c451b3d8f4113050b22",
+   "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+   "generator": "3d9dcc783505c0a1ae5687ef97433df81b23b0d7f2724e5d452e84af6a83bfbf",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "stages": {
+  "A": {
+   "file": "handoff-next/overrun/impl/resweep-final/out-A.jsonl",
+   "sha256": "6411372724a00b305ac14be633c9e2de60dc92dd47259881ef659e389dee2a6f",
+   "lines": 658
+  },
+  "B": {
+   "file": "handoff-next/overrun/impl/resweep-final/out-B.jsonl",
+   "sha256": "be034215e9e9bf53818d4f3ac802bf4a2ffae4c6b437e15b0d01a1d096f58b84",
+   "lines": 5120
+  },
+  "C": {
+   "file": "handoff-next/overrun/impl/resweep-final/out-C.jsonl",
+   "sha256": "79b9f7a1c28c1a7ab198d8656158445b4a2b72dce0d89593008c1a07aecdf16a",
+   "lines": 5312
+  },
+  "F": {
+   "file": "handoff-next/overrun/impl/resweep-final/out-F.jsonl",
+   "sha256": "ca65ff012c9fd984258c1be9e60f2044c2c9f0d5c9d38eebad1f9a2c5c25287b",
+   "lines": 1000
+  },
+  "R": {
+   "file": "handoff-next/overrun/impl/resweep-final/out-R.jsonl",
+   "sha256": "cc3e61e529465d0e499172ea5d5f8f8c50242746e8fb733c455b56b0cbcc45ef",
+   "lines": 500
+  },
+  "P": {
+   "file": "handoff-next/overrun/impl/resweep-final/out-P.jsonl",
+   "sha256": "c5b458ae9b836af7fc9aefdb454041490e30037e85fe5dd7497eeb13fe06f800",
+   "lines": 98
+  }
+ },
+ "fingerprints": {
+  "old": {
+   "engine": "278413769d4f925bdd219ccdf151ad7dc4cf6e7c61c39c451b3d8f4113050b22",
+   "generator": "3d9dcc783505c0a1ae5687ef97433df81b23b0d7f2724e5d452e84af6a83bfbf"
+  },
+  "current": {
+   "engine": "278413769d4f925bdd219ccdf151ad7dc4cf6e7c61c39c451b3d8f4113050b22",
+   "generator": "085855febcbd41f05ca130a372d729bcf378841d0c248763c10ec595ce9ec61b"
+  }
+ },
+ "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+ "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+ "execFlags": {
+  "args": [
+   "--testRunner",
+   "--enableStdout"
+  ],
+  "killMs": 600000
+ },
+ "counts": {
+  "expected": 11760,
+  "answered": 11760,
+  "matched": 11760,
+  "mismatched": 0,
+  "errored": 0,
+  "directCount": 11760,
+  "reuseCount": 832,
+  "confirms": 2,
+  "reusesResolved": 832,
+  "keysReproduced": 11760
+ },
+ "directDigest": "ebccfabc06ec7a101b9b962430baad757b64f2ab76119ee0a05ac904ea4f9855",
+ "reuseDigest": "ccabdaaa85f7708c13598e2d444ce373fcf68b881c1b838bad7dd5c21ff14152",
+ "bindings": {
+  "luaDigest": "2e403cfadf8a74b92280efe176f887982874aba076177d47a7255415154c9112",
+  "symDigest": "894845ea5ee158d8e60b3be9c41d4b02707dffa50ff10669ab580f3383885556",
+  "distinctScripts": 1487,
+  "distinctSymbolTables": 424
+ },
+ "sources": {
+  "before": {
+   "engine": "278413769d4f925bdd219ccdf151ad7dc4cf6e7c61c39c451b3d8f4113050b22",
+   "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+   "generator": "085855febcbd41f05ca130a372d729bcf378841d0c248763c10ec595ce9ec61b",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  },
+  "after": {
+   "engine": "278413769d4f925bdd219ccdf151ad7dc4cf6e7c61c39c451b3d8f4113050b22",
+   "harness": "27289ea4a0c53bd08eec0fbcd8cd180226557e5103de9d53889fc45f777dc899",
+   "generator": "085855febcbd41f05ca130a372d729bcf378841d0c248763c10ec595ce9ec61b",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "workers": 12,
+ "selfDigest": "7a9e2dbd9bddbd006febbb4a11afee4dae22f53e9ad5a5277d8134837471bd68"
+}

@@ -142,6 +142,7 @@ import {
   STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE,
   streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance,
   STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE,
   battleEnabledFor,
   streamworldDialogueBanked,
   streamworldResidentHiBytes,
@@ -154,6 +155,7 @@ export {
   STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
   streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance,
   STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE,
@@ -1306,7 +1308,9 @@ export const BOUND_TILE_KERNEL_ALLOWANCE = 381;
 export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // Phase 2 slice 10b (ROADMAP item 15): a streamed RPG whose music+sfx+text would
 // not fit the resident kernel-hi ceiling moves the whole dialogue overlay above
-// (the three terms just above: mapper 613 + lifecycle 520 + relocated 222) into
+// (the three terms just above: mapper 613 + lifecycle 537 rpg + relocated 222; lifecycle was 520
+// before the Say/Move overrun fix, which also left 6 resident bytes behind -- the READ_CHUNK term -- and
+// moved the shim block from 113 to 111) into
 // the battle bank -- streamworldDialogueBanked below is the one predicate. Under
 // it those three terms are NOT charged to kernel-hi at all; what stays resident is
 // the shim block in engine/streamworld.asm (sw_dlg_shim_start..sw_dlg_shim_end:
@@ -1317,7 +1321,7 @@ export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // gate on both placements. Measured off nesasm's own symbol table by
 // test/unit/kernelbytes.test.js, flat across Save/Move (the tail's Move-or-close_ui
 // jmp is 3 bytes either way).
-export const STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE = 113;
+export const STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE = 111;
 // ...and call_battle's own `cmp #BE_DLG_FIRST / bcs` (engine/banks.asm), the strip-
 // cancel skip for the overlay's entry points (H1) -- kernel-lo, assembled only
 // when SW_DLG_BANKED.

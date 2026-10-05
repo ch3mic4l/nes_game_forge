@@ -197,7 +197,9 @@ export const STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE = 613;
 // STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own
 // knockback/check_encounter arms are. Measured directly off nesasm's own
 // symbol table, sw_dlg_relocated_start - sw_dlg_origin_capture, on a fresh
-// clean build: 523 action/mixed, 520 rpg/mixed. (The three sw_dlg_
+// clean build: 540 action/mixed, 537 rpg/mixed (523/520 before the Say/Move overrun fix, which
+// rewrote sw_dlg_close_row to read each screen run once in chunks: +17 either way, charged to this
+// lump; its resident reader is the separate READ_CHUNK term below). (The three sw_dlg_
 // lifecycle_* boundary-label brackets from round 1 -- open_start..end 11,
 // close_a_start..end 2, close_b_start..end 9 action/6 rpg, summing to 22
 // action/19 rpg -- still exist and are still asserted below as an internal
@@ -205,8 +207,8 @@ export const STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE = 613;
 // identically to the mapper term above (both live in the same `.if
 // TEXT_ENABLED` bracket of the same file).
 export const STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = {
-  action: 523,
-  rpg: 520
+  action: 540,
+  rpg: 537
 };
 
 const FALLBACK_STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE = Math.max(
@@ -244,6 +246,16 @@ export function streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(pro
 // each of the twelve relocated text.asm sites plus boot.asm's own
 // camrelease poll measures 7 or 3 bytes on its own.
 export const STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE = 222;
+
+// The text-box close's bounded terrain read (engine/streamworld.asm, sw_dlg_read_chunk..
+// sw_dlg_read_chunk_end: `jsr sw_read_run / jmp sw_locate_current`), the Say/Move overrun fix
+// (handoff-next/streamed-worlds-say-move-overrun-impl-report.md). It is resident in BOTH
+// placements -- the overlay may not name sw_locate_current or select a bank itself -- so it is
+// charged by streamworldResidentHiBytes and stays charged when the overlay's three terms leave
+// kernel-hi for the battle bank. Gated on usesText exactly like the three terms above (the
+// label pair sits inside the file's own `.if TEXT_ENABLED`), flat across game type and mapper.
+// Measured off nesasm's own symbol table by test/unit/kernelbytes.test.js.
+export const STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE = 6;
 
 // B1 (phase 2 slice 9 fix round 1b): the shared kernel-HI render routine
 // itself (engine/streamworld.asm, sw_redraw_screen_landing..
@@ -334,7 +346,8 @@ export const TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE = 12;
 // JMP absolute either way, so that call site itself costs the
 // STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_
 // GAME_TYPE span nothing, confirmed by re-measuring that span with usesMove
-// on and off: 523/520 either way, unchanged from before this slice). Lives
+// on and off: 523/520 either way at the time, unchanged from before this slice; 540/537 since the
+// Say/Move overrun fix, still the same on and off). Lives
 // entirely inside the file's own `.if TEXT_ENABLED` bracket, itself gated on
 // MOVE_ENABLED, so this is charged only usesStreaming && usesMove &&
 // usesText, the identical gate as the kernel-lo term above. Measured
@@ -629,6 +642,7 @@ export function streamworldResidentHiBytes(project, mapper) {
     ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project)
     : 0;
   const streamworldDialogueRelocatedHiBytes = usesText ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldDialogueReadChunkHiBytes = usesText ? STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE : 0;
   const streamworldCloseformoveHiBytes =
     usesMoveHere && usesText ? STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE : 0;
   const streamworldCloseformoveGuardHiBytes =
@@ -654,6 +668,7 @@ export function streamworldResidentHiBytes(project, mapper) {
     streamworldDialogueMapperHiBytes +
     streamworldDialogueLifecycleHiBytes +
     streamworldDialogueRelocatedHiBytes +
+    streamworldDialogueReadChunkHiBytes +
     streamworldCloseformoveHiBytes +
     streamworldCloseformoveGuardHiBytes +
     streamworldSaveCamreleaseHiBytes +

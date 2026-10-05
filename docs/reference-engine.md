@@ -385,7 +385,12 @@ nothing in `npm test` able to see it.
 unconditionally from `main_loop`, called *before* `flash_tick` — so on a frame where a flip, a
 Flash edge and one of the frozen-world four all land together, the flip's own packets are queued
 first, Flash's second, and whichever frozen-world tick is running third. The worst-case bound is
-now 81 of `vram_buf`'s 256 bytes, up from 71 with Flash alone.
+now 88 of `vram_buf`'s 256 bytes (`vram_len` 87 plus the terminator), up from 71 with Flash alone. The figure was 81 until the Say/Move overrun fix measured
+the frame that carries a streamed world's *first* close row: the flip's two packets (10), Flash's (35), the arrow hide `text_advance_end` queues from
+`dispatch_input` (4) and the close row split across the nametable seam into two packets (38, 32 tiles), plus the terminator (1) -- 10 + 35 + 4 + 38 + 1 = 88, in
+`main_loop`'s call order. A Flip cannot be authored in a streamed world (a streamed screen with bound tiles is refused), so 88 is a bound, not a promise an
+authored game reaches; `test/lua/run_sw_close_deadline_check.sh` proves the frame, with the Flip a labelled RAM poke, against real Mesen timing in both placements
+(the NMI's `rti` lands on scanline 257, inside vblank, which ends at 260).
 `test/lua/bound_tile_nmi_timing.lua.template` (built by `test/lua/build_bound_tile_nmi_roms.mjs`,
 run by `test/lua/run_bound_tile_nmi_check.sh`) proves this exact three-producer frame against real
 Mesen timing, the same "prove the workload, then trust the deadline" shape
@@ -458,7 +463,7 @@ The tile bound is the output of the frame gate under the margin policy (Chris, 2
 certified n**; the second fact amended by his ruling of 2026-10-03, below) and there are two figures because switch-bound tiles
 (`projectUsesBoundTiles`, `BOUND_TILE_ENABLED`) make every streamed body dearer: **`STREAM_TILE_BOUND` = 15** (certified
 16, a **policy figure**; tightest passing row 25,012 cycles, 4,768 under the gate: action, wide art, P8, 7 blocked chasers,
-Flash y 212, Flash x 241) and **`STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14** (certified 15; 25,111, 4,669 under).
+Flash y 216, Flash x 241) and **`STREAM_TILE_BOUND_WITH_BOUND_TILES` = 14** (certified 15; 25,115, 4,665 under; both re-measured after the Say/Move overrun fix, below).
 `streamTileBoundFor(project)` (`shared/project.js`) is the single reader, the validateProject warning and
 `describeStreamTileWarning` use it, and the text says so when bound tiles lowered the figure. Both are derived from
 `test/fixtures/streambound-curve.json` (version 4: 12,590 jobs, 880 of them reused measurements, 2 confirmation re-runs;
@@ -474,7 +479,7 @@ generator-only change is certified the same way or by `sw_identity_cert.mjs`; an
 **The rule (2026-10-03).** Fact 1 is unchanged: the record is **exhaustive at the certified n of each curve**. Fact 2 used to
 be a confirmed failing row at certified+1; the S3a.5 camera lever (`sw_camera_window_recompute`'s closed-form Y half) took
 about 4,700 cycles out of these scenes, so stage F's 500 candidates per curve at 17 / 16 found nothing (worst 25,130 /
-25,227) and the cliff moved to **n = 56 plain (31,253 cycles) and n = 54 with bound tiles (31,243)**, about 40 tiles above the
+25,227) and the cliff moved to **n = 56 plain (31,253 cycles) and n = 54 with bound tiles (31,243; 31,245 after the Say/Move overrun fix)**, about 40 tiles above the
 shipped figures, where an exhaustive stage C would be about 219,000 jobs per curve (about 20 hours). Chris ruled the shipped
 figures stay at 15 / 14 as **policy figures** (the spare cycles are headroom for S3b's Move ring and S4, which re-sweep
 anyway; S3b has been re-swept and did not use them: below), and fact 2 became the record's **`probe`** (stage P): one fixed shape (action, wide art, P8, 7 chasers, Flash y 212,
@@ -503,11 +508,19 @@ have no Move, every S3b addition is gated on `TALKER_ENABLED` (a streamed map an
 ROM hashes are unchanged -- the sweep's ROMs are byte-for-byte the S3a.5 ones (`test/fixtures/identity/S3b.json`, pinned
 by `identitymatrix.test.js`). The rebuild check (`sw_rebuild_check.mjs`) rebuilt 11,712 of 11,712 Mesen-run records with
 no Mesen and every project and ROM hash matched (880 reuse records covered by their sources), and
-`test/fixtures/streambound-equivalence.json` was re-made from it; the ROM-identity certificate over the same records is
-**`test/fixtures/identity-cert/s3b-rs.json`** (11,712/11,712 matched, 0 mismatched, 0 errored, 880 reuses resolved; its
+`test/fixtures/streambound-equivalence.json` was re-made from it; the ROM-identity certificate over the same records was
+**`handoff-next/overrun/impl/retired/s3b-rs.json`** (retired by the Say/Move overrun fix, below; the live one is `test/fixtures/identity-cert/overrun-final-metadata.json`) (11,712/11,712 matched, 0 mismatched, 0 errored, 880 reuses resolved; its
 `scope` string is the certifier's fixed text and still says "S3a engine" -- the `provenance` stamps inside it are the
 S3b engine's). `run_sw_cadence.mjs` passes 3/3 on the re-swept tree. What S3b's own scenes cost (the long Move, the
 crossing bodies, the composed seams) is a different gate row, M11: `docs/design-streamed-worlds-phase3a.md`, "S3b: measured outcomes".
+
+**Re-measured after the Say/Move overrun fix (2026-10-04).** The close fix changes every swept ROM (each sweep scene carries a Say, so the resident streamed-dialogue code
+differs; the ROM-identity certifier matched 0 of 11,712), so the S3b record could not be carried over and `sw_bound_sweep.mjs` was run again end to end
+(`bash handoff-next/overrun/review3/resweep.sh`: A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes, 70 min 44 s; A/B/C/R/P exit 0, F exit 4 as
+before). Result, from the full fresh record: 12,590 jobs, 0 bad; tightest passing row at the certified n **25,012 (plain n = 16, unchanged, 4,768 under)** and **25,115
+(bound tiles n = 15, was 25,111, 4,665 under)**; probe cliff **n = 56 plain (31,253) / n = 54 bound (31,245, was 31,243)**, both CONFIRMED. The certified 16 / 15 and shipped 15 / 14
+stand; `STREAM_TILE_MARGIN_CYCLES.boundTiles` is 4,665 (was 4,669). The old ROM-identity certificate and equivalence record, which described the superseded curve, were retired
+(`handoff-next/overrun/impl/retired/`), and the equivalence record was rebuilt against the fresh one.
 
 **Capacity drop recorded with S1 (a1): 21 placed actors with Save, was 24.** The committed Save inventory project needs 8
 kernel-lo lookup bytes per placed actor; S1's `OAM_BUSY` (+18) and projection setup (+3) and (a1)'s gate (+7) took the

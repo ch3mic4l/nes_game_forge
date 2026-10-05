@@ -774,7 +774,7 @@ export const STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE = 47;
 // difference in nesasm's real region usage between the relocated and resident
 // builds of one project (test/unit/bankedbytes.test.js). Flat across Save/Move:
 // what those change stays resident.
-export const STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE = 1385;
+export const STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE = 1402;
 
 // monster_turn's pick-first rewrite plus its two gated helpers
 // (mod_monster_len, monster_pick_limit) -- docs/design-monster-spell-list.md

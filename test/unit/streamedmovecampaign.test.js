@@ -17,6 +17,7 @@ import {
   parseOptions, cellId, expectFor, gated, planStage, runCampaign, verdict, aggregate, isCapacityRefusal, loadReusable, MACHINE_CEILING, COINCIDENCE_CELLS, needsCompact, acceptedUnreachable, UNREACHABLE_ARRANGEMENTS
 } from '../lua/run_sw_move_sweep.mjs';
 import { parseCellOptions, cellProblems, runCell, parseFlags, wholeNumber, assertRoom } from '../lua/sw_move_policy.mjs';
+import { SCENARIO_NAMES } from '../lua/sw_close_scenarios.mjs';
 
 const SWEEP = path.join(path.dirname(fileURLToPath(import.meta.url)), '../lua/run_sw_move_sweep.mjs');
 const MANIFEST = path.join(path.dirname(fileURLToPath(import.meta.url)), '../lua/run_sw_move_manifest.mjs');
@@ -38,6 +39,24 @@ function fakeRes(bodies, over = {}) {
 
 const STEP = ['move_tick', 'sw_frame_camera_window'];
 const FINAL_SAY = ['move_tick', 'sw_frame_camera_window', 'move_finish', 'script_op_say'];
+/** One streamed text-box close: BOX_ROWS_HIGH (6) row bodies then BOX_ATTR_BODIES (3) attribute bodies on consecutive frames, the last reaching the tail
+ * label, followed by an ordinary body that drains what the close published. Options break it one way at a time. */
+function closeBodies(f0, { G = 15000, rows = 6, attrs = 3, tail = true, gap = 0, pubLast = 0, nextQ = 0 } = {}) {
+  const out = [];
+  let f = f0;
+  for (let i = 0; i < rows; i++) out.push(body(f++ + (i === 3 ? gap : 0), G, ['text_close_step'], { st0: 0, st1: 0, stadv: 0 }));
+  for (let i = 0; i < attrs; i++) {
+    const last = i === attrs - 1;
+    out.push(body(f++ + gap, G, ['text_close_step', 'text_close_attr', ...(last && tail ? ['text_close_attr_tail'] : [])], { st0: 0, st1: 0, stadv: 0, pub: last ? pubLast : 0 }));
+  }
+  out.push(body(f + gap, 9000, [], { q: nextQ, st0: 0, st1: 0, stadv: 0 }));
+  return out;
+}
+const closeSummary = (bodies, expect) => {
+  const s = classify(fakeRes(bodies), { lead: 'none', tail: 'none' });
+  return { s, problems: validateCell(s, { step: false, final: false, ...expect }) };
+};
+
 const soundBodies = () => [body(1, 9000, []), body(2, 16000, STEP), body(3, 16100, STEP), body(4, 16200, FINAL_SAY, { q: 35, stadv: 1 }), body(5, 12000, [], { st0: 0, st1: 0, stadv: 0 })];
 const sound = (opts = {}) => classify(fakeRes(soundBodies()), { lead: 'flash', tail: 'say', ...opts });
 
@@ -173,7 +192,7 @@ test('control: a campaign whose every planned cell has one sound result passes',
   const v = verdict([okResult()], [CELL]);
   assert.deepEqual(v.problems, []);
   assert.equal(v.ok, true);
-  assert.equal(v.gatedRows, 2);
+  assert.equal(v.gatedRows, 3, 'step, final and the close: every new-engine cell gates the close row, an authored one or not');
 });
 
 test('an empty plan or an empty result set is never a pass ("0 bad" is not "all required rows passed")', () => {
@@ -202,30 +221,39 @@ test('an injected over-gate row fails the campaign: M11a at 29,781, M11b at 29,7
   assert.equal(verdict([okResult(CELL, classify(fakeRes(heavy), { tail: 'say' }))], [CELL]).ok, false);
 });
 
-test('what is deliberately NOT gated: parent cells (their F6 redraw) and a Say lead\'s pre-Move close bodies; nothing else', () => {
+test('what is deliberately NOT gated: parent cells; nothing else -- a Say lead\'s pre-Move close is gated now (the before.* exemption is gone)', () => {
   const parent = { ...CELL, which: 'parent' };
   assert.equal(gated(parent), false);
   assert.equal(verdict([okResult(parent, okSummary({ maxStep: 1082000, maxFinal: 1082000 }))], [parent]).ok, true);
   const say = { ...CELL, lead: 'say', tail: 'none' };
-  assert.equal(gated(say), true, 'a Say lead exempts its close bodies only, never the Move\'s own step and final bodies (review 2)');
-  const closeBodies = [body(1, 38633, [], { st0: 0, st1: 0 }), body(2, 16000, STEP), body(3, 16100, ['move_tick', 'sw_frame_camera_window', 'move_finish'])];
-  const heavyClose = classify(fakeRes(closeBodies), { lead: 'say', tail: 'none' });
-  assert.equal(heavyClose.maxBefore, 38633);
-  assert.equal(verdict([okResult(say, heavyClose)], [say]).ok, true, 'CONTROL: the pre-Move box-close body (before.*) is a diagnostic, not an M11 row');
-  assert.equal(verdict([okResult(say, heavyClose)], [say]).gatedRows, 2, 'the Say-lead cell still contributes its step and final rows');
+  assert.equal(gated(say), true);
+  // before the Say/Move overrun fix a 38,633-cycle close body (the old per-cell terrain walk) was filed under before.* and passed; it must now fail
+  const heavyClose = classify(fakeRes([...closeBodies(1, { G: 38633 }), body(10, 16000, STEP), body(11, 16100, ['move_tick', 'sw_frame_camera_window', 'move_finish'])]), { lead: 'say', tail: 'none' });
+  assert.equal(heavyClose.maxClose, 38633);
+  assert.equal(heavyClose.maxBefore, 9000, 'a close body is no longer a "before" body (only the ordinary body after it is)');
+  const v = verdict([okResult(say, heavyClose)], [say]);
+  assert.equal(v.ok, false, 'a 38,633-cycle close body fails the gate (it passed as before.* until the Say/Move overrun fix)');
+  assert.ok(v.problems.some((p) => /text-box close G = 38633 exceeds the gate 29780/.test(p.problem)), JSON.stringify(v.problems));
+  const sound = classify(fakeRes([...closeBodies(1, { G: 16666 }), body(10, 16000, STEP), body(11, 16100, ['move_tick', 'sw_frame_camera_window', 'move_finish'])]), { lead: 'say', tail: 'none' });
+  const ok = verdict([okResult(say, sound)], [say]);
+  assert.equal(ok.ok, true, JSON.stringify(ok.problems));
+  assert.equal(ok.gatedRows, 3, 'a Say-lead cell contributes its step, final and close rows');
 });
 
 test('a Say lead\'s actual Move bodies are gated: a 40,000-cycle step or final body fails (review 2 reproduced ok:true with 0 gated rows)', () => {
   const say = { ...CELL, lead: 'say', tail: 'none' };
-  const heavyStep = classify(fakeRes([body(1, 38633, [], { st0: 0, st1: 0 }), body(2, 40000, STEP), body(3, 16100, ['move_tick', 'sw_frame_camera_window', 'move_finish'])]), { lead: 'say', tail: 'none' });
+  const STEP_END = ['move_tick', 'sw_frame_camera_window', 'move_finish'];
+  const run = (close, step, final) => classify(fakeRes([...closeBodies(1, { G: close }), body(20, step, STEP), body(21, final, STEP_END)]), { lead: 'say', tail: 'none' });
+  const heavyStep = run(16000, 40000, 16100);
   const a = verdict([okResult(say, heavyStep)], [say]);
   assert.equal(a.ok, false);
   assert.ok(a.problems.some((p) => /M11a step G = 40000 exceeds the gate 29780/.test(p.problem)), JSON.stringify(a.problems));
-  const heavyFinal = classify(fakeRes([body(1, 38633, [], { st0: 0, st1: 0 }), body(2, 16000, STEP), body(3, 40000, ['move_tick', 'sw_frame_camera_window', 'move_finish'])]), { lead: 'say', tail: 'none' });
+  const heavyFinal = run(16000, 16000, 40000);
   assert.ok(verdict([okResult(say, heavyFinal)], [say]).problems.some((p) => /M11b final G = 40000/.test(p.problem)));
   // and the standalone command applies the same rule
   assert.ok(cellProblems(heavyStep, say).some((p) => /M11a step G = 40000/.test(p)));
-  assert.deepEqual(cellProblems(classify(fakeRes([body(1, 38633, [], { st0: 0, st1: 0 }), body(2, 16000, STEP), body(3, 16100, ['move_tick', 'sw_frame_camera_window', 'move_finish'])]), { lead: 'say', tail: 'none' }), say), []);
+  assert.deepEqual(cellProblems(run(16000, 16000, 16100), say), [], 'CONTROL: a sound close, step and final pass');
+  assert.ok(cellProblems(run(38633, 16000, 16100), say).some((p) => /text-box close G = 38633/.test(p)), 'and the close itself is a gated row');
 });
 
 test('a failed child (a thrown build or harness error) and a nonzero Mesen status are failures, found through the real pool', async () => {
@@ -282,7 +310,7 @@ test('the plan covers both game types, both arts, every tail and (the coincidenc
   assert.deepEqual([...new Set(cells.map((c) => c.tail))].sort(), ['flash', 'move2', 'none', 'say', 'switch']);
   assert.deepEqual([...new Set(cells.map((c) => expectFor(c).coincidence))].sort(), ['arm', 'pub', 'strip']);
   assert.ok(COINCIDENCE_CELLS.every((k) => k.kind && k.dist > 0));
-  assert.deepEqual(marksFor({ lead: 'flash', tail: 'say' }).sort(), ['flash_tick', 'move_finish', 'move_tick', 'script_op_flash', 'script_op_say', 'sw_frame_camera_window']);
+  assert.deepEqual(marksFor({ lead: 'flash', tail: 'say' }).sort(), ['flash_tick', 'move_finish', 'move_tick', 'script_op_flash', 'script_op_say', 'sw_frame_camera_window', 'text_close_attr', 'text_close_attr_tail', 'text_close_step']);
 });
 
 const REFUSAL = 'Map Forge: The lookup tables need 168 bytes but only 160 are free alongside the engine code. Try removing every Move command';
@@ -614,4 +642,119 @@ test('the ruling matches exactly 74 planned new-engine cells of the pops stage, 
   const recorded = JSON.parse(fs.readFileSync(path.join(PARENT, 'test/fixtures/streamedmove-unreachable.json'), 'utf8')).refused.filter((r) => r.id.startsWith('new/'));
   assert.equal(recorded.length, 74, 'the generator refuses exactly these new-engine cells (capacity-all.json)');
   assert.deepEqual(recorded.map((r) => r.id).sort(), hit.map(cellId).sort());
+});
+
+
+// ----------------------------------------------------------------- the text-box close gate (every streamed close; the before.* exemption is gone)
+
+test('close: a sound close (six row bodies, three attribute bodies, consecutive frames, the tail reached, the queue drained) is one episode and passes', () => {
+  const { s, problems } = closeSummary(closeBodies(100), { closes: 1 });
+  assert.deepEqual(problems, []);
+  assert.equal(s.closes.length, 1);
+  assert.deepEqual([s.closes[0].rows, s.closes[0].attrs, s.closes[0].bodies, s.closes[0].tail, s.closes[0].drained], [6, 3, 9, true, true]);
+  assert.equal(s.maxClose, 15000);
+  assert.equal(s.close, 9);
+});
+
+test('close: the fail-closed expectations -- each defect of a close is its own rejection', () => {
+  const none = closeSummary([body(1, 9000, []), body(2, 9000, [])], { closes: 1 });
+  assert.ok(none.problems.some((p) => /expected 1 text-box close\(s\), found 0/.test(p)), 'a run that never closed fails');
+  const short = closeSummary(closeBodies(100, { rows: 5 }), { closes: 1 });
+  assert.ok(short.problems.some((p) => /not 6 row bodies then 3 attribute bodies/.test(p)), short.problems.join('; '));
+  const wrongAttrs = closeSummary(closeBodies(100, { attrs: 1 }), { closes: 1 });
+  assert.ok(wrongAttrs.problems.some((p) => /not 6 row bodies then 3 attribute bodies/.test(p)));
+  const overrun = closeSummary(closeBodies(100, { gap: 1 }), { closes: 1 });
+  assert.ok(overrun.problems.length > 0, 'a close whose rows land two frames apart (an overrun skipping a frame) is not one consecutive episode');
+  assert.ok(overrun.s.closes.length > 1);
+  const open = closeSummary(closeBodies(100, { tail: false }), { closes: 1 });
+  assert.ok(open.problems.some((p) => /never reached text_close_attr_tail/.test(p)));
+  const undrained = closeSummary(closeBodies(100, { pubLast: 35, nextQ: 0 }), { closes: 1 });
+  assert.ok(undrained.problems.some((p) => /not drained/.test(p)), 'a published queue the next NMI did not drain fails');
+  const drained = closeSummary(closeBodies(100, { pubLast: 35, nextQ: 35 }), { closes: 1 });
+  assert.deepEqual(drained.problems, [], 'CONTROL: the same publication, drained, passes');
+  const two = closeSummary([...closeBodies(100), ...closeBodies(200)], { closes: 1 });
+  assert.ok(two.problems.some((p) => /expected 1 text-box close\(s\), found 2/.test(p)), 'more closes than the scene authors is also wrong');
+});
+
+test('close: the command that leads to the close must have run (expect.ran)', () => {
+  const bodies = closeBodies(100);
+  const withSave = closeSummary(bodies, { closes: 1, ran: ['script_op_save'] });
+  assert.ok(withSave.problems.some((p) => /script_op_save never ran/.test(p)));
+  const ran = [body(50, 9000, ['script_op_save'], { st0: 0, st1: 0, stadv: 0 }), ...bodies];
+  assert.deepEqual(closeSummary(ran, { closes: 1, ran: ['script_op_save'] }).problems, []);
+});
+
+test('close: a close body over the gate fails the cell, whatever the scenario; the parent engine\'s does not', () => {
+  for (const scenario of ['plain-say', 'multi-page', 'choice', 'end', 'deferred-save']) {
+    const cell = { ...CELL, tail: 'none', scenario };
+    const heavy = classify(fakeRes(closeBodies(100, { G: GATE + 1 })), { lead: 'none', tail: 'none' });
+    heavy.ranMarks = [...heavy.ranMarks, 'script_op_save', 'script_op_choice'];
+    const found = cellProblems(heavy, cell);
+    assert.ok(found.some((p) => /text-box close G = 29781 exceeds the gate 29780/.test(p)), `${scenario}: ${found.join('; ')}`);
+    const sound = classify(fakeRes(closeBodies(100, { G: GATE })), { lead: 'none', tail: 'none' });
+    sound.ranMarks = [...sound.ranMarks, 'script_op_save', 'script_op_choice'];
+    assert.deepEqual(cellProblems(sound, cell), [], `${scenario}: a close exactly at the gate passes`);
+  }
+  const parent = { ...CELL, tail: 'none', scenario: 'plain-say', which: 'parent' };
+  const heavy = classify(fakeRes(closeBodies(100, { G: 38056 })), { lead: 'none', tail: 'none' });
+  assert.deepEqual(cellProblems(heavy, parent), [], 'the parent cell is the BEFORE measurement: it only has to run');
+});
+
+test('close: the closes stage plans every scenario on every project shape, new beside parent, and says so in the cell id', () => {
+  const cells = planStage('closes');
+  assert.equal(cells.length, 4 * SCENARIO_NAMES.length * 2);
+  for (const sc of SCENARIO_NAMES) for (const which of ['new', 'parent']) assert.ok(cells.some((c) => c.scenario === sc && c.which === which), `${sc}/${which}`);
+  assert.equal(new Set(cells.map(cellId)).size, cells.length);
+  assert.ok(cells.every((c) => cellId(c).startsWith('close/')));
+  assert.equal(expectFor(cells.find((c) => c.scenario === 'say-tail' && c.which === 'new')).step, 'strip');
+  assert.equal(expectFor(cells.find((c) => c.scenario === 'plain-say' && c.which === 'new')).closes, 1);
+  assert.equal(expectFor(cells.find((c) => c.scenario === 'plain-say' && c.which === 'parent')).closes, undefined);
+  const lead = planStage('lead', { withParent: false });
+  assert.ok(lead.every((c) => expectFor(c).closes === 1), 'the close-for-Move cells each name their one close');
+});
+
+// ----------------------------------------------------------------- review 3 blocker 1: a close no cell authored is still gated
+
+test('review 3: a recorded over-gate close in an ordinary cell (no Say lead, no named scenario) fails through cellProblems AND the campaign verdict', () => {
+  const ordinary = { ...CELL, lead: 'none', tail: 'none' };
+  assert.equal(expectFor(ordinary).closes, undefined, 'the cell declares no close: that metadata used to hide one');
+  assert.ok(marksFor({ lead: 'none', tail: 'none' }).includes('text_close_step'), 'the close marks are collected in every cell');
+  const move = [body(20, 16000, STEP), body(21, 16100, ['move_tick', 'sw_frame_camera_window', 'move_finish'])];
+  const run = (G, over = {}) => ({ ...classify(fakeRes([...closeBodies(1, { G, ...over }), ...move]), { lead: 'none', tail: 'none' }) });
+  // CONTROL: the same recorded close under the gate passes, through both
+  const sound = run(16666);
+  assert.deepEqual(cellProblems(sound, ordinary), []);
+  assert.equal(verdict([okResult(ordinary, sound)], [ordinary]).ok, true);
+  // the reviewer's reproduction: close class, episode and maxClose all at 40,000
+  const heavy = run(40000);
+  assert.equal(heavy.maxClose, 40000);
+  assert.equal(heavy.closes[0].maxG, 40000);
+  assert.ok(cellProblems(heavy, ordinary).some((p) => /text-box close G = 40000 exceeds the gate 29780/.test(p)), cellProblems(heavy, ordinary).join('; '));
+  const v = verdict([okResult(ordinary, heavy)], [ordinary]);
+  assert.equal(v.ok, false);
+  assert.ok(v.problems.some((p) => /text-box close G = 40000/.test(p.problem)), JSON.stringify(v.problems));
+  // a summary that understates ONE figure is caught by the others (class maximum, episode maximum, the summary's own maxClose)
+  const classOnly = { ...heavy, maxClose: 100, closes: heavy.closes.map((e) => ({ ...e, maxG: 100 })) };
+  assert.ok(cellProblems(classOnly, ordinary).some((p) => /close class close\..* G = 40000/.test(p)), 'the class maximum alone gates');
+  const episodeOnly = { ...heavy, maxClose: 100, classes: Object.fromEntries(Object.entries(heavy.classes).map(([k, c]) => [k, k.startsWith('close.') ? { ...c, maxG: 100 } : c])) };
+  assert.ok(cellProblems(episodeOnly, ordinary).some((p) => /text-box close at frame 1 G = 40000/.test(p)), 'the episode maximum alone gates');
+  const maxOnly = { ...heavy, closes: heavy.closes.map((e) => ({ ...e, maxG: 100 })), classes: Object.fromEntries(Object.entries(heavy.classes).map(([k, c]) => [k, k.startsWith('close.') ? { ...c, maxG: 100 } : c])) };
+  assert.ok(cellProblems(maxOnly, ordinary).some((p) => /text-box close G = 40000/.test(p)), 'maxClose alone gates');
+  // a missing or non-finite close maximum is a problem, never a pass
+  for (const bad of [undefined, NaN, Infinity, null, '16000']) {
+    assert.ok(cellProblems({ ...sound, maxClose: bad }, ordinary).some((p) => /text-box close G = .* exceeds the gate/.test(p)), `maxClose ${String(bad)}`);
+    assert.equal(verdict([okResult(ordinary, { ...sound, maxClose: bad })], [ordinary]).ok, false, `verdict, maxClose ${String(bad)}`);
+  }
+  const noEpisodeG = { ...sound, closes: sound.closes.map((e) => ({ ...e, maxG: undefined })) };
+  assert.ok(cellProblems(noEpisodeG, ordinary).length > 0, 'an episode with no finite G fails');
+  // an unexpected close is checked AS a close: an incomplete one (no tail, a skipped frame) fails even at a figure under the gate
+  assert.ok(cellProblems(run(16000, { tail: false }), ordinary).some((p) => /never reached text_close_attr_tail/.test(p)));
+  assert.ok(cellProblems(run(16000, { gap: 1 }), ordinary).some((p) => /not 6 row bodies then 3 attribute bodies/.test(p)));
+  // the declared expected count is kept: a Say lead whose close never ran still fails
+  const say = { ...CELL, lead: 'say', tail: 'none' };
+  const none = classify(fakeRes([body(1, 9000, []), ...move]), { lead: 'say', tail: 'none' });
+  assert.ok(cellProblems(none, say).some((p) => /expected 1 text-box close\(s\), found 0/.test(p)));
+  // and the parent engine's close stays diagnostic
+  const parent = { ...ordinary, which: 'parent' };
+  assert.deepEqual(cellProblems(run(45000), parent), []);
 });

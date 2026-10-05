@@ -112,6 +112,7 @@ import {
   STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
   streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance,
   STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE,
   STREAMWORLD_DIALOGUE_BANKED_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE,
@@ -5380,6 +5381,7 @@ test(
         (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) +
         (projectUsesText(streamed) ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(streamed) : 0) +
         (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0) +
+        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE : 0) +
         STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
         STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
         STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE +
@@ -5561,7 +5563,8 @@ test(
       const dlgMapperHiTotal =
         STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE +
         streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(streamedWithMove) +
-        STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE;
+        STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE;
       const dlgTerm =
         (projectUsesText(streamedWithMove) ? dlgMapperHiTotal : 0) -
         (projectUsesText(streamedNoMove) ? dlgMapperHiTotal : 0);
@@ -6164,6 +6167,46 @@ test(
       assert.ok(
         bracketSum <= lumpSpan,
         `${mapper.name} (${label}): the three brackets (${bracketSum}) must be a subset of the lifecycle/terrain/consumer span (${lumpSpan})`
+      );
+    }
+  }
+);
+
+// The text-box close's bounded terrain read (Say/Move overrun fix): sw_dlg_read_chunk..
+// sw_dlg_read_chunk_end is resident in BOTH placements, charged by STREAMWORLD_DIALOGUE_READ_
+// CHUNK_KERNEL_HI_ALLOWANCE outside the mapper span, and absent without text (the labels live
+// inside the file's own `.if TEXT_ENABLED`).
+test(
+  'Say/Move overrun fix: STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE equals the real sw_dlg_read_chunk..sw_dlg_read_chunk_end span on both game types, and a text-free streamed project assembles neither label',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text', present: true },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg', present: true },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed', present: true }
+    ];
+    const noText = createStreamedProject({ gameType: 'action' });
+    noText.project.titleMap = null;
+    cases.push({ project: noText, label: 'action, no text', present: false });
+    for (const { project, label, present } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-readchunk-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      if (!present) {
+        assert.doesNotMatch(symbols, /sw_dlg_read_chunk/, `${label}: a text-free build must not assemble the chunk read`);
+        continue;
+      }
+      assert.equal(
+        symbolAddr(symbols, 'sw_dlg_read_chunk_end') - symbolAddr(symbols, 'sw_dlg_read_chunk'),
+        STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE,
+        `${label}: sw_dlg_read_chunk..end must equal STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE`
+      );
+      // ...and it sits OUTSIDE the mapper span, so the mapper term stays 7a's own content only.
+      assert.equal(
+        symbolAddr(symbols, 'sw_dlg_mapper_start') - symbolAddr(symbols, 'sw_dlg_read_chunk_end'),
+        0,
+        `${label}: the chunk read must end where the mapper span begins, not inside it`
       );
     }
   }
@@ -7962,6 +8005,7 @@ test(
         (projectUsesText(project) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) +
         (projectUsesText(project) ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project) : 0) +
         (projectUsesText(project) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0) +
+        (projectUsesText(project) ? STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE : 0) +
         STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
         STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
         STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE +

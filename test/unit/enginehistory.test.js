@@ -20,7 +20,11 @@ import {
   mergeReconstructEngineFile,
   s1ZeroPageNames,
   stripS3a5FromStreamworld,
-  dropS3a5RetiredFromOld
+  dropS3a5RetiredFromOld,
+  stripOverrunFromStreamworld,
+  carryOverrunLever,
+  stripOverrunCloseFromFlat,
+  dropOverrunRetiredFromOld
 } from '../lib/enginehistory.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -243,4 +247,44 @@ test('S3b: S3a\'s ownership-stop guards are asserted gone, and a resurrected gua
   assert.equal(stripS3aFromStreamworld(currentStreamworld), currentStreamworld);
   assert.throws(() => stripS3aFromStreamworld(currentStreamworld + '\n  lda sw_step_nocross\n'), /retired by S3b/);
   assert.throws(() => stripS3aFromStreamworld(currentStreamworld + '\nsw_pr_refuse:\n'), /retired by S3b/);
+});
+
+// ---- the Say/Move overrun fix's regions (carry / strip / cut), each anchored and count-checked ------------------------
+
+const sh = (rev, file) => execFileSync('git', ['show', `${rev}:${file}`], { cwd: ROOT, encoding: 'utf8' });
+const currentDialog = () => fs.readFileSync(path.join(ROOT, 'engine', 'streamdialog.asm'), 'utf8');
+
+test('overrun fix: strip removes the chunk block, the resident equate and the shim body; carry puts them back byte for byte', () => {
+  const current = currentStreamworld;
+  const stripped = stripOverrunFromStreamworld(current);
+  assert.ok(!stripped.includes('sw_dlg_read_chunk'), 'no trace of the chunk read remains');
+  assert.ok(stripped.includes('sw_dlg_terrain_read:\n  jsr sw_terrain_or_fill\n  pha\n'), 'the shim is the pre-fix shim');
+  assert.equal(carryOverrunLever(stripped, current), current, 'carry is the exact inverse of strip');
+});
+
+test('overrun fix: a changed shape throws instead of cutting or carrying something else', () => {
+  const current = currentStreamworld;
+  assert.throws(() => stripOverrunFromStreamworld(current.replace('sw_dlg_read_chunk_end:\n', 'sw_dlg_read_chunk_end_x:\n')), /chunk-read block was not found exactly once/);
+  assert.throws(() => stripOverrunFromStreamworld(current.replace('sw_dlg_terrain_read = sw_dlg_read_chunk\n', '')), /resident terrain-read equate was not found exactly once/);
+  assert.throws(() => stripOverrunFromStreamworld(current.replace('  jsr sw_dlg_read_chunk\n  lda #BATTLE_BANK', '  jsr sw_dlg_read_chunk\n  nop\n  lda #BATTLE_BANK')), /banked shim.*not found exactly once/);
+  const stripped = stripOverrunFromStreamworld(current);
+  assert.throws(() => carryOverrunLever(stripped.replace('sw_dlg_mapper_start:\n', ''), current), /mapper block/);
+  assert.throws(() => carryOverrunLever(stripped.replace('sw_dlg_terrain_read:\n  jsr sw_terrain_or_fill\n  pha\n', 'sw_dlg_terrain_read:\n  jsr sw_terrain_or_fill\n'), current), /older banked shim.*not found exactly once/);
+});
+
+test('overrun fix: a text from before the dialogue overlay was included is carried unchanged', () => {
+  const pre = sh('8b4d5a9', 'engine/streamworld.asm');
+  assert.equal(carryOverrunLever(pre, currentStreamworld), pre);
+});
+
+test('overrun fix: the close routine and sw_dlg_metatile are cut from both sides exactly, and a changed shape throws', () => {
+  const current = currentDialog();
+  const cutNew = stripOverrunCloseFromFlat(current);
+  assert.ok(!cutNew.includes('sw_dlgcr_seg') && cutNew.includes('sw_dlg_run_open:'), 'only the new close routine came out');
+  const old = sh('59d4468', 'engine/streamworld.asm');
+  assert.ok(old.includes('sw_dlg_metatile:'), 'the old text has the accessor');
+  const cutOld = dropOverrunRetiredFromOld(old);
+  assert.ok(!cutOld.includes('sw_dlg_metatile:') && !cutOld.includes('sw_dlgcr_loop'), 'the accessor and the per-cell close are gone');
+  assert.throws(() => stripOverrunCloseFromFlat(current.replace('sw_dlgcr_end:\n  jmp vram_end\n', 'sw_dlgcr_end:\n  nop\n  jmp vram_end\n')), /not found exactly once/);
+  assert.throws(() => dropOverrunRetiredFromOld(old.replace('  jmp sw_terrain_or_fill\n', '  jmp sw_terrain_or_fill ; x\n')), /not found exactly once/);
 });

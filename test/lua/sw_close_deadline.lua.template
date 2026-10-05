@@ -1,0 +1,291 @@
+-- sw_close_deadline.lua.template -- Mesen (cycle-accurate) proof that the WORST text-box close frame still finishes its NMI
+-- drain inside vblank: a streamed world's first close row split across the nametable seam, the arrow hide that dismissed the box,
+-- a Flip's two packets and a Flash edge, all queued in one frame:
+--
+--     flip top (3+2) + flip bottom (3+2) + Flash (3+32) + arrow hide (3+1) + close row part A (3+a) + part B (3+b), a+b = 32,
+--     + the terminator                                         = 10 + 35 + 4 + 38 + 1 = 88 bytes  (vram_len = 87)
+--
+-- docs/reference-engine.md gives the derivation; the figure used to be 81 (no split row, no arrow hide in the frame).
+--
+-- What it does not accept: a pass on `vram_len < 256`, or on a final image that merely looks right. It asserts, for the armed frame
+--   1. the QUEUE at main_loop_ready: vram_len 87, the terminator at [87], and every packet's own header (address high byte, count),
+--      the two close parts summing to 32 and straddling the seam, in main_loop's call order;
+--   2. the DRAIN at the NMI: the number of $2007 writes between the NMI's entry and its rti equals the sum of the queued counts (so
+--      every packet was really published, none truncated), the counts are nonzero, vram_len and vram_ready are clear after it;
+--   3. the SCROLL RESET: after the last $2007 write the NMI wrote $2000 and then $2005 twice, with exactly the values the previous
+--      (ordinary) frame's NMI ended with, and nothing was written to the PPU after them;
+--   4. the DEADLINE: the rti executes on a vblank scanline (241-260) with its own remaining 6 cycles still inside vblank, and the
+--      last scroll write itself landed no later than scanline 260.
+--
+-- Deviation, labelled: Flip cannot be authored in a streamed world (a streamed screen with boundTiles is refused), and a Flash edge
+-- is deferred around strip arms but not around a close. This script therefore queues the Flip by RAM poke (flip_pending_*) and Flash
+-- by writing flash_left, at the instruction boundary just before flip_tick reads them, the technique bound_tile_nmi_timing.lua.template
+-- already uses. The arrow hide and the close row are real: the poke happens on the frame the B press that dismisses the last page is
+-- consumed. The poke makes the 88-byte frame a bound, not a promise that an authored game reaches it.
+--
+-- This is a TEMPLATE; test/lua/build_sw_close_deadline_roms.mjs substitutes the __TOKENS__ from the exact build.
+--
+--   node test/lua/build_sw_close_deadline_roms.mjs [outDir] [--placement=resident|banked] [--break=no-flash|slow-drain]
+--   Mesen --testRunner <outDir>/sw_close_deadline.lua <outDir>/sw_close_deadline.nes
+local NMI_ENTRY        = __NMI__
+local NMI_RTI          = __NMI_RTI__
+local MAIN_LOOP_READY  = __MAIN_LOOP_READY__
+local FLIP_TICK        = __FLIP_TICK__
+local FLASH_LEFT       = __FLASH_LEFT__
+local PLACEMENT        = "__PLACEMENT__"
+local BREAK            = "__BREAK__"   -- negative controls: "" (none), "no-flash" (Flash never armed), "slow-drain" (patched in the ROM)
+
+-- Engine RAM, from engine/constants.asm.
+local GAME_STATE          = 0x25
+local MAP_IS_STREAMED     = 0xfe
+local BOX_STATE           = 0x40
+local VRAM_LEN            = 0x3c
+local VRAM_READY          = 0x3f
+local VRAM_BUF            = 0x0400
+local FLIP_PENDING_IDX    = 0x055f
+local FLIP_PENDING_COUNT  = 0x0567
+local ST_TITLE            = 3
+local BOX_ENDWAIT         = 6
+local FLASH_ARM_VALUE     = 7
+local BOUND_CELL          = 0
+
+local EXPECTED_VRAM_LEN = 87
+
+local VBLANK_FIRST_SCANLINE = 241
+local VBLANK_LAST_SCANLINE  = 260
+local DOTS_PER_SCANLINE     = 341
+local RTI_REMAINING_DOTS    = 6 * 3
+
+local EXIT_TIMEOUT        = 99
+local EXIT_NO_BOOT        = 2
+local EXIT_NEVER_DIALOG   = 3
+local EXIT_NEVER_ARMED    = 4
+local EXIT_DEADLINE_MISS  = 5
+local EXIT_STALE_ANCHOR   = 6
+local EXIT_WORKLOAD_SHORT = 7
+local EXIT_DRAIN          = 8
+local EXIT_SCROLL         = 9
+
+local frame, phase, held, mark = 0, 1, {}, 0
+local armed, checkedWorkload, checkedDeadline, checkedAnchor = false, false, false, false
+local endwaitSince = nil
+local settledSince = nil
+local expectedBodyBytes = 0
+local inNmi = false
+local nmiWrites = {}          -- {kind, value, scanline} for every $2000/$2005/$2006/$2007 write between nmi's entry and its rti
+local lastTail = nil          -- the previous ordinary frame's scroll tail
+local armedFrame = nil
+
+local function log(message) emu.log(string.format("[%5d] %s", frame, message)) end
+local function fail(code, message) log("FAIL: " .. message) emu.stop(code) end
+local function pass(message) log("ok   " .. message) end
+local function read(address) return emu.read(address, emu.memType.nesMemory) end
+local function write(address, value) emu.write(address, value, emu.memType.nesMemory) end
+local function onInput() emu.setInput(held, 0) end
+
+local function onNmiEntry()
+  inNmi = true
+  nmiWrites = {}
+end
+
+local function recorder(kind)
+  return function(_, value)
+    if not inNmi then return end
+    local state = emu.getState()
+    nmiWrites[#nmiWrites + 1] = { kind = kind, value = value, scanline = state["ppu.scanline"] }
+  end
+end
+
+-- The tail every NMI ends with: the last $2000 write followed by two $2005 writes, nothing after.
+local function scrollTail()
+  local n = #nmiWrites
+  if n < 3 then return nil end
+  local a, b, c = nmiWrites[n - 2], nmiWrites[n - 1], nmiWrites[n]
+  if a.kind ~= "2000" or b.kind ~= "2005" or c.kind ~= "2005" then return nil end
+  return { ctrl = a.value, x = b.value, y = c.value, scanline = c.scanline }
+end
+
+-- The instruction before flip_tick reads its queue, on the frame the dismissing B press is consumed: queue the Flip and arm Flash.
+local function onFlipTick()
+  if armed or phase ~= 5 then return end
+  armed = true
+  armedFrame = frame
+  write(FLIP_PENDING_IDX, BOUND_CELL)
+  write(FLIP_PENDING_COUNT, 1)
+  if BREAK ~= "no-flash" then write(FLASH_LEFT, FLASH_ARM_VALUE) end
+  pass("SYNTHETIC: queued the Flip and armed Flash one instruction before flip_tick, on the frame that consumes the dismissing press")
+end
+
+local function hiOk(hi) return hi >= 0x20 and hi <= 0x2F end
+
+local function onMainLoopReady()
+  if not armed or checkedWorkload then return end
+  checkedWorkload = true
+  local vramLen = read(VRAM_LEN)
+  if vramLen ~= EXPECTED_VRAM_LEN then
+    fail(EXIT_WORKLOAD_SHORT, string.format("main_loop_ready: vram_len is %d, not %d -- the five-producer frame was not queued (flip, Flash, arrow hide, split close row)", vramLen, EXPECTED_VRAM_LEN))
+    return
+  end
+  if read(VRAM_BUF + EXPECTED_VRAM_LEN) ~= 0 then
+    fail(EXIT_WORKLOAD_SHORT, string.format("main_loop_ready: vram_buf[%d] is not the terminator", EXPECTED_VRAM_LEN))
+    return
+  end
+  local function pkt(offset) return read(VRAM_BUF + offset), read(VRAM_BUF + offset + 1), read(VRAM_BUF + offset + 2) end
+  local f0h, f0l, f0c = pkt(0)
+  local f1h, f1l, f1c = pkt(5)
+  local flh, fll, flc = pkt(10)
+  local ah, al, ac = pkt(45)
+  local ch, cl, cc = pkt(49)
+  local dh, dl, dc = pkt(49 + 3 + cc)
+  local checks = {
+    { f0c == 2 and hiOk(f0h) and f1c == 2 and hiOk(f1h), "flip's two packets (queued first) are 2-byte bodies in the nametable" },
+    { flh == 0x3F and flc == 32, "Flash's packet (queued second) is the 32-byte palette write at $3F00" },
+    { hiOk(ah) and ac == 1, "the arrow hide (dispatch_input) is a 1-byte nametable write" },
+    { hiOk(ch) and cc >= 1 and cc <= 31, "the close row's first part is a real nametable packet that stops short of 32" },
+    { hiOk(dh) and dc >= 1 and cc + dc == 32, "its second part is the remainder: the two parts total 32 tiles" },
+    { (dl & 0x1F) == 0 and dh ~= ch, "the second part starts at the row's left edge on the other nametable (a seam split)" },
+  }
+  for _, c in ipairs(checks) do
+    if not c[1] then fail(EXIT_WORKLOAD_SHORT, "main_loop_ready: " .. c[2]) return end
+  end
+  expectedBodyBytes = f0c + f1c + flc + ac + cc + dc
+  pass(string.format("workload confirmed: vram_len=%d; flip [$%02x%02x x%d,$%02x%02x x%d], Flash [$%02x%02x x%d], arrow [$%02x%02x x%d], close [$%02x%02x x%d + $%02x%02x x%d]; %d body bytes to publish",
+    vramLen, f0h, f0l, f0c, f1h, f1l, f1c, flh, fll, flc, ah, al, ac, ch, cl, cc, dh, dl, dc, expectedBodyBytes))
+end
+
+local function onNmiRti()
+  inNmi = false
+  local tail = scrollTail()
+  if not armed then
+    if tail then lastTail = tail end
+    return
+  end
+  if checkedDeadline then return end
+  if not checkedWorkload then
+    checkedDeadline = true
+    fail(EXIT_WORKLOAD_SHORT, "nmi_rti reached before this frame's main_loop_ready workload check")
+    return
+  end
+  checkedDeadline = true
+  local state = emu.getState()
+  local scanline, cycle = state["ppu.scanline"], state["ppu.cycle"]
+  local vramLen, vramReady = read(VRAM_LEN), read(VRAM_READY)
+  log(string.format("nmi_rti: scanline=%d cycle=%d (+%d rti dots) vram_len=%d vram_ready=%d writes=%d", scanline, cycle, RTI_REMAINING_DOTS, vramLen, vramReady, #nmiWrites))
+  if vramLen ~= 0 or vramReady ~= 0 then
+    fail(EXIT_DRAIN, string.format("after the drain vram_len=%d vram_ready=%d, both should be 0", vramLen, vramReady))
+    return
+  end
+  -- 2. every body byte published
+  local bodyWrites, lastBody = 0, 0
+  for i, w in ipairs(nmiWrites) do
+    if w.kind == "2007" then bodyWrites = bodyWrites + 1 lastBody = i end
+  end
+  if expectedBodyBytes == 0 or bodyWrites ~= expectedBodyBytes then
+    fail(EXIT_DRAIN, string.format("the NMI wrote %d bytes to $2007, the queued packets hold %d", bodyWrites, expectedBodyBytes))
+    return
+  end
+  pass(string.format("all %d body bytes reached $2007 inside this NMI", bodyWrites))
+  -- 3. the scroll reset follows the last body write, ends the NMI, and matches the ordinary frame's
+  if not tail then
+    fail(EXIT_SCROLL, "the NMI did not end with $2000, $2005, $2005")
+    return
+  end
+  if not lastTail then
+    fail(EXIT_SCROLL, "no ordinary frame's scroll tail was recorded to compare against")
+    return
+  end
+  local n = #nmiWrites
+  if lastBody > n - 3 then
+    fail(EXIT_SCROLL, "the scroll writes are not after the last $2007 write")
+    return
+  end
+  if tail.ctrl ~= lastTail.ctrl or tail.x ~= lastTail.x or tail.y ~= lastTail.y then
+    fail(EXIT_SCROLL, string.format("scroll tail $2000=%02x $2005=%02x,%02x differs from the ordinary frame's %02x/%02x,%02x", tail.ctrl, tail.x, tail.y, lastTail.ctrl, lastTail.x, lastTail.y))
+    return
+  end
+  pass(string.format("scroll reset after the last body write: $2000=%02x, $2005=%02x,%02x -- identical to the ordinary frame's", tail.ctrl, tail.x, tail.y))
+  -- 4. the deadline
+  if scanline < VBLANK_FIRST_SCANLINE or scanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("nmi_rti landed on scanline %d, outside vblank (%d-%d)", scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+    return
+  end
+  if tail.scanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("the last scroll write landed on scanline %d, after vblank", tail.scanline))
+    return
+  end
+  local finishDot, finishScanline = cycle + RTI_REMAINING_DOTS, scanline
+  while finishDot >= DOTS_PER_SCANLINE do finishDot = finishDot - DOTS_PER_SCANLINE finishScanline = finishScanline + 1 end
+  if finishScanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("rti's own remaining dots push past vblank (scanline %d, cycle %d -> %d)", scanline, cycle, finishScanline))
+    return
+  end
+  pass(string.format("the %s 88-byte close frame finished at scanline %d, cycle %d (last scroll write on scanline %d) -- inside vblank (%d-%d)", PLACEMENT, scanline, cycle, tail.scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+  log("all phases passed")
+  emu.stop(0)
+end
+
+local function onFrame()
+  frame = frame + 1
+  if not checkedAnchor then
+    checkedAnchor = true
+    local b = read(NMI_RTI)
+    if b ~= 0x40 then fail(EXIT_STALE_ANCHOR, string.format("byte at NMI_RTI (0x%04x) is 0x%02x, not rti", NMI_RTI, b)) return end
+    pass("NMI_RTI anchor verified")
+  end
+  if frame > 2000 then fail(EXIT_TIMEOUT, "timed out in phase " .. phase) return end
+
+  if phase == 1 then
+    if frame < 30 then return end
+    if read(GAME_STATE) == ST_TITLE then
+      held = { start = true } mark = frame phase = 1.5 return
+    end
+    -- gameplay on the streamed map, settled for a while before the first press
+    if read(GAME_STATE) ~= 0 or read(MAP_IS_STREAMED) ~= 1 then return end
+    if not settledSince then settledSince = frame end
+    if frame - settledSince < 100 then return end
+    phase = 2 held = { b = true } mark = frame return
+  end
+  if phase == 1.5 then
+    if frame - mark < 6 then return end
+    held = {}
+    if frame - mark < 20 then return end
+    if read(GAME_STATE) == ST_TITLE then fail(EXIT_NO_BOOT, "pressed Start but the title never cleared") return end
+    phase = 1 settledSince = nil return
+  end
+  -- 2: B opens the talker's Say (the player starts on the talker).
+  if phase == 2 then
+    if frame - mark < 3 then return end
+    held = {} phase = 3 mark = frame return
+  end
+  -- 3: wait for the last page to finish typing (BOX_ENDWAIT), then let it sit a few frames.
+  if phase == 3 then
+    if read(BOX_STATE) == BOX_ENDWAIT then
+      if not endwaitSince then endwaitSince = frame end
+      if frame - endwaitSince >= 4 then
+        pass("the Say reached its end wait -- pressing B for one frame")
+        held = { b = true } phase = 5 mark = frame
+      end
+    elseif frame - mark > 600 then
+      fail(EXIT_NEVER_DIALOG, "the box never reached BOX_ENDWAIT")
+    end
+    return
+  end
+  if phase == 5 then
+    if checkedDeadline then return end
+    if frame - mark > 3 then held = {} end
+    if frame - mark > 12 then
+      if not armed then fail(EXIT_NEVER_ARMED, "flip_tick never ran with the press pending") else fail(EXIT_NEVER_ARMED, "nmi_rti never reached after arming") end
+    end
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onNmiEntry, emu.callbackType.exec, NMI_ENTRY)
+emu.addMemoryCallback(onFlipTick, emu.callbackType.exec, FLIP_TICK)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)
+emu.addMemoryCallback(recorder("2000"), emu.callbackType.write, 0x2000)
+emu.addMemoryCallback(recorder("2005"), emu.callbackType.write, 0x2005)
+emu.addMemoryCallback(recorder("2006"), emu.callbackType.write, 0x2006)
+emu.addMemoryCallback(recorder("2007"), emu.callbackType.write, 0x2007)

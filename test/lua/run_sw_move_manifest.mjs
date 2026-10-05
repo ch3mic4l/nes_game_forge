@@ -29,6 +29,7 @@ import { ANIM_PRESETS } from './sw_bound_sweep.mjs';
 export { GATE };
 // 3x61 (the action default) does not build with BOUND_TILE_ENABLED (test/lua/sw_bound_sweep.mjs GRID_H.bound); the rpg default grid (3x30) builds with it, and 3x60 does not ("need 60 of the 59 regions").
 export const BOUND_GRID_H = 60;
+export const TITLE_GRID_H = 59;
 export const TOUCH = { x: 242, y: 60 };
 export const TAILS = {
   none: [],
@@ -43,6 +44,14 @@ export const TAILS = {
 export const LEADS = { none: [], say: [{ op: 'say', text: 'Stand back.' }], flash: [{ op: 'flash' }] };
 // The handler a tail's continuation runs in the final body (the named continuation of M11b); the lead's own marks are added for a Flash lead.
 export const CONTINUATION = { none: null, say: 'script_op_say', flash: 'script_op_flash', switch: 'script_op_set', move2: 'script_op_move' };
+
+// The text-box close (every streamed close is gated, the Say/Move overrun fix): one close is BOX_ROWS_HIGH row bodies (text_close_step) then
+// BOX_ATTR_BODIES attribute bodies (text_close_attr; a streamed close restores the box's attribute bytes over three bodies,
+// engine/streamdialog.asm sw_dlg_hi_close_attr_1/_2, and the last reaches text_close_attr_tail, which marks the box closed). Resident labels in every placement -- the
+// banked placement's row code is in the overlay, whose address window other banks share, so it is never used as a mark.
+export const BOX_ROWS_HIGH = 6; // engine/constants.asm: border, four text rows, border
+export const BOX_ATTR_BODIES = 3; // a streamed close's attribute restore (an ordinary close's is one); measured: every cell of the closes stage
+export const CLOSE_MARKS = ['text_close_step', 'text_close_attr', 'text_close_attr_tail'];
 
 /**
  * The reachable arrangement for M11b's coincident reduced strip drain (review 1, required change 1). Flash's packet is published by
@@ -94,9 +103,11 @@ export function relocateTouchActor(project, y = TOUCH.y) {
 }
 
 /** The scene's authored mutation: the touch actor relocated, and (bound) the one switch-bound tile on an ordinary second map. */
-export function sceneMutation({ y = TOUCH.y, bound = false, code = null } = {}) {
+export function sceneMutation({ y = TOUCH.y, bound = false, code = null, title = false } = {}) {
   return (project, { createMap, createScreen } = {}) => {
     relocateTouchActor(project, y);
+    // a Save command is refused without a title screen: the scene's first map and screen serve (the harness holds Start through the boot)
+    if (title) { project.project.titleMap = 0; project.project.titleScreen = 0; }
     if (code) project.code = structuredClone(code);
     if (bound) {
       if (!createMap || !createScreen) throw new Error('a bound-tile scene needs createMap/createScreen');
@@ -110,8 +121,12 @@ export function sceneMutation({ y = TOUCH.y, bound = false, code = null } = {}) 
 }
 
 /** The marks a cell records: the Move's own, the camera call, the tail's continuation handler and (a Flash lead) flash_tick/script_op_flash. */
-export function marksFor({ lead = 'none', tail = 'none' } = {}) {
-  const marks = ['move_tick', 'move_finish', 'sw_frame_camera_window'];
+export function marksFor({ lead = 'none', tail = 'none', moves = true } = {}) {
+  // move_tick/move_finish are symbols only of a build that carries a Move command; a Move-free close scenario records the camera call alone
+  const marks = moves ? ['move_tick', 'move_finish', 'sw_frame_camera_window'] : ['sw_frame_camera_window'];
+  // every cell of this harness measures a scene that assembles text, so the close's marks are collected in EVERY cell: a close that a cell's authored
+  // arrangement does not expect is still recorded, and gated (sw_move_policy.mjs cellProblems). A build that lacked a mark's symbol would throw, never skip.
+  marks.push(...CLOSE_MARKS);
   for (const name of [CONTINUATION[tail], lead === 'flash' ? 'script_op_flash' : null, lead === 'flash' || tail === 'flash' ? 'flash_tick' : null]) if (name && !marks.includes(name)) marks.push(name);
   return marks;
 }
@@ -121,34 +136,82 @@ export async function measureMove({
   tail2Frames = 120, mesen = MESEN_DEFAULT, outDir = null,
   // Phase 3a S3b (the cross stage, test/lua/sw_cross_scene.mjs): marks beyond marksFor's, a project carrying hand-written 6502 (project.code), and a build-only run.
   // The defaults leave every S3a cell exactly what it was.
-  extraMarks = [], customCode = null, prepareOnly = false
+  extraMarks = [], customCode = null, prepareOnly = false,
+  // The close stage (test/lua/sw_close_scenarios.mjs): `script` = { cmds, presses, frames } replaces the event and the input schedule -- the touch event's
+  // commands, the frame offsets (from the measured phase's start) at which B is held for two frames, and the phase's length.
+  script = null
 }) {
   if (!(tail in TAILS) || !(lead in LEADS)) throw new Error(`unknown lead/tail ${lead}/${tail}`);
   const sizes = populations(tiles)[pop];
   if (!sizes) throw new Error(`unknown population ${pop}`);
   if (anim !== null && !(anim in ANIM_PRESETS)) throw new Error(`unknown animation preset ${anim}`);
-  const flashCmds = [...LEADS[lead], { op: 'move', who: 'player', dir: 'down', dist }, ...TAILS[tail]];
-  const total = 140 + Math.ceil(dist * 1.2) + tail2Frames;
+  const flashCmds = script ? script.cmds : [...LEADS[lead], { op: 'move', who: 'player', dir: 'down', dist }, ...TAILS[tail]];
+  const total = script ? script.frames : 140 + Math.ceil(dist * 1.2) + tail2Frames;
   // A Say before the Move needs one B press, once the box waits (a press while it types cancels the event). `held` is static per phase, so the
   // measured phase is split into same-named parts (the harness accumulates statistics per NAME). The touch fires on body TOUCH_BODY of this
   // phase on every build (measured: a lead-less run's first move_tick body, all four game type x art shapes); the box waits well before +45.
   const TOUCH_BODY = 192;
   const M = { name: 'M11', collect: true, marks: true, trace: true };
-  const measured = lead !== 'say'
+  // a scripted press schedule: alternating `down` and `down+b` (two frames) segments, one phase NAME per segment would split the statistics, so
+  // every segment is named M11 (the harness accumulates per name)
+  const scheduled = (presses) => {
+    const out = [];
+    let at = 0;
+    for (const p of [...presses].sort((a, b) => a - b)) {
+      if (p > at) out.push({ ...M, frames: p - at, held: held('down') });
+      out.push({ ...M, frames: 2, held: held('down', 'b') });
+      at = p + 2;
+    }
+    if (total > at) out.push({ ...M, frames: total - at, held: held('down') });
+    return out;
+  };
+  const measured = script
+    ? scheduled(script.presses)
+    : lead !== 'say'
     ? [{ ...M, frames: total, held: held('down') }]
     : [{ ...M, frames: TOUCH_BODY + 45, held: held('down') }, { ...M, frames: 2, held: held('down', 'b') }, { ...M, frames: total - TOUCH_BODY - 47, held: held('down') }];
   const phases = [
-    { name: 'boot', waitFor: 'gameplay' },
+    { name: 'boot', waitFor: 'gameplay', ...(script?.title ? { held: held('start') } : {}) },
     { name: 'pre', frames: 95, held: held('down') },
     { name: 'walkR', frames: 260, held: held('right', 'down') },
     ...measured
   ];
   const res = await runManifest({
-    root, gt, sizes, wide, anim: anim ? ANIM_PRESETS[anim] : null, flashCmds, mutate: sceneMutation({ y: touchY, bound, code: customCode }), phases,
-    ...(bound && gt === 'action' ? { gridH: BOUND_GRID_H } : {}), marks: [...new Set([...marksFor({ lead, tail }), ...extraMarks])], mesen, outDir, prepareOnly
+    root, gt, sizes, wide, anim: anim ? ANIM_PRESETS[anim] : null, flashCmds, mutate: sceneMutation({ y: touchY, bound, code: customCode, title: Boolean(script?.title) }), phases,
+    // (a title screen -- a Save scenario's -- takes one 8 KB region of the 60 an action world may use, so its 61-row world drops to 59)
+    ...(bound && gt === 'action' ? { gridH: BOUND_GRID_H } : script?.title && gt === 'action' ? { gridH: TITLE_GRID_H } : {}), marks: [...new Set([...marksFor({ lead, tail, moves: !script || script.cmds.some((c) => c.op === 'move') }), ...(script?.marks ?? []), ...extraMarks])], mesen, outDir, prepareOnly
   });
   if (prepareOnly) return { res, summary: null };
   return { res, summary: classify(res, { lead, tail }) };
+}
+
+/**
+ * The text-box closes in a run: every maximal run of consecutive-frame bodies that ran text_close_step is one episode. An episode records what
+ * a COMPLETE close must show -- BOX_ROWS_HIGH row bodies in a row (text_close_step without text_close_attr), then BOX_ATTR_BODIES attribute bodies
+ * (text_close_attr), the last of which also ran the tail label, all on consecutive frames -- and whether the queue each body published was drained by the NMI
+ * that released the next one (`q` of the next body == `pub` of this one), the last one included.
+ */
+export function closeEpisodes(bodies) {
+  const eps = [];
+  let cur = null;
+  bodies.forEach((b, i) => {
+    if (b.kind !== 'close') { cur = null; return; }
+    if (cur && b.f === cur.bodies.at(-1).f + 1) cur.bodies.push(b);
+    else { cur = { first: b.f, bodies: [b], next: null }; eps.push(cur); }
+    cur.next = bodies[i + 1] ?? null;
+  });
+  return eps.map((e) => {
+    const bs = e.bodies;
+    const rows = bs.filter((b) => b.closeRow).length;
+    const attrs = bs.filter((b) => b.closeAttr).length;
+    const rowsFirst = bs.slice(0, rows).every((b) => b.closeRow) && bs.slice(rows).every((b) => b.closeAttr);
+    return {
+      first: e.first, bodies: bs.length, rows, attrs, tail: bs.at(-1).closeTail, rowsThenAttr: rowsFirst,
+      maxG: Math.max(...bs.map((b) => b.G)),
+      drained: bs.every((b, i) => { const nx = bs[i + 1] ?? e.next; return Boolean(nx) && nx.q === b.pub; }),
+      sequence: bs.map((b) => `${b.f}:${b.closeRow ? 'row' : b.closeAttr ? 'attr' : '?'}`).join(' ')
+    };
+  });
 }
 
 const coincidenceWords = {
@@ -187,10 +250,10 @@ export function classify(res, { lead = 'none', tail = 'none' } = {}) {
     if (!Number.isFinite(G)) { problems.push(`body ${i} (frame ${f}): no finite G in its mark line`); continue; }
     const ran = {};
     for (const m of line.matchAll(MARK_RE)) ran[m[1]] = (ran[m[1]] ?? 0) + 1;
-    const kind = ran.move_finish ? 'final' : ran.move_tick ? 'step' : seenTick ? 'after' : 'before';
+    const kind = ran.text_close_step ? 'close' : ran.move_finish ? 'final' : ran.move_tick ? 'step' : seenTick ? 'after' : 'before';
     if (ran.move_tick) seenTick = true;
     const rec = {
-      f, G, kind, cam: ran.sw_frame_camera_window ?? 0, q: tr.q, st0: tr.st0, st1: tr.st1, stadv: tr.stadv, pub: tr.pub, fl: tr.fl, rfl: tr.rfl,
+      f, G, kind, closeRow: Boolean(ran.text_close_step && !ran.text_close_attr), closeAttr: Boolean(ran.text_close_attr), closeTail: Boolean(ran.text_close_attr_tail), cam: ran.sw_frame_camera_window ?? 0, q: tr.q, st0: tr.st0, st1: tr.st1, stadv: tr.stadv, pub: tr.pub, fl: tr.fl, rfl: tr.rfl,
       ran: Object.keys(ran).filter((n) => n !== 'NMI' && n !== 'RTI')
     };
     bodies.push(rec);
@@ -204,12 +267,32 @@ export function classify(res, { lead = 'none', tail = 'none' } = {}) {
   const of = (kind) => Object.entries(classes).filter(([k]) => k.startsWith(kind + '.'));
   const max = (kind) => of(kind).reduce((m, [, c]) => Math.max(m, c.maxG), 0);
   const count = (kind) => of(kind).reduce((n, [, c]) => n + c.n, 0);
+  const closes = closeEpisodes(bodies);
+  const ranMarks = [...new Set(bodies.flatMap((b) => b.ran))];
   return {
-    bodies: bodies.length, step: count('step'), final: count('final'), before: count('before'), after: count('after'),
+    ranMarks,    bodies: bodies.length, close: count('close'), maxClose: max('close'), closes, step: count('step'), final: count('final'), before: count('before'), after: count('after'),
     maxStep: max('step'), maxFinal: max('final'), maxBefore: max('before'), maxAfter: max('after'), classes, problems,
     maxG: res.phases?.M11?.maxG ?? null, gateFail: res.phases?.M11?.gateFail ?? null, overruns: res.phases?.M11?.overruns ?? null,
     done: res.done, timeout: res.timeout, status: res.status, lead, tail
   };
+}
+
+/**
+ * What every OBSERVED close episode must show, whatever the cell authors (a complete close: its row bodies then its attribute bodies on consecutive
+ * frames, the tail label reached, every published queue drained, a finite G). validateCell applies it to the cell's expected closes and
+ * sw_move_policy.mjs cellProblems to any close a new-engine cell did not expect: an unexpected close is checked as a close, never ignored.
+ */
+export function closeEpisodeProblems(eps) {
+  const out = [];
+  const finite = (v) => typeof v === 'number' && Number.isFinite(v);
+  for (const e of eps ?? []) {
+    const where = `the close at frame ${e.first}`;
+    if (e.rows !== BOX_ROWS_HIGH || e.attrs !== BOX_ATTR_BODIES || !e.rowsThenAttr || e.bodies !== BOX_ROWS_HIGH + BOX_ATTR_BODIES) out.push(`${where} is not ${BOX_ROWS_HIGH} row bodies then ${BOX_ATTR_BODIES} attribute bodies in consecutive frames: ${e.sequence}`);
+    if (!e.tail) out.push(`${where} never reached text_close_attr_tail (the box was not closed)`);
+    if (!e.drained) out.push(`${where}: the queue a body published was not drained by the NMI that released the next (or the run ended before the last drain)`);
+    if (!finite(e.maxG)) out.push(`${where} has no finite G`);
+  }
+  return out;
 }
 
 /**
@@ -239,6 +322,12 @@ export function validateCell(summary, expect = {}) {
   if (expect.final !== false && !some((k) => k.startsWith('final.'))) out.push('no final body was timed (M11b has an empty population)');
   if (expect.continuation) {
     if (!some((k) => k.startsWith('final.') && k.endsWith('.' + expect.continuation))) out.push(`no final body ran the ${expect.continuation} tail's continuation, ${CONTINUATION[expect.continuation]} (M11b composition)`);
+  }
+  for (const m of expect.ran ?? []) if (!(summary.ranMarks ?? []).includes(m)) out.push(`the scenario's ${m} never ran (the command that leads to the close was not reached)`);
+  if (expect.closes !== undefined) {
+    const eps = summary.closes ?? [];
+    if (eps.length !== expect.closes) out.push(`expected ${expect.closes} text-box close(s), found ${eps.length} (no close ran, or one ran more than the scene authors)`);
+    out.push(...closeEpisodeProblems(eps));
   }
   const coincide = {
     strip: (k, c) => k.startsWith('final.strip.reduced') && c.worst?.stadv === 1 && c.worst?.q >= 1 && c.worst?.q <= 35,

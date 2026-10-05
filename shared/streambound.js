@@ -52,8 +52,8 @@
 //                   and loops, and `loop` has no reader in main/build, so a non-looping animation compiles to the same bytes);
 //                   RPG beyond the n = 16 spot checks; and, above the certified n, everything but the probe shape and stage F's sample.
 //   margin          the tightest passing row at the certified n: plain 16 -- 25,012 cycles, 4,768 under the 29,780 gate (action,
-//                   wide art, P8, k = 7, Flash y 212, Flash x 241); bound tiles 15 -- 25,111, 4,669 under (the same shape, Flash y
-//                   216). The shipped figures are one tile below, so the author's margin is larger still. STREAM_TILE_MARGIN_CYCLES
+//                   wide art, P8, k = 7, Flash y 216, Flash x 241); bound tiles 15 -- 25,115, 4,665 under (the same shape, Flash y
+//                   216). Both re-measured after the Say/Move overrun fix (2026-10-04): the plain figure is unchanged, the bound one is 4 cycles dearer. The shipped figures are one tile below, so the author's margin is larger still. STREAM_TILE_MARGIN_CYCLES
 //                   records the two figures; the test recomputes them.
 //   the failure     is the frame's own limit, unchanged by the lever: the body that carries the deferred strip arm plus a coincident
 //                   interrupt crosses 29,780 and the overrun skips a frame (plan 11.8). It needs blocked chasers (about 85 cycles
@@ -65,6 +65,6 @@
 //                   tables do not define, or overrides the mover gate, voids the bounds (plan T11).
 export const STREAM_TILE_CERTIFIED = Object.freeze({ plain: 16, boundTiles: 15 });
 export const STREAM_TILE_MARGIN = 1;
-export const STREAM_TILE_MARGIN_CYCLES = Object.freeze({ plain: 4768, boundTiles: 4669 });
+export const STREAM_TILE_MARGIN_CYCLES = Object.freeze({ plain: 4768, boundTiles: 4665 });
 export const STREAM_TILE_BOUND = STREAM_TILE_CERTIFIED.plain - STREAM_TILE_MARGIN;
 export const STREAM_TILE_BOUND_WITH_BOUND_TILES = STREAM_TILE_CERTIFIED.boundTiles - STREAM_TILE_MARGIN;

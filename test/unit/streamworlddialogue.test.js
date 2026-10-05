@@ -321,34 +321,6 @@ function originOracle(camOriginXHi, camOriginXLo, camOriginYHi, camOriginYLo) {
   return { ocol, ocolL, orow, orowL };
 }
 
-/** sw_dlg_metatile's own contract: box-relative (row 0-2, col 0-15) -> world (screenCol,
- * screenRow, offset 0-239), a single conditional 16/15-wrap per axis (box is 16 cols wide, 3 rows
- * tall, origin locals are already 0-15/0-14, so no axis can wrap more than once). */
-function metatileWorldPos(origin, boxRow, boxCol) {
-  let lcol = origin.ocolL + boxCol;
-  let scol = origin.ocol;
-  if (lcol >= 16) {
-    lcol -= 16;
-    scol = (scol + 1) & 0xff;
-  }
-  let lrow = origin.orowL + BOX_MT_ROW + boxRow;
-  let srow = origin.orow;
-  if (lrow >= 15) {
-    lrow -= 15;
-    srow = (srow + 1) & 0xff;
-  }
-  const offset = lrow * 16 + lcol;
-  return { scol, srow, offset };
-}
-
-/** streamedScreen's own generator (test/lib/streamedproject.js), reimplemented independently
- * rather than imported, so a bug in that shared helper cannot silently cancel out here too. */
-function expectedMetatileId(gridW, gridH, screenCol, screenRow, offset, screenSize) {
-  if (screenCol >= gridW || screenRow >= gridH) return 0; // fill
-  const variedCount = Math.floor(screenSize / 3);
-  return offset < variedCount ? 1 + ((screenCol + screenRow + offset) % 3) : 0;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------------
@@ -370,48 +342,6 @@ async function buildHarness(t, opts = {}) {
   nes.loadROM(bytes);
   const mem = nes.cpu.mem;
   return { project, addrOf, nes, mem };
-}
-
-// This core fills RAM with $FF at power-on and loadROM() never runs any boot code
-// (test/unit/streamworldresident.test.js's own header) -- sw_terrain_or_fill's own bank-switch
-// path (sw_goto/sw_peek_byte, reached through sw_dlg_metatile) needs the same "current field
-// screen" locator state a real map-entry loader would already have set. Priming it with sw_goto
-// itself (rather than hand-deriving the region/bank-base/byte-lo/hi split a second time) is the
-// exact technique streamworldresident.test.js's own "sw_peek_byte and sw_terrain_or_fill read a
-// real screen" test established -- asking the single source of truth for that arithmetic, not
-// maintaining a second, driftable copy of it. A first run of this test without this priming (and
-// without MAPPER_SHADOW=0) returned metatile id 105 for a real in-grid cell -- not one of this
-// project's own 0-3 terrain values at all, proof the bank switch itself was landing on garbage,
-// not merely computing the wrong screenCol/screenRow/offset.
-async function primeTerrainState(project, nes, addrOf) {
-  const mapper = resolveMapper(project.cartridge.mapper);
-  const plan = planStreamedRegions(project, mapper);
-  assert.ok(plan.baseBanks, 'this project`s streamed map must fit on UNROM 512');
-  const streamedMap = project.maps.find((m) => m.streamed === true);
-  const mem = nes.cpu.mem;
-
-  mem[MAPPER_SHADOW] = 0;
-  mem[RAM.sw_base_bank] = plan.baseBanks[0];
-  const { streamRegionsPerRow } = await import('../../shared/streamlayout.js');
-  mem[RAM.sw_regions_per_row] = streamRegionsPerRow(streamedMap.gridW);
-  mem[RAM.sw_grid_w] = streamedMap.gridW;
-  mem[RAM.sw_grid_h] = streamedMap.gridH;
-  mem[RAM.sw_fill_metatile_id] = streamedMap.fillMetatileId ?? 0;
-
-  // Establish a real current-field-screen locator/pointer at screen (0,0), the same sw_goto every
-  // routine under test itself calls, then copy ITS OWN scratch results into the persistent fields
-  // sw_locate_current reads back on every sw_peek_byte restore.
-  nes.cpu.REG_ACC = 0;
-  nes.cpu.REG_X = 0;
-  callRoutine(nes, addrOf('sw_goto'));
-  mem[RAM.sw_col_region] = mem[RAM.sw_tmp2];
-  mem[RAM.sw_row_bank_base] = mem[RAM.sw_tmp4];
-  mem[RAM.sw_col_byte_lo] = mem[RAM.sw_tmp5];
-  mem[RAM.sw_col_byte_hi] = mem[RAM.sw_tmp6];
-  mem[RAM.sw_col] = 0;
-  mem[RAM.sw_row] = 0;
-
-  return { gridW: streamedMap.gridW, gridH: streamedMap.gridH, fillMetatileId: streamedMap.fillMetatileId ?? 0, screen: streamedMap.screens[0] };
 }
 
 function setCamOrigin(mem, xHi, xLo, yHi, yLo) {
@@ -459,66 +389,22 @@ test('sw_dlg_origin_capture matches an independent oracle across screenCol/local
 });
 
 // ---------------------------------------------------------------------------------------------
-// sw_dlg_metatile
+// sw_dlg_metatile -- RETIRED by the Say/Move overrun fix
 // ---------------------------------------------------------------------------------------------
 
-// Box-relative (row, col) cases: corners, an interior cell, and cells specifically chosen so the
-// col/row wrap branch inside sw_dlg_metatile is exercised (a local coordinate that is NOT already
-// within 0-15/0-14 before the box offset is added).
-const CELL_CASES = [
-  { row: 0, col: 0, label: 'top-left cell' },
-  { row: 2, col: 15, label: 'bottom-right cell' },
-  { row: 1, col: 8, label: 'interior cell' },
-  { row: 0, col: 15, label: 'top-right cell' },
-  { row: 2, col: 0, label: 'bottom-left cell' },
-];
-
-test('sw_dlg_metatile matches an independent oracle for every box cell, including a col+row wrap and a fill (off-grid) case', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
-  const { project, addrOf, nes, mem } = await buildHarness(t);
-  const captureAddr = addrOf('sw_dlg_origin_capture');
-  const metatileAddr = addrOf('sw_dlg_metatile');
-  const { gridW, gridH, screen } = await primeTerrainState(project, nes, addrOf);
-  const screenSize = screen.metatiles.length;
-
-  // Case A: origin exactly at (screenCol 0, local 0/0) -- no wrap on any axis.
-  setCamOrigin(mem, 0, 0, 0, 0);
-  callRoutine(nes, captureAddr);
-  for (const c of CELL_CASES) {
-    const origin = originOracle(0, 0, 0, 0);
-    const expectedPos = metatileWorldPos(origin, c.row, c.col);
-    const expectedId = expectedMetatileId(gridW, gridH, expectedPos.scol, expectedPos.srow, expectedPos.offset, screenSize);
-    nes.cpu.REG_ACC = c.row;
-    nes.cpu.REG_X = c.col;
-    callRoutine(nes, metatileAddr);
-    assert.equal(nes.cpu.REG_ACC, expectedId, `no-wrap origin, ${c.label}`);
-  }
-
-  // Case B: origin local col 12 forces the col wrap branch for boxCol >= 4; origin local row 10
-  // (screenRow 0) forces the row wrap branch (10+12+row >= 15 for every box row).
-  setCamOrigin(mem, 1, 0xc0, 0, 0xa0);
-  callRoutine(nes, captureAddr);
-  const wrapOrigin = originOracle(1, 0xc0, 0, 0xa0);
-  assert.equal(wrapOrigin.ocolL, 12);
-  assert.equal(wrapOrigin.orowL, 10);
-  for (const c of CELL_CASES) {
-    const expectedPos = metatileWorldPos(wrapOrigin, c.row, c.col);
-    const expectedId = expectedMetatileId(gridW, gridH, expectedPos.scol, expectedPos.srow, expectedPos.offset, screenSize);
-    nes.cpu.REG_ACC = c.row;
-    nes.cpu.REG_X = c.col;
-    callRoutine(nes, metatileAddr);
-    assert.equal(nes.cpu.REG_ACC, expectedId, `col+row-wrap origin, ${c.label}`);
-  }
-
-  // Case C: origin screenCol/screenRow already past the grid -- every cell must fall off-grid on
-  // the wrapped (screenCol+1) side too, returning sw_fill_metatile_id from sw_terrain_or_fill's
-  // own fill path (never a bank switch).
-  const fillId = mem[RAM.sw_fill_metatile_id];
-  setCamOrigin(mem, gridW, 0, 0, 0);
-  callRoutine(nes, captureAddr);
-  nes.cpu.REG_ACC = 0;
-  nes.cpu.REG_X = 0;
-  callRoutine(nes, metatileAddr);
-  assert.equal(nes.cpu.REG_ACC, fillId, 'off-grid origin returns the fill metatile id, not a stray read');
+// The per-cell accessor (one sw_goto walk per metatile, sixteen per close row) is gone: sw_dlg_close_row now resolves
+// each screen run once through sw_read_run. Its oracle (every box cell against an independent computation, including the
+// col+row wrap and the fill case) and its two sabotages (the column-wrap threshold, BOX_MT_ROW dropped from the row add)
+// now live against the replacement, row by row: test/unit/streamdialogclose.test.js (test/lib/closeoracle.js), which also
+// pins the two mutants the painted scenes missed. This test keeps the retirement honest: the accessor must not come back
+// quietly, because every close would then walk the world sixteen times per row again.
+test('sw_dlg_metatile is retired: no such symbol, and the close row is the bounded-read routine', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  const { symbols } = await (async () => {
+    const h = await buildHarness(t);
+    return { symbols: h.addrOf };
+  })();
+  assert.throws(() => symbols('sw_dlg_metatile'), /should be a named symbol/, 'sw_dlg_metatile must not assemble');
+  assert.ok(symbols('sw_dlg_close_row') > 0 && symbols('sw_dlg_read_chunk') > 0, 'the replacement routines are present');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -551,70 +437,6 @@ async function buildWithStreamworldMutant(t, mutantText, opts = {}) {
   nes.loadROM(bytes);
   return { project, addrOf, nes, mem: nes.cpu.mem };
 }
-
-test('sabotage: an off-by-one column wrap threshold (cmp #16 -> cmp #17) is caught by the col-wrap oracle sweep', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
-  const source = readEngineSource('streamworld.asm');
-  const mutant = mutateOnce(
-    source,
-    'sw_dlg_metatile:\n  sta sw_dlg_scr1          ; stash box-relative row; A is about to be reused\n  txa\n  clc\n  adc sw_dlg_ocol_l\n  cmp #16\n',
-    'sw_dlg_metatile:\n  sta sw_dlg_scr1          ; stash box-relative row; A is about to be reused\n  txa\n  clc\n  adc sw_dlg_ocol_l\n  cmp #17\n',
-    'col wrap threshold off-by-one'
-  );
-  const { project, addrOf, nes, mem } = await buildWithStreamworldMutant(t, mutant);
-  const captureAddr = addrOf('sw_dlg_origin_capture');
-  const metatileAddr = addrOf('sw_dlg_metatile');
-  const { gridW, gridH, screen } = await primeTerrainState(project, nes, addrOf);
-  // ocol = gridW-1 (the last valid screenCol), ocolL = 12 (boxCol 4+ crosses the col-16
-  // boundary this mutant misreads), orowL = 3 (raw row 15 for box row 0 -- exactly the row-wrap
-  // boundary, landing lrow at 0). A first version of this test picked one cell (box row 0, col 4)
-  // and hand-verified it discriminates -- wrong: the streamedScreen generator's own terrain id is
-  // `1 + ((screenCol+screenRow+offset) % 3)`, and THIS mutation always shifts (screenCol, offset)
-  // together by (-1, +16) when it fires -- a delta of 15, itself a multiple of 3 -- so the mod-3
-  // sum the generator keys on is invariant under this exact mutation, on every cell, not merely an
-  // unlucky one (confirmed directly: a full 3x16 sweep at the first origin choice produced zero
-  // disagreements). Placing the origin one column short of the grid edge sidesteps the mod-3
-  // arithmetic entirely: the CORRECT read goes off-grid (screenCol == gridW) and returns the fill
-  // sentinel, while the mutant's own unwrapped screenCol stays in-grid and returns a real,
-  // guaranteed-nonzero varied-region byte -- a qualitative difference, not a numeric coincidence.
-  setCamOrigin(mem, gridW - 1, 0xc0, 0, 0x30);
-  callRoutine(nes, captureAddr);
-  const origin = originOracle(gridW - 1, 0xc0, 0, 0x30);
-  let mismatches = 0;
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 16; col++) {
-      const expectedPos = metatileWorldPos(origin, row, col);
-      const expectedId = expectedMetatileId(gridW, gridH, expectedPos.scol, expectedPos.srow, expectedPos.offset, screen.metatiles.length);
-      nes.cpu.REG_ACC = row;
-      nes.cpu.REG_X = col;
-      callRoutine(nes, metatileAddr);
-      if (nes.cpu.REG_ACC !== expectedId) mismatches++;
-    }
-  }
-  assert.ok(mismatches > 0, 'the mutant must disagree with the correct oracle value on at least one of the 48 swept cells');
-});
-
-test('sabotage: BOX_MT_ROW omitted from the row computation is caught (every case at a nonzero box row)', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
-  const source = readEngineSource('streamworld.asm');
-  const mutant = mutateOnce(
-    source,
-    'sw_dlgmt_row:\n  lda sw_dlg_scr1          ; the stashed box-relative row\n  clc\n  adc #BOX_MT_ROW\n  clc\n  adc sw_dlg_orow_l\n',
-    'sw_dlgmt_row:\n  lda sw_dlg_scr1          ; the stashed box-relative row\n  clc\n  adc sw_dlg_orow_l\n',
-    'BOX_MT_ROW dropped from the row add'
-  );
-  const { project, addrOf, nes, mem } = await buildWithStreamworldMutant(t, mutant);
-  const captureAddr = addrOf('sw_dlg_origin_capture');
-  const metatileAddr = addrOf('sw_dlg_metatile');
-  const { gridW, gridH, screen } = await primeTerrainState(project, nes, addrOf);
-  setCamOrigin(mem, 0, 0, 0, 0);
-  callRoutine(nes, captureAddr);
-  const origin = originOracle(0, 0, 0, 0);
-  const expectedPos = metatileWorldPos(origin, 1, 0); // box row 1 -- BOX_MT_ROW's own +12 matters here
-  const expectedId = expectedMetatileId(gridW, gridH, expectedPos.scol, expectedPos.srow, expectedPos.offset, screen.metatiles.length);
-  nes.cpu.REG_ACC = 1;
-  nes.cpu.REG_X = 0;
-  callRoutine(nes, metatileAddr);
-  assert.notEqual(nes.cpu.REG_ACC, expectedId, 'the mutant must disagree with the correct oracle value once BOX_MT_ROW is missing');
-});
 
 test('sabotage: sw_dlg_origin_capture skipping the /240 divmod (screenRow always 0) is caught by a worldY >= 240 case', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   const source = readEngineSource('streamworld.asm');

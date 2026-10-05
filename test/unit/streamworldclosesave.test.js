@@ -3226,7 +3226,7 @@ async function measureBankTotals(project, { overrides = null } = {}) {
 
 for (const gameType of ['action', 'rpg']) {
   test(
-    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 80-byte REDUCTION since S3a.5 (2 before), not equal (lo -476, hi +396, was +474; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
+    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 57-byte REDUCTION since the Say/Move overrun fix (80 before it, 2 before S3a.5), not equal (lo -476, hi +419, was +396, +474 originally; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async () => {
       const current = await measureBankTotals(createStreamedNoProjectionProject({ gameType }));
@@ -3248,8 +3248,12 @@ for (const gameType of ['action', 'rpg']) {
       // repeated-subtract loops; the current engine's closed forms are 78 bytes smaller (STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE
       // 1102 -> 1024), so the kernel-hi delta is B1's 474 less that 78 = 396 and the total moves with it (-2 - 78 = -80).
       const S3A5_HI_SAVING = 78;
-      assert.equal(hiDelta, 474 - S3A5_HI_SAVING, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost (474) less S3a.5's 78-byte camera-window saving`);
-      assert.equal(totalDelta, -27 + 18 + 7 - S3A5_HI_SAVING, `${gameType}: total kernel-lo+hi delta is a net 80-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
+      // The Say/Move overrun fix then grew the resident streamed-dialogue code by 23 kernel-hi bytes in every streamed project with
+      // text: the 6-byte sw_dlg_read_chunk (STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE) plus the close row's 17 (folded into
+      // the lifecycle/terrain/consumer allowance, 523/520 -> 540/537). Kernel-lo is untouched.
+      const OVERRUN_HI_COST = 23;
+      assert.equal(hiDelta, 474 - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost (474) less S3a.5's 78-byte camera-window saving, plus the overrun fix's 23`);
+      assert.equal(totalDelta, -27 + 18 + 7 - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: total kernel-lo+hi delta is a net 57-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78, plus the overrun fix's 23), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
     }
   );
 }

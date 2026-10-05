@@ -312,7 +312,8 @@ export function mergeReconstructEngineFile(root, rev, name, { headRev = 'HEAD' }
   const b1Block = restoreB1Routines(currentText);
   validateB1Block(b1Block, root, rev);
   const merged = `${historicalText.replace(/\n+$/, '')}\n\n${b1Block}`;
-  return carryS3a5Lever(merged, currentText);
+  const currentDialog = fs.readFileSync(path.join(root, 'engine', 'streamdialog.asm'), 'utf8');
+  return carryOverrunLever(carryS3a5Lever(merged, currentText), currentText, currentDialog);
 }
 
 // Phase 3a slice S1 added a contiguous block of equates to engine/constants.asm (the projection's
@@ -470,4 +471,138 @@ export function carryS3a5Lever(oldText, currentText) {
     'divmod-15 loop and its closed form'
   );
   return out;
+}
+
+// The Say/Move overrun fix (handoff-next/streamed-worlds-say-move-overrun-impl-report.md) changed three places in
+// engine/streamworld.asm, in every build with streamed text:
+//   1. the chunk read `sw_dlg_read_chunk..sw_dlg_read_chunk_end`, a new resident block just before `sw_dlg_mapper_start:`;
+//   2. the banked shim's `sw_dlg_terrain_read`, which now calls the chunk read instead of `sw_terrain_or_fill` (and no
+//      longer pushes/pulls the result);
+//   3. in the resident placement, the equate `sw_dlg_terrain_read = sw_dlg_read_chunk` just before the include.
+// A historical text comparison that reverts streamworld.asm to an older commit while engine/streamdialog.asm stays
+// CURRENT (it now calls sw_dlg_terrain_read) must carry (carryOverrunLever) or remove (stripOverrunFromStreamworld) those
+// three places; each region is anchored and count-checked and a changed shape throws instead of cutting something else.
+const OVERRUN_CHUNK_RE = /  \.if TEXT_ENABLED\n; The text-box close's bounded terrain read[^]*?sw_dlg_read_chunk_end:\n  \.endif\n/g;
+const OVERRUN_SHIM_NEW = 'sw_dlg_terrain_read:\n  jsr sw_dlg_read_chunk\n  lda #BATTLE_BANK\n  jsr switch_prg_bank\n  rts\n';
+const OVERRUN_SHIM_OLD = 'sw_dlg_terrain_read:\n  jsr sw_terrain_or_fill\n  pha\n  lda #BATTLE_BANK\n  jsr switch_prg_bank\n  pla\n  rts\n';
+const OVERRUN_EQUATE = 'sw_dlg_terrain_read = sw_dlg_read_chunk\n';
+const MAPPER_START = 'sw_dlg_mapper_start:\n';
+const INCLUDE_DIALOG = '  .include "streamdialog.asm"\n';
+
+function exactlyOnce(text, needle, what) {
+  const a = text.indexOf(needle);
+  if (a < 0 || text.indexOf(needle, a + 1) >= 0) throw new Error(`overrun fix: ${what} was not found exactly once`);
+  return a;
+}
+
+function overrunChunkBlock(text) {
+  const hits = text.match(OVERRUN_CHUNK_RE) ?? [];
+  if (hits.length !== 1) throw new Error(`overrun fix: the chunk-read block was not found exactly once (${hits.length})`);
+  return hits[0];
+}
+
+/**
+ * The current text with the overrun fix's regions in streamworld.asm removed: what the file said before it. Works on the
+ * source text (the include line follows the equate; the banked shim is present) and on readEngineSource's resident
+ * flattening (the dialogue file's text follows the equate; no shim). The close routines themselves live in
+ * streamdialog.asm and are cut by stripOverrunCloseFromFlat / dropOverrunRetiredFromOld.
+ */
+export function stripOverrunFromStreamworld(text) {
+  let out = text.replace(overrunChunkBlock(text), '');
+  exactlyOnce(out, OVERRUN_EQUATE, 'the resident terrain-read equate');
+  out = out.replace(OVERRUN_EQUATE, '');
+  if (out.includes('sw_dlg_terrain_read:\n')) {
+    exactlyOnce(out, OVERRUN_SHIM_NEW, 'the banked shim\'s chunk-read terrain gateway');
+    out = out.replace(OVERRUN_SHIM_NEW, OVERRUN_SHIM_OLD);
+  }
+  return out;
+}
+
+// The two routines the fix replaced in streamdialog.asm: the close-path terrain accessor sw_dlg_metatile (deleted) and
+// sw_dlg_close_row's body (rewritten around one bounded read per screen run). A comparison against a pre-fix text cuts
+// BOTH sides' version of them, anchored and count-checked, so everything else in the file stays compared; the new close
+// routine is held by test/unit/streamdialogclose.test.js's independent packet oracle instead.
+const OVERRUN_NEW_CLOSE_START = 'sw_dlg_close_row:\n';
+const OVERRUN_NEW_CLOSE_END = 'sw_dlgcr_end:\n  jmp vram_end\n';
+const OVERRUN_OLD_METATILE_START = 'sw_dlg_metatile:\n';
+const OVERRUN_OLD_METATILE_END = '  jmp sw_terrain_or_fill\n';
+const OVERRUN_OLD_CLOSE_END = '  cmp #16\n  bne sw_dlgcr_loop\n  jmp vram_end\n';
+
+function cutOverrun(text, start, end, what) {
+  const a = exactlyOnce(text, start, `the start of ${what}`);
+  const b = text.indexOf(end, a);
+  if (b < 0 || text.indexOf(end, b + 1) >= 0) throw new Error(`overrun fix: the end of ${what} was not found exactly once`);
+  return text.slice(0, a) + text.slice(b + end.length);
+}
+
+export function stripOverrunCloseFromFlat(text) {
+  return cutOverrun(text, OVERRUN_NEW_CLOSE_START, OVERRUN_NEW_CLOSE_END, 'the bounded-read sw_dlg_close_row');
+}
+
+export function dropOverrunRetiredFromOld(text) {
+  const noMetatile = cutOverrun(text, OVERRUN_OLD_METATILE_START, OVERRUN_OLD_METATILE_END, 'sw_dlg_metatile');
+  return cutOverrun(noMetatile, OVERRUN_NEW_CLOSE_START, OVERRUN_OLD_CLOSE_END, 'the per-cell sw_dlg_close_row');
+}
+
+/** An older text brought up to the overrun fix, each region lifted from the CURRENT files, never retyped.
+ *   - a text from before any streamed dialogue code (no close row, no include) has nothing for the fix to change and comes
+ *     back untouched;
+ *   - a text with the dialogue overlay INLINE (pre-relocation: sw_dlg_metatile and the per-cell sw_dlg_close_row inside
+ *     streamworld.asm) gets the accessor cut, its close row replaced by the current one (from `currentDialogText`), and the
+ *     chunk read plus its equate in front of the mapper block;
+ *   - a text that INCLUDES streamdialog.asm (and so keeps the current close row) gets the chunk read, the shim body and the
+ *     equate. */
+export function carryOverrunLever(oldText, currentText, currentDialogText = null) {
+  const hasInclude = oldText.includes(INCLUDE_DIALOG);
+  const hasInline = oldText.includes('\nsw_dlg_close_row:\n');
+  if (!hasInclude && !hasInline) return oldText;
+  if (!oldText.includes(MAPPER_START)) throw new Error('overrun fix: the older text has the dialogue overlay without the mapper block');
+  const block = overrunChunkBlock(currentText);
+  if (hasInline) {
+    if (!currentDialogText) throw new Error('overrun fix: an inline older text needs the current streamdialog.asm');
+    let out = cutOverrun(oldText, OVERRUN_OLD_METATILE_START, OVERRUN_OLD_METATILE_END, 'sw_dlg_metatile');
+    const newClose = currentDialogText.slice(
+      exactlyOnce(currentDialogText, OVERRUN_NEW_CLOSE_START, 'the current sw_dlg_close_row'),
+      currentDialogText.indexOf(OVERRUN_NEW_CLOSE_END) + OVERRUN_NEW_CLOSE_END.length
+    );
+    const from = exactlyOnce(out, OVERRUN_NEW_CLOSE_START, 'the older per-cell sw_dlg_close_row');
+    const to = out.indexOf(OVERRUN_OLD_CLOSE_END, from);
+    if (to < 0 || out.indexOf(OVERRUN_OLD_CLOSE_END, to + 1) >= 0) throw new Error('overrun fix: the end of the older per-cell sw_dlg_close_row was not found exactly once');
+    out = out.slice(0, from) + newClose + out.slice(to + OVERRUN_OLD_CLOSE_END.length);
+    const at = exactlyOnce(out, MAPPER_START, 'sw_dlg_mapper_start: in the older text');
+    return out.slice(0, at) + block + '  .if TEXT_ENABLED\n' + OVERRUN_EQUATE + '  .endif\n' + out.slice(at);
+  }
+  const at = exactlyOnce(oldText, MAPPER_START, 'sw_dlg_mapper_start: in the older text');
+  let out = oldText.slice(0, at) + block + oldText.slice(at);
+  if (out.includes('sw_dlg_terrain_read:\n')) {
+    exactlyOnce(out, OVERRUN_SHIM_OLD, 'the older banked shim\'s terrain gateway');
+    out = out.replace(OVERRUN_SHIM_OLD, OVERRUN_SHIM_NEW);
+  }
+  const inc = exactlyOnce(out, INCLUDE_DIALOG, 'the dialogue include in the older text');
+  return out.slice(0, inc) + OVERRUN_EQUATE + out.slice(inc);
+}
+
+// engine/constants.asm: the three close-row alias equates and the comment block that states their row-scoped lifetime.
+const OVERRUN_ALIASES_START = "; The text-box close row's three working bytes";
+const OVERRUN_ALIASES_END = 'sw_dlgcr_row     = sw_dlgw_tmp\n';
+const OVERRUN_ALIASES_AFTER = /^sw_dlgw_mtrow    = \$EA[^\n]*\n/m;
+
+function overrunAliasBlock(constantsText) {
+  const a = exactlyOnce(constantsText, OVERRUN_ALIASES_START, 'the close-row alias block');
+  const b = constantsText.indexOf(OVERRUN_ALIASES_END, a);
+  if (b < 0) throw new Error('overrun fix: the end of the close-row alias block was not found');
+  return constantsText.slice(a, b + OVERRUN_ALIASES_END.length);
+}
+
+/** An older constants.asm with the close-row aliases carried in (lifted from the current file) right after sw_dlgw_mtrow. */
+export function carryOverrunConstants(oldText, currentText) {
+  const block = overrunAliasBlock(currentText);
+  const hits = oldText.match(new RegExp(OVERRUN_ALIASES_AFTER.source, 'gm')) ?? [];
+  if (hits.length !== 1) throw new Error(`overrun fix: sw_dlgw_mtrow was not found exactly once in the older constants (${hits.length})`);
+  if (oldText.includes('sw_dlgcr_lc')) throw new Error('overrun fix: the older constants already carry the aliases');
+  return oldText.replace(OVERRUN_ALIASES_AFTER, (m) => m + block);
+}
+
+export function stripOverrunConstants(text) {
+  return text.replace(overrunAliasBlock(text), '');
 }
