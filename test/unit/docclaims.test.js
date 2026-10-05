@@ -89,6 +89,8 @@ const UNTRACKED_CITATIONS = [
   ['handoff-next/s9-fix3-scratch/accepted-boundary-remeasure.mjs', 'session evidence (gitignored): the accepted-boundary re-measure script'],
   ['handoff-next/s1-a1/fix6/accepted-boundary.log', 'session evidence (gitignored): the accepted-boundary figures on the final (a1) tree'],
   ['handoff-next/s1-defer3/accepted-boundary-s1.log', 'session evidence (gitignored): the accepted-boundary figures on the S1-only tree'],
+  ['handoff-next/overrun/impl/retired/s3b-rs.json', 'session evidence (gitignored): the S3b ROM-identity certificate the Say/Move overrun fix retired'],
+  ['handoff-next/overrun/impl/retired/', 'session evidence (gitignored): the certificate and equivalence record the Say/Move overrun fix retired'],
   ['handoff-next/s3b/impl/D/aggregate.json', 'session evidence (gitignored): the L5 Mesen aggregate over the six launch files, 2026-10-04']
 ];
 

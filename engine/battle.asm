@@ -566,8 +566,17 @@ draw_battle_screen:
   lda #BATTLE_TILESET
   jsr switch_chr_bank
 
+  ; A streamed screen has no screen_map row (that table holds only the compact
+  ; ordinary rows), and in a mixed project an ordinary screen's flat_screen is no
+  ; longer its compact row either -- cur_map already names the owning map for
+  ; both (apply_map_music / apply_map_music_direct set it at every landing), the
+  ; owner engine/rpg.asm's streamed encounter lookup reads too.
+  .if STREAMING_ENABLED
+  lda <cur_map
+  .else
   ldy <flat_screen
   lda screen_map,y
+  .endif
   sta <bt_tmp2               ; this map's backdrop tiles
 
   bit $2002

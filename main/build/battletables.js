@@ -763,6 +763,17 @@ export const NAME_COPY_BATTLE_ALLOWANCE = 43;
 // streaming does not fit kernel-hi on any implemented board).
 export const STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE = 47;
 
+// Phase 3b slice S0: draw_battle_screen and wipe_monster read the backdrop
+// through cur_map instead of screen_map[flat_screen] when STREAMING_ENABLED
+// (engine/battle.asm, engine/battleturn.asm) -- 3 and 4 bytes shorter than the
+// ordinary-screen lookup they replace. A SAVING, not an allowance: it is
+// subtracted from the region's total, so a streaming RPG's real usage still
+// equals the prediction exactly. Measured as the difference between the
+// streamed RPG's real region usage and baseBattleCodeBytes + battleTableBytes
+// (test/unit/bankedbytes.test.js). A project with no streamed map assembles the
+// old lookup and gets none of it.
+export const STREAMWORLD_BACKDROP_BATTLE_SAVING = 7;
+
 // Phase 2 slice 10b (ROADMAP item 15): the streamed-world dialogue overlay
 // (engine/streamdialog.asm) as the THIRD occupant of this bank, after battle
 // and naming -- present only when streamworldDialogueBanked (main/build/
@@ -1122,7 +1133,8 @@ export function battleRegionBytes(project, mapper, { streamDialogueBanked = fals
     (projectUsesAnyBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
     (projectUsesPartyAttackAnim(project) ? PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE : 0) +
     (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0) +
-    (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0) +
+    (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0) -
+    (banked && projectUsesStreaming(project) ? STREAMWORLD_BACKDROP_BATTLE_SAVING : 0) +
     // streamworldDialogueBanked (main/build/generate.js) is the single writer of this
     // flag but needs the resident kernel-hi ledger, which this module (importable by
     // the renderer) cannot reach -- so the caller hands it in, and one that omits it

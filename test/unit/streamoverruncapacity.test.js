@@ -12,7 +12,7 @@
 //   4. the relocation threshold, both sides                 -- F2 rows 1-2 (a roomy battle bank) and here (rows T1-T3: a battle bank
 //                                                              that cannot take the overlay)
 //   5. the reviewer's counterexample                        -- T3: a resident-at-HEAD 88-actor project, content 1,407, which now relocates,
-//                                                              would need 8,197 in a bank that holds 8,172, and must get the message
+//                                                              would need 8,190 in a bank that holds 8,172, and must get the message
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -148,8 +148,8 @@ test('R2: one byte over the resident ceiling is refused with the Sound Forge / M
 
 // ---- T1-T3: the relocation threshold, for a battle bank that cannot take the overlay ----------
 
-// The nosave resident twin with 88 actors: its battle region is 6,795 at the old resident ceiling, so a relocation there
-// needs 6,795 + the whole 1,402-byte overlay = 8,197 > 8,172. Before the fix its resident ceiling was 1,407 (it built resident);
+// The nosave resident twin with 88 actors: its battle region is 6,788 at the old resident ceiling, so a relocation there
+// needs 6,788 + the whole 1,402-byte overlay = 8,190 > 8,172. Before the fix its resident ceiling was 1,407 (it built resident);
 // now the ceiling is 1,384, so the last 23 content bytes tip it over the line.
 function crowdedTwin(content) {
   const { project: p, slot } = buildPinching('nosave', { twin: true });
@@ -191,16 +191,16 @@ test('T2: one byte over the resident ceiling makes the crowded twin relocate; th
   await assertBuildRefusedWith(p, /with that dialogue code, needs \d+ bytes there/);
 });
 
-test("T3: the review's counterexample -- a project that built resident at content 1,407 (battle bank 6,795) is now refused with the capacity message, needing 8,197 in a bank that holds 8,172", { skip }, async () => {
+test("T3: the review's counterexample -- a project that built resident at content 1,407 (battle bank 6,788) is now refused with the capacity message, needing 8,190 in a bank that holds 8,172", { skip }, async () => {
   const p = crowdedTwin(1407);
   assert.ok(residentContentCeilingBytes(p) < 1407, 'the resident ceiling fell below the old edge');
   assert.equal(streamworldDialogueBanked(p, MAPPER), true);
-  assert.equal(regionOf(p), 8197, 'the whole 1,402-byte overlay on top of 6,795');
-  assert.ok(regionOf(p) - CEILING === 25, 'by 25, as the review measured');
+  assert.equal(regionOf(p), 8190, 'the whole 1,402-byte overlay on top of 6,788');
+  assert.ok(regionOf(p) - CEILING === 18, 'by 18 (it was 25 before phase 3b S0 shortened the streamed backdrop lookups by 7)');
   const errors = errorsOf(p);
   assert.equal(errors.length, 1, errors.map((e) => e.message).join(' | '));
-  assert.match(errors[0].message, /needs 8197 bytes there but the bank holds 8172/);
-  await assertBuildRefusedWith(p, /needs 8197 bytes there but the bank holds 8172/);
+  assert.match(errors[0].message, /needs 8190 bytes there but the bank holds 8172/);
+  await assertBuildRefusedWith(p, /needs 8190 bytes there but the bank holds 8172/);
 });
 
 // keep decorateTerrain imported for symmetry with the close oracle's projects (a decorated project must stay capacity-neutral)

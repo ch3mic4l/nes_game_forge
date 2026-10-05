@@ -1144,9 +1144,13 @@ wipe_monster:
   clc
   adc <bt_wipe_row
   sta <bt_row
+  .if STREAMING_ENABLED
+  ldy <cur_map              ; the owning map, streamed or not -- see draw_battle_screen
+  .else
   ldy <flat_screen
   lda screen_map,y
   tay
+  .endif
   lda map_battle_ground,y   ; hoisted: the fill never changes mid-wipe, and a
   sta <bt_fill               ; spell may be halfway through using bt_arg
   lda #BT_MON_COL

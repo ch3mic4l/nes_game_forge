@@ -419,7 +419,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   Measured boundaries (`test/unit/streamworlddialogueboundary.test.js`, exact-fit and one-over): the resident no-Save ceiling 1,407 -> 1,384; the relocated
   ceilings 2,649 -> 2,645 (no-Save), 2,534 -> 2,530 (Save), 2,396 -> 2,392 (Move). The battle-bank region of a relocated no-Save build holds exactly 8,172
   bytes (`streamoverruncapacity.test.js`: 8,172 builds, 8,173 is refused by `checkCapacity` naming the Sound/Map Forge); the reviewer's counterexample (a HEAD-resident
-  88-actor project, content 1,407, that relocates and needs 8,197 against 8,172) is now refused with the capacity message, not an assembler overflow. A project not
+  88-actor project, content 1,407, that relocates and needs 8,190 against 8,172) is now refused with the capacity message, not an assembler overflow. A project not
   using streamed dialogue assembles byte-for-byte as before. The earlier ceiling table (above) is the 2026-09-28 record and is not re-run.
 
 - **Phase 2 slice 10b — the dialogue overlay relocated (`streamworldDialogueBanked`,

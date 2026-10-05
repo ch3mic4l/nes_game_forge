@@ -160,7 +160,11 @@ the compacted `0..N-1` row index every ordinary `*_bank`/`*_tileset`/`*_mt_lo`/`
 `*_ent_lo`/`*_bound_lo` table is keyed by, meaningful only while `map_is_streamed` is clear, never
 stored or persisted — the resolver's own compacted view of `flat_screen`, recomputed fresh at every
 landing. `cur_map` (`engine/constants.asm`, next to `cur_song`) is unrelated to either: `NO_MAP`
-until a screen decides the music, streamed or not. `set_screen_ptr` (`engine/screens.asm`) takes an
+until a screen decides the music, streamed or not — and it is the owning map a battle's backdrop reads:
+`draw_battle_screen` and `wipe_monster` take `cur_map` under `STREAMING_ENABLED`, never `screen_map[flat_screen]`,
+which has no row for a streamed screen and the wrong one for an ordinary map placed after a streamed prefix
+(`test/unit/streamedbackdrop.test.js`; the banked ledger's `STREAMWORLD_BACKDROP_BATTLE_SAVING` prices the 7 bytes
+that saves). `set_screen_ptr` (`engine/screens.asm`) takes an
 early return through `sw_locate_current` — its streamed equivalent — when `map_is_streamed` is set,
 before ever touching `ord_screen`; this runs even for a non-fight session-lifecycle entry, since
 `call_battle` always ends `jmp set_screen_ptr` (the restore *is* the return).
@@ -509,7 +513,7 @@ ROM hashes are unchanged -- the sweep's ROMs are byte-for-byte the S3a.5 ones (`
 by `identitymatrix.test.js`). The rebuild check (`sw_rebuild_check.mjs`) rebuilt 11,712 of 11,712 Mesen-run records with
 no Mesen and every project and ROM hash matched (880 reuse records covered by their sources), and
 `test/fixtures/streambound-equivalence.json` was re-made from it; the ROM-identity certificate over the same records was
-**`handoff-next/overrun/impl/retired/s3b-rs.json`** (retired by the Say/Move overrun fix, below; the live one is `test/fixtures/identity-cert/overrun-final-metadata.json`) (11,712/11,712 matched, 0 mismatched, 0 errored, 880 reuses resolved; its
+**`handoff-next/overrun/impl/retired/s3b-rs.json`** (retired by the Say/Move overrun fix, below; the overrun fix's replacement was itself retired by phase 3b S0, below, and none is live now: the curve's own engine and generator fingerprints match the tree) (11,712/11,712 matched, 0 mismatched, 0 errored, 880 reuses resolved; its
 `scope` string is the certifier's fixed text and still says "S3a engine" -- the `provenance` stamps inside it are the
 S3b engine's). `run_sw_cadence.mjs` passes 3/3 on the re-swept tree. What S3b's own scenes cost (the long Move, the
 crossing bodies, the composed seams) is a different gate row, M11: `docs/design-streamed-worlds-phase3a.md`, "S3b: measured outcomes".
@@ -521,6 +525,14 @@ before). Result, from the full fresh record: 12,590 jobs, 0 bad; tightest passin
 (bound tiles n = 15, was 25,111, 4,665 under)**; probe cliff **n = 56 plain (31,253) / n = 54 bound (31,245, was 31,243)**, both CONFIRMED. The certified 16 / 15 and shipped 15 / 14
 stand; `STREAM_TILE_MARGIN_CYCLES.boundTiles` is 4,665 (was 4,669). The old ROM-identity certificate and equivalence record, which described the superseded curve, were retired
 (`handoff-next/overrun/impl/retired/`), and the equivalence record was rebuilt against the fresh one.
+
+**Re-measured after the battle backdrop fix (2026-10-05, phase 3b S0).** `draw_battle_screen`/`wipe_monster` read `cur_map` on a streamed build, which changes every streamed RPG ROM (every swept RPG scene
+enters a battle), so the ROM-identity certificate carried nothing and `sw_bound_sweep.mjs` was run again end to end (the overrun fix's resweep.sh: A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes,
+70 min 33 s; A/B/C/R/P exit 0, F exit 4 as before). The figures are identical to the overrun fix's: 12,590 jobs, 0 bad; tightest passing row at the certified n **25,012 (plain n = 16, 4,768 under)** and
+**25,115 (bound tiles n = 15, 4,665 under)**; probe cliff **n = 56 plain / n = 54 bound**; certified 16 / 15 and shipped 15 / 14 stand and `shared/streambound.js` did not change. The overrun fix's
+certificate and equivalence record were retired to `handoff-next/p3b-s0/retired/`; `test/fixtures/streambound-equivalence.json` was rebuilt (11,760/11,760 matched, 832 reuses covered, recorded generator equal to the
+final one, so no certificate is needed), and `test/fixtures/crossstage/exclusions-evidence.json` was re-made by the overrun fix's refresh-exclusions.mjs (340 refusals and 340 parent receipts re-established; only its note and
+its two new-tree fingerprints changed).
 
 **Capacity drop recorded with S1 (a1): 21 placed actors with Save, was 24.** The committed Save inventory project needs 8
 kernel-lo lookup bytes per placed actor; S1's `OAM_BUSY` (+18) and projection setup (+3) and (a1)'s gate (+7) took the
