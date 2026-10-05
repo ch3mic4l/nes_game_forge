@@ -62,6 +62,9 @@ Mechanism depth, measured figures and the story of how a rule was found belong i
 a pointer here — a docs pass that needs more room than that moves text out, never raises the
 budget.
 
+`test/unit/docclaims.test.js` checks what the docs say against the tree (every backticked path and identifier resolves,
+the deleted Map Forge warning stays deleted, every streamed-map refusal still fires); its header holds the policy.
+
 There are **six checked-in fixtures**: `sample/` (action-adventure; every engine test is written
 against it), `sample-rpg/` (`rpg.test.js`), and four save-check fixtures — `sample-mmc1/`,
 `sample-mmc3/`, `sample-u512/`, `sample-rpg-mmc1/` — that only the Mesen save checks consume.

@@ -211,6 +211,8 @@ entities were already freshly repopulated by the `spawn_entities` call above, in
 that gate takes, added so a Mesen timing harness measuring `update_player`'s own cost has an anchor
 that does not silently go unreached on exactly the frame it most needs to measure.
 
+**(History, kept as written: the paragraph below describes phase 2 slice 3's own `move_tick` bound. Phase 3a S3a replaced it with the shared `sw_pstep_*` driver and S3b made a step that reaches an edge cross it; the current behaviour starts at "A streamed player Move takes its step through the SHARED driver".)**
+
 **A scripted Move on a streamed screen (phase 2 slice 3, docs/design-streamed-worlds.md §7, ruling
 7) is a separate mechanism from Part C's interim wall above**, and only applies to the PLAYER
 mover: `move_tick` (`engine/entities.asm`) bounds the player at the true 0-255/0-239 ownership
@@ -253,7 +255,7 @@ probe had probed one corner. EITHER probe coordinate can leave the current scree
 which axis is moving, and the driver normalizes both before each probe (`screenCol+1` on an X
 carry, `screenRow+1` for a Y at or past 240, both for a corner). **A scripted Move now crosses a seam (phase 3a S3b, 2026-10-04).**
 Through S3a the true player position never crossed: `sw_step_nocross` (`$077F`, a 5-byte guard in each
-`sw_pstep_*`'s crossing branch) made the driver refuse any crossing, reproducing the shipped ownership stop.
+`sw_pstep_*`'s crossing branch; S3b deleted it) made the driver refuse any crossing, reproducing the shipped ownership stop.
 S3b deleted the flag, its four guards and `move_tick`'s raise and drop (`test/unit/rammap.test.js` pins that
 the symbol is gone and `$077F` unallocated); a step that crosses commits exactly as a walking one does, and a
 Warp is no longer the only way to change screen mid-event. What a crossing costs the *event* is the talker
@@ -288,8 +290,24 @@ branch/`move_animate`'s NPC branch read `mv_ent` from then on, never live `talk_
 self-Move keeps its own mover even were `talk_ent` reassigned mid-flight (unreachable in
 production, but the fix cost +11 kernel-lo bytes -- `MOVE_KERNEL_ALLOWANCE` 324 → 335). A scripted
 Move that reaches this rectangle's own edge no longer
-refuses the build (`validateStreamedMaps`'s D.3, `shared/project.js`) — it warns instead, since the
-engine now bounds and stops it safely at runtime.
+refuses the build, and no longer warns either: S3b deleted the warning (`validateStreamedMaps`,
+`shared/project.js`) because the engine crosses the seam instead of stopping at it.
+
+**What a streamed map refuses (phase 3a S4; each refusal is one rule with one writer, and nothing is trimmed or repaired).**
+`streamedBoardProblems` (`shared/project.js`) includes `streamedGridProblems` and feeds `validateProject` and the Build panel's
+mapper-switch preflight; project load checks `streamedGridProblems` directly. *Dead axis* (`'deadAxis'`, named for the Map Forge): a board that can stream but whose mirroring
+leaves one axis without a scroll (`cameraAxes` is the single writer of which) holds exactly one screen of ring on that axis, so a
+streamed map must be 1 screen wide when sideways is dead and 1 screen tall when up and down is, and the message says to shrink
+the map or change the mirroring (the two-nametable boards are refused outright today, README, but the check still runs and the
+mapper-switch preflight below asks it). *Grid* (`streamedGridProblems`): each side an integer in 1..`LIMITS.streamedGrid` (255)
+and `gridW * gridH` within `LIMITS.projectScreens` (255), **and a second, separate refusal when the map holds more authored
+screens than `gridW * gridH`** ("holds N screens but is only W x H"); `normalizeProject` throws `StreamedGridError` and project
+load reports it instead of dropping the extra screens. *Mapper-switch preflight* (Build panel): `checkStreamedMapperSwitch`
+(`main/build/generate.js`) works on a `structuredClone`, applies the candidate board and mirroring, runs `reconcileCartridge`,
+and returns the first failing check's plain-language refusals -- the board cannot stream, then the dead axis, then the aggregate
+region count; an empty list means no objection and the real project is never touched. The resize refusal is in
+`docs/reference-electron-layout.md`. `test/unit/docclaims.test.js` (T4) re-fires every one of these on a minimal project and
+checks the docs still name it.
 
 Two mappers were considered and deliberately left out rather than declared. AxROM (7) switches all
 32 KB at once, leaving no fixed window for the kernel, so the engine would need duplicating into

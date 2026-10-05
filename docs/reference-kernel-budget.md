@@ -121,13 +121,13 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   the slice deleted**; 117 before S3a, 159 before S1 (a1); kernel-lo only, gated
   `usesStreaming && usesMove`) is the streaming-only remainder on top. Since S3a it is exactly two measured
   pieces: the DELEGATION span (67 bytes at S3a, **61 since S3b**, `S3A_DELEGATION_SPAN_BYTES` in `kernelbytes.test.js`) of `move_tick` (`move_tick_streamed` .. `move_tick_ordinary`: the
-  `cur_speed`/`moving` setup, the `sw_step_nocross` raise and drop, the four `jsr sw_pstep_<dir>` arms and the
+  `cur_speed`/`moving` setup, the raise and drop of `sw_step_nocross` (since deleted), the four `jsr sw_pstep_<dir>` arms and the
   camera call) and the 16-byte streamed branch of `move_speed_player`'s accumulator dispatch. Before S3a it paid
   for a private probe stage (the four per-direction copies, then S1 (a1)'s fold into `move_tick_probe_v_streamed`/
   `move_tick_probe_h_streamed`, 4 x 25 = 100 -> 58, which paid for `MOVER_PARITY_GATE_KERNEL_ALLOWANCE = 7`);
   that stage and its kernel-hi twin are deleted. A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 20`
   (`main/build/streamplacement.js`; kernel-hi, same gate; 76 before S3a, 80 before fix round 2) was, from S3a, the four
-  `sw_step_nocross` guards in `sw_pstep_right/left/down/up`, 5 bytes each (`lda abs` + `bne`), gated
+  `sw_step_nocross` guards (the flag no longer exists) in `sw_pstep_right/left/down/up`, 5 bytes each (`lda abs` + `bne`), gated
   `.if MOVE_ENABLED` so a streamed project with no live Move paid nothing extra. **S3b deleted the term with the guards**
   (the symbol is gone from `streamplacement.js`; the talker terms below are the Move's whole kernel-hi cost now). Both are equality-asserted
   against nesasm's own usage by `kernelbytes.test.js` on action, rpg and action-mixed (the delegation-span test replaced
@@ -230,8 +230,8 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   action only) + `streamworldUpdatePlayerKernelHiAllowance` (170 action / 167 rpg) +
   `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE`(64) + 3437 exactly, all three shapes), not derived by
   hand from the new code's own line count. The +52 over fix round 1's 3385 is
-  `sw_terrain_or_fill_solid_type` (fix round 2 finding C, shared by `sw_move_probe_solid` and
-  `sw_hazard_probe_cross`) plus the finding A/B rewrite of `sw_pstep_up`'s crossing case
+  `sw_terrain_or_fill_solid_type` (fix round 2 finding C, shared by `sw_move_probe_solid` (deleted in S3a, 2026-10-04)
+  and `sw_hazard_probe_cross`) plus the finding A/B rewrite of `sw_pstep_up`'s crossing case
   (per-probe renormalization, plus the `bcc`/`jmp` branch-range fix) net of the 4-byte shrink
   `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE` absorbed on its own (68 -> 64, below).
 - Phase 2 slice 4b (the continuous movement driver, `docs/reference-engine.md`'s own Part C/movement
@@ -387,7 +387,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE` 613 (`:1407`) +
   `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520 (`:1439-1442`, `:1446`) +
   `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222 (`:1475`) = **1355**; Move
-  `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`; 20 since phase 3a S3a, which lifts this table row's Move figures by 56) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
+  `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`; 20 since phase 3a S3a, which lifts this table row's Move figures by 56; S3b deleted the constant) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
   14 (`:2053`) + `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`:2065`) = **121**. Sum
   5135+1355+121 = 6611; `contentCeilingBytes` = `BANK_SIZE`(8192, `:231`) − 64 − 6611 = **1517**,
   which is the table row's 1439 plus the 78 S3a.5 gave back (the row itself is the 2026-09-28 record).
@@ -516,7 +516,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   - Phase 2 slice 4b's own three more kernel-lo terms, the movement driver's caller-side glue outside
     `engine/streamworld.asm` itself: `STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE = 7` —
     `engine/player.asm`'s `update_player_knock`, a `lda <map_is_streamed / bne` branch into the
-    capped (1px, `SW_KNOCKBACK_SPEED`) knockback step instead of the ordinary 3px one.
+    capped (1px, `SW_KNOCKBACK_SPEED`, since replaced by `SW_KB_SPEED_SUB` on 2026-10-04) knockback step instead of the ordinary 3px one.
     `STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE = 4 + 4` — `sw_event_freeze`'s own two call sites
     summed into one term (the `STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE` two-call-site
     precedent above): `engine/input.asm`'s `do_talk` (armed the same frame an interact press opens a
@@ -659,7 +659,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   can still add before capacity refuses (Action Move family: 31; Action Save family: 25; RPG Say
   family: 44) were re-measured directly against the tree at phase 2's close, before phase 3a
   (`handoff-next/s9-fix3-scratch/accepted-boundary-remeasure.mjs`, a path-adjusted copy of round 3's
-  own `E3/accepted-boundary.mjs`). The Save and RPG Say figures are unchanged from the round-3
+  own accepted-boundary script, a session scratch file that was not kept). The Save and RPG Say figures are unchanged from the round-3
   review's own recorded figures; the Move figure is one lower than round 3's 32 because
   `move_face`'s pose clamp (`FACE_KERNEL_ALLOWANCE` 13 -> 37, +24 bytes) is charged to every
   Move project (31 maps accepted at 8,165 bytes used; the 32nd needs 740 bytes of lookup tables

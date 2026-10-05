@@ -100,7 +100,7 @@ operation — `reorderMapsCore`, `addMapCore`, `duplicateMapCore`, `deleteMapCor
 `growOrShrinkMap`, `duplicateScreenViaGrowthCore`, `duplicateScreenIntoNewMapCore`,
 `pasteRegionCore` — is a commit-free core in `shared/project.js`, called by both
 `renderer/forges/map/map.js` (wrapped in one `store.commit()`) and the unit tests directly — one
-body, not two. A same-count reorder leaves `screenCount`/`mapCount` untouched — what
+body, not two. `growOrShrinkMap` refuses a streamed map's resize that would break the streamed grid rules (`streamedGridProblems`, `docs/reference-engine.md`): it returns `null` before touching anything, so the project is byte-identical afterwards. A same-count reorder leaves `screenCount`/`mapCount` untouched — what
 `saveCompatToken` (below, under `SAVE_LAYOUT_VERSION`) exists to catch. See `docs/design-maporg.md`
 for the full mechanism — the `translate` builders, the duplicated-map/screen self/external target
 split, `map.folder`, and the world overview.
