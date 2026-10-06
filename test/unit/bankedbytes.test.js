@@ -1149,10 +1149,14 @@ test('a mag-only build assembles byte-identical whether or not magic defence exi
   // the fix (keeping that call in its original position whenever the build
   // is not itself STREAMING_ENABLED && TEXT_ENABLED) restores the original
   // hashes on all three boards, regardless of magic power/defence.
+  // Re-pinned a fourth time (the entity-pass fix, test/unit/entitypassbattle.test.js): update_entities
+  // gained one `.if BATTLE_ENABLED` game_state test and battle_begin now clears pc_status with Y, so
+  // every RPG ROM's kernel bytes move, unrelated to magic power/defence. The old hashes were
+  // confirmed to be what HEAD produced before the edit.
   const HASHES = {
-    1: 'a6e71f9eac77c1bd2fb7420111ba67540d598bb383ef74815ce89751305acd54', // MMC1
-    4: 'a302ff492d963d57ee7eb2c186fd57dd164043115089837aed6b204a4780fc92', // MMC3
-    30: 'fa2e0b793288de91161d1e5a629aa60a0a92ce85c358892f7c96efa11ed14bcd' // UNROM 512
+    1: '360e63d8b6e6b14163af22b4c32650ae76cb172467b1b5c866d554437b8ef33b', // MMC1
+    4: 'c9ca4db5a28b075196569cc6bbe6d7d3b10f8ef1c8f4c24b3d9c808ccb829aaf', // MMC3
+    30: '85b586963ee31dd165ba796f48f7007bac89739e6aa5395d1e63f020470e9c07' // UNROM 512
   };
   for (const mapper of CAPABLE_MAPPERS) {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));

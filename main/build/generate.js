@@ -170,6 +170,7 @@ export {
   STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
   streamworldSaveResyncKernelHiAllowance,
   STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE,
@@ -804,7 +805,12 @@ export function baseKernelCodeBytes(mapper) {
 // 11 bytes now, 12 before the diet (240-229=11, was 265-253=12): still
 // traces to the identical split_select `.if BATTLE_ENABLED` arm; the arm
 // itself shrank by one byte under the diet, not the gap's own cause.
-export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 229, 4: 240, 30: 229 };
+// +4 on every board (229/240/229 -> 233/244/233), the entity-pass fix: update_entities (engine/
+// entities.asm) tests game_state once per active slot under `.if BATTLE_ENABLED` -- one `lda <game_state`
+// / `bne` pair, 4 bytes, no mapper-specific instruction, so the figure stays flat per board and MMC3's
+// own 11-byte gap over the other two is unchanged. battle_begin's switch from X to Y (engine/rpg.asm)
+// is byte-for-byte the same size. An action project assembles none of it.
+export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 233, 4: 244, 30: 233 };
 
 /** Whether `battleKernelAllowance` has a real, measured entry for `mapper`. */
 export function hasBattleKernelAllowance(mapper) {
@@ -1842,6 +1848,16 @@ export const STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE = 7;
 // usesStreaming && usesSave, same reasoning as
 // STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE above.
 export const STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE = 0;
+// The streamed-save player_y gate (continue-y fix): engine/save.asm's
+// save_check_y_stream_start..end -- the `cmp #240 / bcs / lda SAVE_FLAT_SCREEN /
+// jsr sw_save_streamed_screen / beq` that lets a save at local y 225-239 through
+// only for a streamed screen. The branch before it is `bcc` where the ordinary
+// build has `bcs`, the same size, so the span is the whole addition: 12 bytes,
+// kernel-lo, `.if STREAMING_ENABLED` inside save_check_valid's `.if SAVE_ENABLED`
+// (the routine itself). Its body is STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE
+// (streamplacement.js). Effective gate usesStreaming && usesSave, flat across game
+// type and mapper -- no BATTLE_ENABLED or mapper conditional sits inside the span.
+export const STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE = 12;
 // Phase 2 slice 9, fix round 1 (A1 + B1 "one hook, not two"): engine/
 // boot.asm's main_loop_save_gate_start..end -- replaces round 1's own
 // ui_tick_save_check_start..end (engine/ui.asm), which polled for
@@ -2173,6 +2189,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming && usesMove && usesText ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesSave ? STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesSave ? STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesSave ? STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText && usesSave ? STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText && usesSave ? STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK

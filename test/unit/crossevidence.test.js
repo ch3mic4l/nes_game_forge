@@ -32,8 +32,8 @@ test('the evidence covers EXACTLY the ids of each of the five groups, with consi
     if (r.parent.status === 'refused') assert.ok(r.parent.need > r.parent.free); else assert.match(r.parent.prov.engine, /^[0-9a-f]{64}$/);
   }
   // the conditional 111 and the 48 new regressions are final and have a parent that BUILDS; the approved 74, the appendix 89 and the 18 have a parent that refuses
-  assert.ok(evidence.conditional111.every((r) => r.parent.status === 'built' && r.free === 144));
-  assert.ok(evidence.origNewRegression.every((r) => r.parent.status === 'built' && r.free === 144));
+  assert.ok(evidence.conditional111.every((r) => r.parent.status === 'built' && r.free === 140));
+  assert.ok(evidence.origNewRegression.every((r) => r.parent.status === 'built' && r.free === 140));
   for (const g of ['approved74', 'appendix']) assert.ok(evidence[g].every((r) => r.parent.status === 'refused' && r.parent.need === r.need));
   assert.ok(evidence.origParentRefused.every((r) => r.parent.status === 'refused' && r.parent.need === r.need));
   const cond = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/crossstage/exclusions-conditional.json'), 'utf8'));
@@ -118,7 +118,7 @@ test('CLI sabotage: a wrong need, or a wrong shortfall (need and free both moved
   const r2 = evidence.approved74[0];
   const out = run(world(), ({ newEnv }) => { newEnv.errors.find((e) => e.id === r2.id).error = text(r2.need + 20, r2.free + 3); }).out;
   assert.match(out, /needs 185 bytes, the evidence pins 165/);
-  assert.match(out, /is short by 38 bytes, the evidence pins 21/);
+  assert.match(out, /is short by 42 bytes, the evidence pins 25/);
   // the same for the original-capacity groups, which carry the original scene's own figures
   for (const g of ['origParentRefused', 'origNewRegression']) {
     const o = evidence[g][0];

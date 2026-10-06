@@ -103,6 +103,44 @@ const lua = (v) => {
   return '{' + Object.entries(v).map(([k, x]) => `[${JSON.stringify(k)}]=${lua(x)}`).join(',') + '}';
 };
 
+// The idle-callback registration, as a substitution value for __IDLE_REG__ in the template. The default is byte-for-byte the line the template
+// carried before the contact endpoint existed, so every non-R rendered script is unchanged.
+export const IDLE_REG = 'emu.addMemoryCallback(onIdle, emu.callbackType.exec, SYM.wait_vblank_loop)';
+// The R-only CONTACT ENDPOINT (opt-in: runManifest({ contactEndpoint: true })). The RPG walk ends in the contact battle, but phases advance on
+// emulator frames and `finish()` prints DONE whatever the mainline is doing, so a mainline hung inside the contact body (the slot-5 battle_begin
+// bug) still produced 177 completed bodies and a clean DONE. The wrapper runs the complete `onIdle` measurement of the body that just finished,
+// and only then ends the TERMINAL collected phase if that body began in ST_GAMEPLAY and has now entered ST_BATTLE: the contact body, tail
+// included, is a measured body (an over-gate one counts in gateFail like any other), and the run finishes through the normal summary path with
+// a `CONTACT` line. Never at battle_begin, main_loop_ready or a frame boundary: only at the idle poll, after onIdle.
+export const CONTACT_IDLE_REG = `local contactPhase = PHASES[#PHASES]
+emu.addMemoryCallback(function()
+  local began, ph, gs0 = inBody, bodyPhase, bodyGs
+  onIdle()
+  if began and ph == contactPhase and ph.collect and gs0 == SYM.ST_GAMEPLAY and rd(SYM.game_state) == SYM.ST_BATTLE then
+    print(string.format("CONTACT frame=%d phase=%s", frame, ph.name))
+    finish()
+  end
+end, emu.callbackType.exec, SYM.wait_vblank_loop)`;
+
+const posInt = (v) => Number.isSafeInteger(v) && v > 0;
+/**
+ * THE validity of a contact-completed endpoint, for a fresh run (runManifest) and for every persisted record (test/lua/sw_bound_sweep.mjs isBad): `m` is
+ * { contact, frames, phases }, `terminal` the name of the script's terminal collected phase. The marker is exactly { frame, phase }; its phase IS the
+ * terminal collected phase (the wrapper only ever ends that one); its frame is a positive integer and IS the frame the run ended on (finish() prints
+ * DONE on the frame it prints CONTACT); the run's frame count and the terminal phase's body count are positive integers. Returns the reasons it is not valid.
+ */
+export function contactEndpointProblems({ contact, frames, phases } = {}, terminal) {
+  if (!contact || typeof contact !== 'object' || Array.isArray(contact)) return ['the contact-completed marker is absent or not an object'];
+  const p = [];
+  if (Object.keys(contact).sort().join() !== 'frame,phase') p.push('the marker is not exactly {frame, phase}');
+  if (contact.phase !== terminal) p.push(`the marker's phase ${JSON.stringify(contact.phase)} is not the terminal collected phase ${JSON.stringify(terminal)}`);
+  if (!posInt(contact.frame)) p.push('the marker frame is not a positive integer');
+  if (!posInt(frames)) p.push('the run frame count is not a positive integer');
+  else if (posInt(contact.frame) && contact.frame !== frames) p.push(`the marker frame ${contact.frame} is not the frame the run ended on (${frames})`);
+  if (!posInt(phases?.[terminal]?.n)) p.push('the terminal phase recorded no bodies');
+  return p;
+}
+
 const CODE_SYMS = ['main_loop_body_start', 'main_loop_ready', 'nmi', 'nmi_rti', 'wait_vblank_loop', 'draw_entities', 'sw_frame_camera_window', 'sw_position_jump_guard'];
 const RAM_SYMS = ['vram_len', 'st_active', 'st_cur', 'game_state', 'ST_MENU', 'ST_DIALOG', 'ST_GAMEPLAY', 'inv_count', 'inv_sel',
   'inv_items', 'box_state', 'box_row', 'BOX_NAMEENTRY', 'BOX_TEXT_ROWS', 'talk_ent', 'flash_left', 'FLASH_ARM_VALUE', 'oam_idx',
@@ -115,22 +153,25 @@ export function parseOutput(text) {
   const phases = {};
   const trace = {};
   const marksOut = {};
+  let contact = null;
   for (const line of text.split('\n')) {
     let m;
     if ((m = /^PHASE (\S+) (.*)$/.exec(line))) phases[m[1]] = { ...kv(m[2]), classes: {} };
     else if ((m = /^BIND (\S+) (.*)$/.exec(line))) phases[m[1]].bind = kv(m[2]);
     else if ((m = /^CLASS (\S+) (\S+) (.*)$/.exec(line))) phases[m[1]].classes[m[2]] = kv(m[3]);
     else if ((m = /^MK (\S+) f=(\d+) (.*)$/.exec(line))) (marksOut[m[1]] ??= []).push({ f: Number(m[2]), line: m[3] });
+    else if ((m = /^CONTACT frame=(\d+) phase=(\S+)/.exec(line))) contact = { frame: Number(m[1]), phase: m[2] };
     else if ((m = /^TR (\S+) (.*)$/.exec(line))) (trace[m[1]] ??= []).push({ ...kv(m[2].replace(/st=(\d+)\/(\d+)/, 'st0=$1 st1=$2')) });
   }
-  return { phases, trace, marks: marksOut, done: /^DONE /m.test(text), timeout: /^TIMEOUT/m.test(text) };
+  return { phases, trace, marks: marksOut, ...(contact ? { contact } : {}), done: /^DONE /m.test(text), timeout: /^TIMEOUT/m.test(text) };
 }
 
 export async function runManifest({
   root = REPO, gt = 'action', sizes = null, wide = false, scenario = 'walk', phases = null, beh = null,
-  mesen = MESEN_DEFAULT, outDir = null, gridH, nosfx, flashAt = null, flashBeh, flashCmds, gauntlet = null, anim = null, marks = [], mutate = null,
+  mesen = MESEN_DEFAULT, outDir = null, gridH, nosfx, flashAt = null, flashBeh, flashCmds, gauntlet = null, anim = null, marks = [], mutate = null, contactEndpoint = false,
   expect = null, cache = null, jobId = null, prepareOnly = false, waitInflight = true
 }) {
+  if (contactEndpoint && !(phases ?? SCENARIOS[scenario])?.at(-1)?.collect) throw new Error('the contact endpoint ends the TERMINAL phase, which must be a collected one');
   const dir = outDir ?? await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sw-manifest-run-'));
   const t0 = Date.now();
   let slot = null;
@@ -144,13 +185,18 @@ export async function runManifest({
     const sayOnFlash = scenario === 'say';
     const built = await buildScene({ root, gt, sizes, wide, beh: beh ?? (standStart ? 'patroller' : null), nameStart, standStart, ordinaryStart, sayOnFlash, outDir: dir, flashAt, gauntlet, anim, mutate, ...(flashBeh ? { flashBeh } : {}), ...(flashCmds ? { flashCmds } : {}), ...(gridH ? { gridH } : {}), ...(nosfx !== undefined ? { nosfx } : {}) });
     const sym = { ...Object.fromEntries(RAM_SYMS.filter((n) => n in built.symbols.ram).map((n) => [n, built.symbols.ram[n]])) };
+    // the contact endpoint's own binding: ONLY an opt-in run carries ST_BATTLE, so every other rendered script's symbol table is unchanged
+    if (contactEndpoint) {
+      if (!('ST_BATTLE' in built.symbols.ram)) throw new Error('the contact endpoint needs ST_BATTLE, which this build lacks (an RPG-only state)');
+      sym.ST_BATTLE = built.symbols.ram.ST_BATTLE;
+    }
     for (const n of [...CODE_SYMS, ...marks]) {
       if (!Number.isFinite(built.symbols.code[n])) throw new Error(`${n} is not a symbol of this build`);
       sym[n] = built.symbols.code[n];
     }
     let t = await fs.promises.readFile(path.join(HERE, 'sw_manifest.lua.template'), 'utf8');
     const script = phases ?? SCENARIOS[scenario];
-    for (const [token, value] of [['__SYM__', lua(sym)], ['__MARKS__', lua(marks)], ['__PHASES__', lua(script)], ['__ICON__', String(Math.max(0, built.symbols.icon))]]) {
+    for (const [token, value] of [['__SYM__', lua(sym)], ['__MARKS__', lua(marks)], ['__PHASES__', lua(script)], ['__ICON__', String(Math.max(0, built.symbols.icon))], ['__IDLE_REG__', contactEndpoint ? CONTACT_IDLE_REG : IDLE_REG]]) {
       if (t.split(token).length !== 2) throw new Error(`expected one ${token}`);
       t = t.split(token).join(value);
     }
@@ -186,6 +232,14 @@ export async function runManifest({
     assertSameSources(before, processProvenance(root, mesen), 'during this job');
     const frames = Number(/^DONE frames=(\d+)/m.exec(r.stdout)?.[1] ?? NaN);
     const measurement = { ...parsed, status: r.status, symbols: built.symbols, stderr: r.stderr.slice(0, 400), frames };
+    // LIVENESS: a contact-endpoint run that reached its frame limit without the CONTACT marker measured a prefix of a run that never completed
+    // its contact body (a hang in the mainline looks exactly like this: the frames go on, DONE prints). It is an operational failure, never a result.
+    if (contactEndpoint) {
+      const ph = Object.values(parsed.phases).at(-1);
+      if (!parsed.contact) throw new Error(`the contact endpoint was not reached (no completed gameplay body entered ST_BATTLE in the terminal phase; ${frames} frames, ${ph?.n ?? 0} bodies in the last phase): the run is not a measurement`);
+      const bad = contactEndpointProblems({ contact: parsed.contact, frames, phases: parsed.phases }, script.at(-1).name); // the SAME validator every persisted record is held to
+      if (bad.length) throw new Error(`the contact endpoint is not a valid completed endpoint (${bad.join('; ')}): the run is not a measurement`);
+    }
     // only a COMPLETE, successful session is a measurement others may reuse
     if (slot) { if (measurement.done && !measurement.timeout && measurement.status === 0) slot.publish({ jobId, measurement }); else slot.fail(); slot = null; }
     return { ...measurement, prov: { ...before, ...own }, cacheKey: key, timing: { buildMs: tBuilt - t0, mesenMs: Date.now() - tBuilt } };

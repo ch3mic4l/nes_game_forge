@@ -93,7 +93,20 @@ function withStreamedProjectionCall(historical) {
   const moveTick = /^move_tick:\n[\s\S]*?^move_advance:\n/m;
   const currentMove = current.match(moveTick)?.[0];
   assert.ok(currentMove && withCall.match(moveTick), 'move_tick..move_advance must exist in both files');
-  return withCall.replace(behave, `${gate}  ldy ent_actor,x\n`).replace(moveTick, () => currentMove);
+  // The entity pass's first-contact-wins test and its RPG-only exit label (the battle fix, not move_face) are lifted the same way.
+  const passTop = current.match(/^update_entities_loop:\n  lda ent_active,x\n  beq update_entities_next\n([\s\S]*?)  lda ent_hurt,x\n/m)?.[1];
+  assert.ok(passTop && passTop.includes('update_entities_done'), 'engine/entities.asm must still carry the first-contact-wins test in update_entities_loop');
+  const passTail = current.match(/^  bne update_entities_loop\n([\s\S]*?)  rts\n/m)?.[1];
+  assert.ok(passTail && passTail.includes('update_entities_done:'), 'engine/entities.asm must still carry update_entities_done');
+  const loopTop = 'update_entities_loop:\n  lda ent_active,x\n  beq update_entities_next\n  lda ent_hurt,x\n';
+  const loopTail = '  bne update_entities_loop\n  rts\n';
+  assert.equal(withCall.split(loopTop).length, 2, `${SHIPPED_REV} entities.asm must have the update_entities_loop top exactly once`);
+  assert.equal(withCall.split(loopTail).length, 2, `${SHIPPED_REV} entities.asm must have the update_entities_loop tail exactly once`);
+  return withCall
+    .replace(loopTop, () => `update_entities_loop:\n  lda ent_active,x\n  beq update_entities_next\n${passTop}  lda ent_hurt,x\n`)
+    .replace(loopTail, () => `  bne update_entities_loop\n${passTail}  rts\n`)
+    .replace(behave, `${gate}  ldy ent_actor,x\n`)
+    .replace(moveTick, () => currentMove);
 }
 
 let shippedText;

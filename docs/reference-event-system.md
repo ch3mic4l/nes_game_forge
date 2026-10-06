@@ -94,6 +94,13 @@ naming. An author sees nothing special: the old save is treated like a foreign o
 the title screen doesn't offer Continue — no message, no crash, the existing "this record
 does not belong to this build" path doing what it already did for every other case.
 
+**`save_check_valid`'s `player_y` bound depends on the saved screen (`engine/save.asm`).** An ordinary screen keeps `MAX_Y` (224), because
+`probe_type` indexes a 240-byte record at `player_y + BODY_B`; a streamed screen accepts 0-239, the whole range streamed play can produce
+(`sw_pstep_down` crosses at the true 240 seam, so a player standing near a lower seam is legitimately at 225-239), decided by
+`sw_save_streamed_screen` from `SAVE_FLAT_SCREEN`'s own map's `stream_type_bits` bit — so an ordinary map in a mixed project keeps the 224 bound.
+Without this a Save there wrote a checksum-valid record the title refused (no Continue). The identity, checksum and marker checks are
+unchanged; streamsavey.test.js pins it.
+
 **Item 7's `saveCompatToken` (`shared/save.js`'s `saveIdentity`, drawn by `drawSaveCompatToken` in
 `shared/project.js`) closes a narrower hole the same way, and is deliberately not a second
 `SAVE_LAYOUT_VERSION` bump.** A structural edit that reorders, deletes or resizes maps can leave

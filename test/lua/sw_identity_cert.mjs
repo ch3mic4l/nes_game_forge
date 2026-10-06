@@ -95,7 +95,7 @@ export function parseOptions(argv) {
  */
 export function buildWorkset(all, { curve, stages = STAGES, stageInfo = null }) {
   const problems = [];
-  const bad = all.filter(isBad);
+  const bad = all.filter((r) => isBad(r));
   const reuses = all.filter((r) => !isBad(r) && r.reuse);
   const direct = all.filter((r) => !isBad(r) && !r.reuse);
   const confirms = direct.filter((r) => r.confirmOf);

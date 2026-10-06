@@ -3,8 +3,8 @@
 // PARENT commit builds for the same shape (test/fixtures/identity/<slice>.json, made by
 // test/lib/build_identity_baseline.mjs from a `git worktree` of that commit).
 //
-// This file asserts slice S3b's identity (parent 15c11b7: S3a.5, which already carries the closed-form camera; the one lever carried is the
-// Say/Move overrun fix's close row and phase 3b S0's battle backdrop lookup, lifted into the parent by build_identity_baseline.mjs --carry-overrun --carry-backdrop). Slice N+1's commit replaces the baseline (§6.4): S3a's own file (S3a-I/S3a-D against 3313b62) is retired with it, and what it
+// This file asserts slice S3b's identity (parent 15c11b7: S3a.5, which already carries the closed-form camera; the levers carried are the
+// Say/Move overrun fix's close row, phase 3b S0's battle backdrop lookup and the entity pass's first-contact-wins fix (an RPG-only change) and the streamed save-range gate (a streamed-Save-only change), each lifted from the current files by region into the parent by build_identity_baseline.mjs --carry-overrun --carry-backdrop --carry-entitypass --carry-saverange). Slice N+1's commit replaces the baseline (§6.4): S3a's own file (S3a-I/S3a-D against 3313b62) is retired with it, and what it
 // proved is the parent's own behaviour now.
 //   S3b-I  not a streamed Move (X false: no streamed map, or no Move anywhere): ROM == the parent's, byte for byte, and no talker label exists.
 //   S3b-D  X = U and M (a streamed map AND a Move anywhere in the project, NPC/self-only included -- Chris's ruling 3): structural, never
@@ -124,7 +124,7 @@ test('the truth table and the generated shapes cover exactly the same rows, and 
   );
   assert.deepEqual(Object.keys(baseline.shapes).sort(), [...ids].sort());
   assert.equal(baseline.parentRev, '15c11b7bc9fcd3caaf06dbb5e165439e5ce5cb3a');
-  assert.equal(baseline.carries, 'overrun-lever+backdrop', 'the baseline is the parent plus the Say/Move overrun fix\'s close row and phase 3b S0\'s battle backdrop (15c11b7 already has S3a.5, so those are the only levers)');
+  assert.equal(baseline.carries, 'overrun-lever+backdrop+entitypass+saverange', 'the baseline is the parent plus the Say/Move overrun fix\'s close row, phase 3b S0\'s battle backdrop, the entity pass\'s first-contact-wins fix and the streamed save-range gate (15c11b7 already has S3a.5, so those are the only levers)');
   assert.equal(ids.filter((id) => truthFor(id) === 'delegate').length, 12, 'six delegating rows per game type');
 });
 

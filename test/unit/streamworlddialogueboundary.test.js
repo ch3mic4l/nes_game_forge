@@ -73,9 +73,12 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 // plus 17 more in the close row itself (the lifecycle/terrain/consumer allowance 523/520 -> 540/537). A resident build charges all
 // 23; a relocated build keeps only the chunk read's 6 and the shim's own change (113 -> 111) resident, so it is 4 bytes down, and its
 // battle-bank overlay grew 17 (STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE 1385 -> 1402). The figures below are measured, not derived.
+//
+// The Continue-at-local-y fix then moved ONLY the Save row DOWN, by exactly 24 (relocated 2530 -> 2506). Cause: a streamed Save build now carries
+// sw_save_streamed_screen (STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE, 24 kernel-hi bytes); the no-Save and Move rows carry no Save and do not move.
 const CEILINGS = {
   nosave: { resident: 1384, relocated: 2645 },
-  save: { relocated: 2530 },
+  save: { relocated: 2506 },
   move: { relocated: 2392 }
 };
 const VARIANT_NAME = { nosave: 'no-Save', save: 'Save', move: 'Move' };

@@ -336,14 +336,38 @@ save_check_range:
   ; 240-byte per-screen metatile record in probe_type (engine/player.asm);
   ; MAX_Y is the same ceiling ordinary movement already clamps to, in
   ; move_down, so this refuses nothing a normal frame of gameplay could not
-  ; already have produced from a legitimate walk. It does refuse a save
-  ; whose player_y came from a start position schema normalization allows
-  ; up to 239 but movement itself would never reach -- a pre-existing
-  ; mismatch between that clamp and MAX_Y, left alone here; see the note by
-  ; MAX_Y in constants.asm.
+  ; already have produced from a legitimate walk on an ORDINARY screen. It
+  ; does refuse a save whose player_y came from a start position schema
+  ; normalization allows up to 239 but movement itself would never reach -- a
+  ; pre-existing mismatch between that clamp and MAX_Y, left alone here; see
+  ; the note by MAX_Y in constants.asm.
+  ; A STREAMED screen is a different coordinate system: sw_pstep_down/up
+  ; cross to the neighbouring row only at the true 240 boundary, so the
+  ; player legitimately stands at local y 225-239 beside a lower seam, and its
+  ; body probes there go through sw_hazard_probe_type, which normalizes a
+  ; straddle across the seam instead of indexing past the record. 239 is the
+  ; maximum -- a candidate of 240 or more crosses and lands small (an upward
+  ; crossing lands at 239 at most). So a y above MAX_Y is accepted only when
+  ; it is below 240 AND the saved screen is one the build's own streamed type
+  ; table says is streamed (sw_save_streamed_screen, engine/streamworld.asm);
+  ; every other screen, in a mixed project too, keeps the MAX_Y bound. The
+  ; non-streaming build assembles exactly the two original instructions.
   lda SAVE_PLAYER_Y
   cmp #MAX_Y+1
+  .if STREAMING_ENABLED
+  bcc save_check_y_ok
+save_check_y_stream_start:
+  cmp #240
   bcs save_check_invalid
+  lda SAVE_FLAT_SCREEN
+  jsr sw_save_streamed_screen
+  beq save_check_invalid
+save_check_y_stream_end:
+save_check_y_ok:
+  .endif
+  .if !STREAMING_ENABLED
+  bcs save_check_invalid
+  .endif
   ; Each *live* inv_items entry -- only the first inv_count of them are ever
   ; read (draw_menu, engine/ui.asm, stops at inv_count) -- is used unchecked
   ; by draw_item_icon (ITEMS_ENABLED) or draw_actor_icon (legacy), which

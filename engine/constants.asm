@@ -1852,7 +1852,9 @@ MAX_Y       = 224           ; 240 - 16
 ; safely index (see save_check_valid, engine/save.asm, which refuses exactly
 ; such a value coming back out of a save). Pre-existing, independent of
 ; saving, and left alone here -- flagged, not fixed, the same as
-; player_hazard's action/RPG asymmetry.
+; player_hazard's action/RPG asymmetry. (A *streamed* screen is the other
+; coordinate system: its local y runs 0-239, and save_check_valid accepts the
+; whole range there -- only there; see the player_y gate in engine/save.asm.)
 
 NO_SCREEN   = $FF           ; neighbour table: nothing that way
 

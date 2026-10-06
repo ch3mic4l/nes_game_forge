@@ -135,8 +135,8 @@ test('the two original-capacity groups: 18 parent-refused + 48 new regressions, 
   // the evidence rows: the original's OWN need/free/shortfall (1..38 against 144 free), the parent receipt of its group
   const ev = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/crossstage/exclusions-evidence.json'), 'utf8'));
   const shorts = [...ev.origParentRefused, ...ev.origNewRegression].map((r) => r.shortfall);
-  assert.deepEqual([Math.min(...shorts), Math.max(...shorts)], [1, 38]);
-  assert.ok(ev.origNewRegression.every((r) => r.free === 144 && r.parent.status === 'built'));
+  assert.deepEqual([Math.min(...shorts), Math.max(...shorts)], [5, 42]);
+  assert.ok(ev.origNewRegression.every((r) => r.free === 140 && r.parent.status === 'built'));
   assert.ok(ev.origParentRefused.every((r) => r.parent.status === 'refused' && r.parent.need > r.parent.free));
 });
 

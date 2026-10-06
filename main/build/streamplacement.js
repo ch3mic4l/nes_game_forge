@@ -415,6 +415,16 @@ export const STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE = 52;
 // true, N/A (file absent) with usesStreaming false.
 export const STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE = 12;
 
+// Continue-y fix: engine/streamworld.asm's sw_save_streamed_screen_start..end --
+// the body save_check_valid's player_y gate calls to ask whether a saved flat screen
+// belongs to a streamed map (the map_base walk plus the stream_type_bits test, the
+// two tables sw_resolve_screen reads). Inside the routine's own `.if SAVE_ENABLED`
+// with the labels outside it, the convention of the commit-tail term above, so it
+// measures a true 0 with no Save and is absent when the project is not streamed.
+// 24 bytes, flat across game type and mapper (nothing conditional inside it). The
+// call site is STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE (generate.js, kernel-lo).
+export const STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE = 24;
+
 // Phase 2 slice 9: engine/streamworld.asm's sw_save_resync_start..end --
 // sw_save_resync itself, the completion-frame resync (full sw_render_window
 // redraw, OAM/DMA republish, manual $2000/$2005/$2005/$2001 scroll
@@ -652,6 +662,7 @@ export function streamworldResidentHiBytes(project, mapper) {
   const streamworldSaveDispatchHiBytes =
     usesSaveHere && usesText ? STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE : 0;
   const streamworldSaveCommitTailHiBytes = usesSaveHere ? STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldSaveRangeHiBytes = usesSaveHere ? STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE : 0;
   const streamworldSaveResyncHiBytes = usesSaveHere ? streamworldSaveResyncKernelHiAllowance(project) : 0;
   const streamworldLandingBoundCacheHiBytes = projectUsesBoundTiles(project)
     ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE
@@ -674,6 +685,7 @@ export function streamworldResidentHiBytes(project, mapper) {
     streamworldSaveCamreleaseHiBytes +
     streamworldSaveDispatchHiBytes +
     streamworldSaveCommitTailHiBytes +
+    streamworldSaveRangeHiBytes +
     streamworldSaveResyncHiBytes +
     STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
     STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +

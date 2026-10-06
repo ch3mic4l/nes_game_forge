@@ -3191,6 +3191,43 @@ sw_save_commit_tail_ordinary:
   .endif
 sw_save_commit_tail_end:
 
+; sw_save_streamed_screen -- A = a GLOBAL (flat) screen id already bounded by
+; save_check_valid's own `cmp #NUM_SCREENS`; returns A nonzero (Z clear) when
+; that screen belongs to a streamed map, A = 0 (Z set) when it belongs to an
+; ordinary one. save_check_valid's player_y gate asks it: a streamed screen's
+; own y range is 0-239 (sw_pstep_down/up cross only at the true 240 boundary),
+; an ordinary screen's stays MAX_Y. The same two tables sw_resolve_screen's
+; own prefix walk reads -- map_base (first flat id of each map) and
+; stream_type_bits (one bit per raw map index) -- and nothing else: no
+; resolved identity (flat_screen/ord_screen/cur_map/map_is_streamed) is
+; touched, because a saved screen is being *judged* here, not landed on.
+; Walks down from the last map to the owner (the highest map whose first flat
+; id is <= the screen; map_base[0] is 0, so it always stops), then tests bit
+; (map & 7) of stream_type_bits[map >> 3]: Y holds the mask index and X the
+; type-byte index, so no stack round trip. Clobbers A, X and Y, which is what
+; save_check_valid's own header already declares.
+sw_save_streamed_screen_start:
+  .if SAVE_ENABLED
+sw_save_streamed_screen:
+  ldx #NUM_MAPS
+sw_save_streamed_owner:
+  dex
+  cmp map_base,x
+  bcc sw_save_streamed_owner
+  txa
+  and #7
+  tay
+  txa
+  lsr a
+  lsr a
+  lsr a
+  tax
+  lda stream_type_bits,x
+  and sw_bit_mask,y
+  rts
+  .endif
+sw_save_streamed_screen_end:
+
 ; sw_pjg_check -- both axes' lag, window "current" origin vs. this frame's
 ; "desired" one (sw_fc_desc/desl/desr/desrl, sw_camera_window_recompute's own
 ; output, just above), in blocks. Both axes are always checked (never a

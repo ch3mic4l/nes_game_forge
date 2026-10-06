@@ -92,7 +92,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   512): 5617 }` — action-side, nothing conditional on, falling back to the largest of the four for
   an unmeasured mapper (`docs/kernel-base-overcharge-report.md`; the NROM entry was added measuring
   in-game naming's own isolation deltas, below).
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 229, 4: 240, 30: 229 }` is its RPG-only supplement — no
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 233, 4: 244, 30: 233 }` is its RPG-only supplement — no
   fallback, deliberately, the same reason Save's table has none; MMC3's extra 11 bytes are
   `split_select`'s second `.if BATTLE_ENABLED` arm (`engine/split.asm`). Its gate,
   `battleEnabledFor` (`codeRegions(...).length > 0`), does not imply `rpgCapable(mapper)`, so
@@ -661,6 +661,14 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   each of these seven spans by name against the exact presence/absence + value matrix above, rather
   than assuming "every span is 0" (round 3 finding A-blocking 3: the two shapes are not symmetric,
   and two of the seven terms are not even symmetric across game types within the same shape).
+- The streamed save-range term (2026-10-05, Continue-at-local-y fix) adds two named allowances, both gated on streaming **and** a live
+  Save and equality-asserted by `kernelbytes.test.js` (the 4-shape Save-terms test plus the no-Save and ordinary matrices):
+  `STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE = 12` (kernel-lo, `generate.js`: the `save_check_y_stream_start..end` span in
+  `save_check_valid`, `engine/save.asm`) and `STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE = 24` (kernel-hi, `streamplacement.js`:
+  `sw_save_streamed_screen`, which walks `map_base`/`stream_type_bits` the way `sw_resolve_screen` does). Both are flat across action/RPG
+  and plain/mixed shapes, and absent (span 0 / label missing) from a non-streamed or Save-less build, so every fixture is byte-identical.
+  The +12 kernel-lo took `S1_SAVE_ACTORS_DROPPED` (`test/lib/streamedpinching.js`) from 4 to 5: free lookup bytes on the Save inventory
+  project fell 278 -> 266 against 272 needed, so one more placed actor (19 remain) is dropped from that capacity-pinned project.
   **B1's tradeoff** (Chris's ruling, fix round 1b): relocating `spawn_streamed`, `build_oam_draw_sw`,
   `draw_one_entity_show_sw` and `sw_redraw_screen_landing` from kernel-lo into kernel-hi, unconditional
   within streaming (paid by every streamed project, Save or not — see `STREAMWORLD_PROJECT_KERNEL_

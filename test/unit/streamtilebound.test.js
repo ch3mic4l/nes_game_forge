@@ -318,7 +318,8 @@ const sha = (x) => crypto.createHash('sha256').update(String(x)).digest('hex');
 const NOW = engineFingerprint(ROOT).sha256;
 const PROV = { engine: NOW, harness: sha('harness'), generator: sha('generator'), mesen: sha('mesen') };
 const fakeResult = (job, over = {}) => ({
-  ...job, done: true, timeout: false, status: 0, frames: 643, timing: { buildMs: 50, mesenMs: 3900 },
+  ...job, done: true, timeout: false, status: 0, frames: job.stage === 'R' ? 580 : 643, timing: { buildMs: 50, mesenMs: 3900 },
+  ...(job.stage === 'R' ? { contact: { frame: 580, phase: 'walkD' } } : {}), // a VALID R endpoint: the run ended on the frame of its marker, in the terminal collected phase (contactEndpointProblems)
   prov: { ...PROV, project: sha(`p${job.confirmOf ?? job.id}`), rom: sha(`r${job.confirmOf ?? job.id}`) }, // a confirmation re-runs the same job: same project and ROM
   phases: { walkR: { maxG: 23000 + (parseInt(sha(job.id).slice(0, 4), 16) % 3000), gateFail: 0, n: 260 }, walkD: { maxG: 26000 + (parseInt(sha(job.id).slice(4, 8), 16) % 3000), gateFail: 0, n: 240 } }, ...over
 });

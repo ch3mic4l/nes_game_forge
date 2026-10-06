@@ -382,11 +382,26 @@ test('bt_from_ent and talk_ent (via bt_owner_ent) are cleared -- proven by dirty
   );
 });
 
-test('an overlapping monster overwriting the formation is detected, not silently accepted', { skip: skipRpg }, async (t) => {
+// The entity pass now ends the moment game_state leaves ST_GAMEPLAY (engine/entities.asm, update_entities_loop; "The entity pass
+// and a battle", docs/reference-engine.md), so once battle_begin has set ST_BATTLE no overlapping monster, door, pickup or
+// touch-armed event can take effect in the pass applyBattleTest runs to settle -- the hazards battletest.js's detectors exist for
+// are closed at the engine. The seven detector tests below therefore build the engine WITHOUT that guard (a Code Forge override of
+// entities.asm with the three-line test cut out) so each detector is still proven to fire; the stock-engine tests after them
+// assert the hazards no longer happen. Wrong implementation this pair catches: a guard that is absent (the stock-engine tests
+// fail), or a detector that has gone dead because nothing can trigger it any more (the guard-off tests fail).
+const FIRST_CONTACT_GUARD = /  \.if BATTLE_ENABLED\n  lda <game_state\n  bne update_entities_done\n  \.endif\n/;
+function withoutFirstContactGuard(draft) {
+  const stock = fs.readFileSync(path.join(ROOT, 'engine/entities.asm'), 'utf8');
+  assert.ok(FIRST_CONTACT_GUARD.test(stock), 'engine/entities.asm must still carry the first-contact guard this test cuts out');
+  draft.code = { overrides: [{ name: 'entities.asm', text: stock.replace(FIRST_CONTACT_GUARD, '') }], files: [] };
+}
+
+test('an overlapping monster overwriting the formation is detected, not silently accepted (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     // A monster placed away from both the player's start and the fight this
     // test requests, so it cannot fire on boot -- only once teleported onto.
     draft.maps[0].screens[0].entities.push({ actorId: 3, x: OVERLAP_X, y: OVERLAP_Y, props: {} }); // Snake
@@ -414,11 +429,12 @@ test('an overlapping monster overwriting the formation is detected, not silently
   assert.equal(emulator.peek(build.ram.mon_slot_actor), 3);
 });
 
-test('a same-actor overlap corrupts bt_esc/bt_from_ent while the formation still reads correct', { skip: skipRpg }, async (t) => {
+test('a same-actor overlap corrupts bt_esc/bt_from_ent while the formation still reads correct (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     draft.maps[0].screens[0].entities.push({ actorId: 3, x: OVERLAP_X, y: OVERLAP_Y, props: {} }); // Snake
   });
   const emulator = loadedEmulator(romPath, build);
@@ -502,11 +518,12 @@ test('script_active dirtied during real gameplay (not simulated dialogue) is sti
   assert.equal(emulator.peek(build.ram.script_active), 0, 'script_active dirtied during real gameplay must still be cleared');
 });
 
-test('an overlapping door taking effect mid-battle-start is detected', { skip: skipRpg }, async (t) => {
+test('an overlapping door taking effect mid-battle-start is detected (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     draft.maps[0].screens.push(createScreen()); // a real second screen for the door to actually lead to
     const doorActor = { ...draft.sprites.actors[1], id: draft.sprites.actors.length, name: 'Door', behavior: 'door' };
     draft.sprites.actors.push(doorActor);
@@ -533,11 +550,12 @@ test('an overlapping door taking effect mid-battle-start is detected', { skip: s
   assert.throws(() => applyBattleTest(emulator, pad4([3]), build), /different screen|door/);
 });
 
-test('a pickup collected mid-battle-start is detected', { skip: skipRpg }, async (t) => {
+test('a pickup collected mid-battle-start is detected (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     // Potion (actor 1) is already behavior: 'pickup' in the fixture roster.
     draft.maps[0].screens[0].entities.push({ actorId: 1, x: OVERLAP_X, y: OVERLAP_Y, props: {} });
   });
@@ -549,11 +567,12 @@ test('a pickup collected mid-battle-start is detected', { skip: skipRpg }, async
   assert.throws(() => applyBattleTest(emulator, pad4([3]), build), /changed the bag/);
 });
 
-test('a same-screen door still moves the player, and is still detected', { skip: skipRpg }, async (t) => {
+test('a same-screen door still moves the player, and is still detected (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     const doorActor = { ...draft.sprites.actors[1], id: draft.sprites.actors.length, name: 'Door', behavior: 'door' };
     draft.sprites.actors.push(doorActor);
     // toScreen: 0 -- the SAME screen the player is already on. take_door
@@ -579,11 +598,12 @@ test('a same-screen door still moves the player, and is still detected', { skip:
   assert.equal(emulator.peek(build.ram.flat_screen), 0);
 });
 
-test('a full-bag pickup still despawns the entity and increments pickups, and is still detected', { skip: skipRpg }, async (t) => {
+test('a full-bag pickup still despawns the entity and increments pickups, and is still detected (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     draft.maps[0].screens[0].entities.push({ actorId: 1, x: OVERLAP_X, y: OVERLAP_Y, props: {} }); // Potion
   });
   const emulator = loadedEmulator(romPath, build);
@@ -611,11 +631,12 @@ test('a full-bag pickup still despawns the entity and increments pickups, and is
   );
 });
 
-test('a touch-armed pending event is detected', { skip: skipRpg }, async (t) => {
+test('a touch-armed pending event is detected (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {
   const OVERLAP_X = 64;
   const OVERLAP_Y = 64;
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
+    withoutFirstContactGuard(draft);
     // Iris (actor 2) has no damage, so touching this placement arms an event
     // through pending_ent (engine/rpg.asm) without also starting a fight,
     // which would otherwise confound this with the overlap tests above.
@@ -633,6 +654,51 @@ test('a touch-armed pending event is detected', { skip: skipRpg }, async (t) => 
 
   assert.throws(() => applyBattleTest(emulator, pad4([3]), build), /armed a pending event/);
 });
+
+// The stock engine: the same overlaps the seven tests above need a guard-less engine to show are harmless now -- the entity pass
+// ends at the first loop-top where game_state is no longer ST_GAMEPLAY, so applyBattleTest settles cleanly on exactly the fight it
+// requested. Wrong implementation caught: a pass that keeps running through the fight (a second encounter over the formation, a
+// door taken mid-start, a pickup collected, a touch event armed) -- each of the five scenarios fails on it.
+const STOCK_OVERLAPS = [
+  ['a monster of another actor', (draft) => draft.maps[0].screens[0].entities.push({ actorId: 3, x: 64, y: 64, props: {} }), [1]],
+  ['a monster of the requested actor', (draft) => draft.maps[0].screens[0].entities.push({ actorId: 3, x: 64, y: 64, props: {} }), [3]],
+  [
+    'a door',
+    (draft) => {
+      draft.maps[0].screens.push(createScreen());
+      const door = { ...draft.sprites.actors[1], id: draft.sprites.actors.length, name: 'Door', behavior: 'door' };
+      draft.sprites.actors.push(door);
+      draft.maps[0].screens[0].entities.push({ actorId: door.id, x: 64, y: 64, props: { toScreen: 1, toX: 40, toY: 40 } });
+    },
+    [3]
+  ],
+  ['a pickup', (draft) => draft.maps[0].screens[0].entities.push({ actorId: 1, x: 64, y: 64, props: {} }), [3]],
+  ['a touch-armed event', (draft) => draft.maps[0].screens[0].entities.push({ actorId: 2, x: 64, y: 64, props: { trigger: 'touch', dialogue: 'Oh!' } }), [3]]
+];
+for (const [what, place, request] of STOCK_OVERLAPS) {
+  test(`stock engine: ${what} under the player when a battle-test fires does nothing (first contact wins)`, { skip: skipRpg }, async (t) => {
+    const { build, romPath } = await builtVariant(t, SAMPLE_RPG, (draft) => {
+      draft.maps[0].encounters = { rate: 0, actorIds: [] };
+      place(draft);
+    });
+    const emulator = loadedEmulator(romPath, build);
+    bootPast(emulator);
+    emulator.poke(build.ram.player_x, 64);
+    emulator.poke(build.ram.player_y, 64);
+    const bag = [build.ram.inv_count, ...Array.from({ length: MAX_ITEMS }, (_, i) => build.ram.inv_items + i)].map((a) => emulator.peek(a));
+
+    applyBattleTest(emulator, pad4(request), build); // must not throw
+
+    assert.equal(emulator.peek(build.ram.game_state), ST_BATTLE);
+    assert.deepEqual([0, 1, 2, 3].map((s) => emulator.peek(build.ram.mon_slot_actor + s)), pad4(request), 'the requested formation, untouched');
+    assert.equal(emulator.peek(build.ram.bt_from_ent), NO_ENTITY, 'the fight is not tied to the overlapping entity');
+    assert.equal(emulator.peek(build.ram.flat_screen), 0, 'no door was taken');
+    assert.equal(emulator.peek(build.ram.player_x), 64);
+    assert.equal(emulator.peek(build.ram.player_y), 64);
+    assert.deepEqual([build.ram.inv_count, ...Array.from({ length: MAX_ITEMS }, (_, i) => build.ram.inv_items + i)].map((a) => emulator.peek(a)), bag, 'no pickup was collected');
+    assert.equal(emulator.peek(build.ram.pending_ent), NO_ENTITY, 'no event was armed');
+  });
+}
 
 test('address validation checks the far end of an array, not only its base', { skip: skipRpg }, () => {
   // mon_slot_actor sitting at $1FFD passes isRamAddress on its own base ($1FFD

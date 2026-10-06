@@ -215,6 +215,12 @@ entities were already freshly repopulated by the `spawn_entities` call above, in
 that gate takes, added so a Mesen timing harness measuring `update_player`'s own cost has an anchor
 that does not silently go unreached on exactly the frame it most needs to measure.
 
+**Continue and the streamed y range (2026-10-05).** A streamed player legitimately stands at local y 225-239 (`sw_pstep_down` crosses at the true 240), so
+`save_check_valid` (`engine/save.asm`) bounds `SAVE_PLAYER_Y` by 239 on a streamed screen and by `MAX_Y` on an ordinary one; the screen's kind comes from
+`sw_save_streamed_screen` (`map_base` owner walk + `stream_type_bits`), not a new identity. The stepper/probe path (`sw_hazard_probe_type` normalizes a
+straddle) and the two other y readers, OAM projection (`build_oam_draw_sw`) and camera recomputation (`sw_camera_window_recompute`, which uses
+`sw_row*240 + player_y`), are already safe for 0-239. See `docs/reference-event-system.md` (saves).
+
 **(History, kept as written: the paragraph below describes phase 2 slice 3's own `move_tick` bound. Phase 3a S3a replaced it with the shared `sw_pstep_*` driver and S3b made a step that reaches an edge cross it; the current behaviour starts at "A streamed player Move takes its step through the SHARED driver".)**
 
 **A scripted Move on a streamed screen (phase 2 slice 3, docs/design-streamed-worlds.md §7, ruling
@@ -491,7 +497,7 @@ Flash x 241, even split) at **every** n from certified+1 up to 64, each curve en
 isolated re-run CONFIRMED; `streamtilebound.test.js` fails when the probe is missing, its cliff unconfirmed, a passing n
 absent below the cliff, the probe under another provenance, or the cliff at or below certified+1 (then the old rule applies
 again). Everything else (other n, the partitions of P3/P4/P5/P7, odd k, other Flash x, durations and frame counts beyond the
-presets P0-P8, RPG beyond 500 spot checks at n = 16, and above the certified n everything but the probe shape and stage F's
+presets P0-P8, RPG beyond 500 spot checks at n = 16 (until the corrected sweep, pre-contact prefixes: see "Stage R measured a prefix" below), and above the certified n everything but the probe shape and stage F's
 sample) is *sampled* and said so in the record's `sampling` (provenance in `shared/streambound.js`). The cadence check keeps
 its walk scene at 15 because the bound stays 15; `overrun-p` is the probe shape at the plain cliff (n = 56, Flash x 241) and `overrun-b`
 is the x = 242 variant at the probe's bound cliff population (n = 54), not the probe's own Flash-x-241 row. The mechanism of the failure is unchanged: an `entity_animate` +456-cycle aligned advance on the
@@ -526,13 +532,25 @@ before). Result, from the full fresh record: 12,590 jobs, 0 bad; tightest passin
 stand; `STREAM_TILE_MARGIN_CYCLES.boundTiles` is 4,665 (was 4,669). The old ROM-identity certificate and equivalence record, which described the superseded curve, were retired
 (`handoff-next/overrun/impl/retired/`), and the equivalence record was rebuilt against the fresh one.
 
-**Re-measured after the battle backdrop fix (2026-10-05, phase 3b S0).** `draw_battle_screen`/`wipe_monster` read `cur_map` on a streamed build, which changes every streamed RPG ROM (every swept RPG scene
-enters a battle), so the ROM-identity certificate carried nothing and `sw_bound_sweep.mjs` was run again end to end (the overrun fix's resweep.sh: A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes,
+**Re-measured after the battle backdrop fix (2026-10-05, phase 3b S0).** `draw_battle_screen`/`wipe_monster` read `cur_map` on a streamed build, which changes every streamed RPG ROM (the code is in every RPG scene's ROM; whether a swept R run ever *completed* a battle entry is the correction below), so the ROM-identity certificate carried nothing and `sw_bound_sweep.mjs` was run again end to end (the overrun fix's resweep.sh: A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes,
 70 min 33 s; A/B/C/R/P exit 0, F exit 4 as before). The figures are identical to the overrun fix's: 12,590 jobs, 0 bad; tightest passing row at the certified n **25,012 (plain n = 16, 4,768 under)** and
 **25,115 (bound tiles n = 15, 4,665 under)**; probe cliff **n = 56 plain / n = 54 bound**; certified 16 / 15 and shipped 15 / 14 stand and `shared/streambound.js` did not change. The overrun fix's
 certificate and equivalence record were retired (kept outside the repository); `test/fixtures/streambound-equivalence.json` was rebuilt (11,760/11,760 matched, 832 reuses covered, recorded generator equal to the
 final one, so no certificate is needed), and `test/fixtures/crossstage/exclusions-evidence.json` was re-made by the overrun fix's refresh-exclusions.mjs (340 refusals and 340 parent receipts re-established; only its note and
 its two new-tree fingerprints changed).
+
+**Stage R measured a prefix of a hung run, before the contact battle (found 2026-10-05; the harness is corrected and the full sweep re-run, below).** In every sweep above, an R row (an RPG walk) ended in the contact battle,
+but the harness advanced its phases on emulator frames and printed DONE whatever the mainline was doing, and the engine of those sweeps hung there: the contact NPC sits in runtime slot 7, and `battle_begin` cleared
+`pc_status` with X and left it at `MAX_PARTY`, so the entity pass rescanned slots 5-7 and began the same fight for ever (the "slot-5 bug", fixed by the first-fight-wins test and the Y-based clear). Each R record
+therefore holds the **177 bodies completed before contact** (all 500 S0 rows, and every earlier sweep inspected: S3a.5, S3b RS, the overrun fix), a completed pre-contact prefix, never a battle entry. The historical counts stand
+as what they were (R 500, exit 0, "12,590 jobs, 0 bad" describe those harness outputs) but they do not show that any swept RPG scene entered or completed a battle, and "every swept RPG scene enters a battle" above was not true of
+the completed runs. Not invalidated: the action-derived exhaustive populations, the worst-action margins 4,768 / 4,665, the probe cliffs 56 / 54, certified 16 / 15 and shipped 15 / 14. What the corrected R row measures: the R
+walk now ends at the **completed contact body** (`CONTACT_IDLE_REG`, `test/lua/run_sw_manifest.mjs`: at the idle poll, after the whole idle measurement, on a body that began in `ST_GAMEPLAY` and has entered `ST_BATTLE`), so
+the contact body and its tail are a gated body like any other and an over-gate one counts in `gateFail`; an R run that reaches its frame limit without the contact marker is an operational failure (`runManifest` throws, and `isBad` refuses any R record without a **valid** marker: `contactEndpointProblems` in `test/lua/run_sw_manifest.mjs`, the one validator for the fresh run, resume, aggregation and confirmation, requires exactly `{frame, phase}`, the phase to be the terminal collected phase, the frame a positive integer equal to the frame the run ended on, and a positive body count in that phase; it applies to every record that is a planned R job *by id*, so a saved row with `stage` or `contact` stripped is refused, and the marker is part of the duplicate and reuse comparisons, so conflicting raw copies are refused whichever comes first). Only R opts in (`runJob`); every other stage's rendered script is byte-identical to before (the idle-registration substitution token defaults to the old registration line). The forced-blank battle redraw that follows
+contact (`draw_battle_screen`: the next body, 35,149 and 64,821 cycles on the two prototype rows) is **not** gated: it is a forced-blank battle redraw, not a live gameplay body, and no gate or bound policy changed. On the first rows re-measured (the two prototype rows, 178 bodies,
+`maxG` 20,663 / 20,066, `gateFail` 0, contact body 7,285 cycles) the contact body is far inside the gate. `test/unit/sweepharness.test.js` (the harness's rules, against a fake Mesen) and the hand-run real-Mesen check run_sw_contact_check.mjs (completed, and the pre-fix engine refused) are companion
+checks, not one pinning the other: the unit test does not execute the runner and the runner does not run the unit test. Rebuild and identity evidence (the rebuild check, the ROM-identity certificate) establishes that the bytes are
+the same, never that a run completed. **The corrected sweep (2026-10-05, on the slot-5 battle fix and the Continue y > 224 fix) is the run that replaces the R evidence above**: A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes, 75 min 18 s, A/B/C/R/P exit 0 and F exit 4 as before, 12,590 jobs, 2 confirm re-runs, 0 bad, with the sources frozen from the first stage to the aggregate. Every one of the 500 R rows carries a valid contact endpoint (the walk-down phase, marker frame 580 equal to the frame the run ended on), so each R row ends at the completed contact body, never at a pre-contact prefix; their `maxG` is at most 21,498 against the gate 29,780 with `gateFail` 0. The other figures did not move: tightest passing row at the certified n **25,012 (plain n = 16, 4,768 under)** and **25,115 (bound tiles n = 15, 4,665 under)**, probe cliff **n = 56 plain / n = 54 bound**, certified 16 / 15 and shipped 15 / 14 stand and `shared/streambound.js` did not change. The equivalence record was rebuilt over this sweep (11,760/11,760 matched, 832 reuses covered).
 
 **Capacity drop recorded with S1 (a1): 21 placed actors with Save, was 24.** The committed Save inventory project needs 8
 kernel-lo lookup bytes per placed actor; S1's `OAM_BUSY` (+18) and projection setup (+3) and (a1)'s gate (+7) took the
@@ -782,6 +800,21 @@ even though a fallthrough would reclaim a few more bytes: it would make physical
 between an entry routine and its tail load-bearing and invisible, so inserting anything between
 `move_down_inside` and `move_vertical_probe` would silently break `move_down` with no assembler
 error.
+
+**The entity pass and a battle (the slot-5 hang fix).** `update_entities` owns X as the entity slot, and in an RPG `entity_contact` is
+`jmp touch_encounter` -> `jmp battle_begin` -> `rts` back into the loop, so everything on that path hands X back unchanged:
+`battle_begin` clears `pc_status` and looks up the `talk_ent` owner with Y, never X (it used to leave X = `MAX_PARTY` or the owner's slot,
+so a contact monster in slot 5 re-triggered the same fight for ever, in every RPG: pure ordinary, mixed and U512 streamed; slots 0-4
+escaped by luck). **The first contact wins:** at the top of every slot `update_entities_loop` tests `game_state` and ends the pass
+(`update_entities_done`) once it has left `ST_GAMEPLAY`, so a second toucher in the same pass neither overwrites `bt_from_ent` and the
+formation nor runs a touch trigger, and a random encounter `update_player` began earlier in the frame is not overwritten by a monster
+underfoot; the slot that began the fight is the last to run. The test and its exit label are inside `.if BATTLE_ENABLED`, so an action
+build is byte-identical and its symbol table unchanged; the cost is 4 kernel-lo bytes on every RPG board
+(`BATTLE_KERNEL_ALLOWANCE_BY_MAPPER`, `docs/reference-kernel-budget.md`). The battle-test toggle's overlap detectors
+(`renderer/emulator/battletest.js`) are now defence in depth: with the guard in place no overlapping monster, door, pickup or event takes
+effect in the pass it settles, and `battletest.test.js` proves both halves (the detectors on a guard-less Code Forge override, the
+stock engine on the hazards themselves). Held by the tests in entitypassbattle.test.js (slots 0/4/5/7, win and flee, three project shapes,
+two touchers, random plus contact in one frame, scripted `Battle`, the X register contract of `touch_encounter` and `battle_begin`).
 
 **Validate-as-you-draw (ROADMAP item 8)** is five `validateProject` warnings — metasprite density,
 reserved-tile reference, per-screen OAM, field density, battle OAM — plus a kernel-lo figure and

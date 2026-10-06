@@ -265,7 +265,7 @@ emu.addMemoryCallback(onBody, emu.callbackType.exec, SYM.main_loop_body_start)
 emu.addMemoryCallback(onReady, emu.callbackType.exec, SYM.main_loop_ready)
 emu.addMemoryCallback(onNmi, emu.callbackType.exec, SYM.nmi)
 emu.addMemoryCallback(onRti, emu.callbackType.exec, SYM.nmi_rti)
-emu.addMemoryCallback(onIdle, emu.callbackType.exec, SYM.wait_vblank_loop)
+__IDLE_REG__
 emu.addMemoryCallback(onDraw, emu.callbackType.exec, SYM.draw_entities)
 emu.addMemoryCallback(onCam, emu.callbackType.exec, SYM.sw_frame_camera_window)
 emu.addMemoryCallback(onGuard, emu.callbackType.exec, SYM.sw_position_jump_guard)

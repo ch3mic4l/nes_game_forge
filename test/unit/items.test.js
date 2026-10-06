@@ -576,7 +576,11 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // the same box_row_addr move (see PINNED_BASELINE_HASH's own comment above)
 // instead of restoring identity. sample-rpg carries no streamed map, so the
 // fix restores the original hash. Size still unchanged (still 147472).
-const PINNED_RPG_BASELINE_HASH = '32a07172e42a626b54c5c1ade9565e2479ffb974361be8eaf6690444e88948c8';
+// Re-pinned (the entity pass's first-contact-wins fix, test/unit/entitypassbattle.test.js): engine/entities.asm gained
+// a 4-byte game_state test in update_entities_loop under BATTLE_ENABLED and battle_begin moved its pc_status loop and owner
+// lookup from X to Y (byte-neutral), so every RPG's kernel-lo changed; size is unchanged (still 147472) and no action
+// project moves (the four action fixtures' hashes are identical).
+const PINNED_RPG_BASELINE_HASH = '86d7a02e8770c030e8720f41c92cfbd85c703d2b44e9f8dd5a99e3e0c628f545';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

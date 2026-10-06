@@ -178,7 +178,7 @@ async function main() {
 
   let all;
   try { all = validateRows(files.flatMap(readLines), files.join(', ')); } catch (e) { console.error(String(e.message ?? e)); process.exit(1); }
-  const bad = all.filter(isBad);
+  const bad = all.filter((r) => isBad(r));
   const confirms = all.filter((r) => r.confirmOf);
   const reuses = all.filter((r) => r.reuse);
   const direct = all.filter((r) => !r.reuse && !isBad(r));

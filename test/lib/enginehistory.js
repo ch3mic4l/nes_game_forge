@@ -606,3 +606,57 @@ export function carryOverrunConstants(oldText, currentText) {
 export function stripOverrunConstants(text) {
   return text.replace(overrunAliasBlock(text), '');
 }
+
+// ---- the entity pass's battle contract (the slot-5 hang fix) ----------------------------------------------------------------------
+// engine/entities.asm's update_entities_loop gained a first-contact-wins test (.if BATTLE_ENABLED: game_state != 0 ends the pass at
+// the loop top, with an RPG-only exit label) and engine/rpg.asm's battle_begin moved its pc_status loop and owner lookup from X to Y.
+// Both are lifted from the CURRENT files into an older text by region, count-checked, so the older text keeps everything else of its own.
+const ENTITY_PASS_TOP = /^update_entities_loop:\n  lda ent_active,x\n  beq update_entities_next\n([\s\S]*?)  lda ent_hurt,x\n/m;
+const ENTITY_PASS_TAIL = /^  bne update_entities_loop\n([\s\S]*?)  rts\n/m;
+const BATTLE_BEGIN_REGION = /^battle_begin:\n[\s\S]*?^battle_begin_no_owner:\n/m;
+
+/** An older entities.asm / rpg.asm pair with the entity-pass battle contract carried in from the current files. */
+export function carryEntityPassLever(oldEntities, currentEntities, oldRpg, currentRpg) {
+  const top = currentEntities.match(ENTITY_PASS_TOP)?.[1];
+  const tail = currentEntities.match(ENTITY_PASS_TAIL)?.[1];
+  if (!top || !top.includes('update_entities_done') || !tail || !tail.includes('update_entities_done:')) throw new Error('entity pass: the current entities.asm does not carry the first-contact-wins test');
+  const oldTop = 'update_entities_loop:\n  lda ent_active,x\n  beq update_entities_next\n  lda ent_hurt,x\n';
+  const oldTail = '  bne update_entities_loop\n  rts\n';
+  if (oldEntities.split(oldTop).length !== 2 || oldEntities.split(oldTail).length !== 2) throw new Error('entity pass: the older update_entities_loop top/tail was not found exactly once');
+  const region = currentRpg.match(BATTLE_BEGIN_REGION)?.[0];
+  if (!region || (oldRpg.match(new RegExp(BATTLE_BEGIN_REGION.source, 'gm')) ?? []).length !== 1) throw new Error('entity pass: battle_begin..battle_begin_no_owner was not found exactly once in both rpg.asm files');
+  return {
+    entities: oldEntities
+      .replace(oldTop, () => `update_entities_loop:\n  lda ent_active,x\n  beq update_entities_next\n${top}  lda ent_hurt,x\n`)
+      .replace(oldTail, () => `  bne update_entities_loop\n${tail}  rts\n`),
+    rpg: oldRpg.replace(BATTLE_BEGIN_REGION, () => region)
+  };
+}
+
+// ---- the streamed save-range fix (Continue at local y 225-239) ---------------------------------------------------------------------
+// engine/save.asm's save_check_valid y gate became mode-dependent on a streamed build (`.if STREAMING_ENABLED`), asking
+// sw_save_streamed_screen, a block engine/streamworld.asm gained right after sw_save_commit_tail_end. Both are lifted from the CURRENT files
+// into an older text by region (count-checked), or cut from a current text, so a comparison against an older commit still means what it did.
+const SAVE_RANGE_OLD_GATE = '  lda SAVE_PLAYER_Y\n  cmp #MAX_Y+1\n  bcs save_check_invalid\n';
+const SAVE_RANGE_GATE = /^  lda SAVE_PLAYER_Y\n  cmp #MAX_Y\+1\n[\s\S]*?^  \.if !STREAMING_ENABLED\n  bcs save_check_invalid\n  \.endif\n/m;
+const SAVE_RANGE_BLOCK = /^sw_save_streamed_screen_start:\n[\s\S]*?^sw_save_streamed_screen_end:\n/m;
+
+/** An older save.asm / streamworld.asm pair with the streamed save-range gate and its helper carried in from the current files. */
+export function carrySaveRangeLever(oldSave, currentSave, oldStream, currentStream) {
+  const gate = currentSave.match(SAVE_RANGE_GATE)?.[0];
+  const block = currentStream.match(SAVE_RANGE_BLOCK)?.[0];
+  if (!gate || !gate.includes('sw_save_streamed_screen') || !block) throw new Error('save range: the current files do not carry the streamed save-range gate and helper');
+  if (oldSave.split(SAVE_RANGE_OLD_GATE).length !== 2) throw new Error('save range: the older save.asm y gate was not found exactly once');
+  const anchor = 'sw_save_commit_tail_end:\n';
+  if (oldStream.split(anchor).length !== 2) throw new Error('save range: the older streamworld.asm has no single sw_save_commit_tail_end');
+  return {
+    save: oldSave.replace(SAVE_RANGE_OLD_GATE, () => gate),
+    streamworld: oldStream.replace(anchor, () => anchor + block)
+  };
+}
+
+/** A current streamworld.asm text without the save-range helper's labelled block (its prose header is comment-only and ignored by code-line scans). */
+export function stripSaveRangeFromStreamworld(text) {
+  if ((text.match(new RegExp(SAVE_RANGE_BLOCK.source, 'gm')) ?? []).length !== 1) throw new Error('save range: streamworld.asm must carry the helper block exactly once');
+  return text.replace(SAVE_RANGE_BLOCK, '');
+}

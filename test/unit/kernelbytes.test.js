@@ -142,6 +142,8 @@ import {
   STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE,
+  STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
   streamworldSaveResyncKernelHiAllowance,
   STREAMWORLD_NMI_KERNEL_ALLOWANCE,
@@ -1968,7 +1970,9 @@ test(
     // deficit at 194, inside the new (189, 198] band; re-derived against a
     // real checkCapacity() run, not assumed from the old proportions.
     for (let i = 0; i < 252; i++) project.sprites.metasprites.push({ id: 1000 + i, name: `FillerMS${i}`, tiles: [] });
-    for (let i = 0; i < 129; i++) project.sprites.animations.push({ id: 2000 + i, name: `FillerAnim${i}`, frames: [] });
+    // 129 -> 128 animations (entity-pass fix, +4 kernel-lo on every RPG): each animation is 4 table
+    // bytes, so one fewer cancels the +4 and the deficit is 194 again.
+    for (let i = 0; i < 128; i++) project.sprites.animations.push({ id: 2000 + i, name: `FillerAnim${i}`, frames: [] });
 
     const mapper30 = SUPPORTED_MAPPERS.find((m) => m.id === 30);
     const mapper1 = SUPPORTED_MAPPERS.find((m) => m.id === 1);
@@ -4098,7 +4102,7 @@ test(
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
     const paintedId = project.maps[0].screens[0].metatiles[0];
     project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
-    inflate(project, 100); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 480, above bound tile/Move but at or below Save
+    inflate(project, 99); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 480, above bound tile/Move but at or below Save; 100 -> 99 for the entity-pass fix (+4 kernel-lo), one fewer filler keeps Save the only single fix
 
     const message = kernelShortfallMessage(project);
     // Save only: neither the bound tile's own allowance nor Move alone
@@ -5762,6 +5766,10 @@ test(
       const dispatchHiSpan = span('sw_dlg20_save_dispatch_start', 'sw_dlg20_save_dispatch_end');
       const commitTailSpan = span('sw_save_commit_tail_start', 'sw_save_commit_tail_end');
       const resyncHiSpan = span('sw_save_resync_start', 'sw_save_resync_end');
+      const rangeSpan = span('save_check_y_stream_start', 'save_check_y_stream_end');
+      const rangeHiSpan = span('sw_save_streamed_screen_start', 'sw_save_streamed_screen_end');
+      assert.equal(rangeSpan, STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE, `${label}: save_check_y_stream span ${rangeSpan}`);
+      assert.equal(rangeHiSpan, STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE, `${label}: sw_save_streamed_screen span ${rangeHiSpan}`);
       assert.equal(dispatchSpan, STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE, `${label}: script_op_save_dispatch span ${dispatchSpan}`);
       assert.equal(resyncSpan, 3, `${label}: save_media_commit_resync span ${resyncSpan} (must stay the literal one-jsr size)`);
       assert.equal(armingGateSpan, STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE, `${label}: dispatch_save_arm_gate span ${armingGateSpan}`);
@@ -5827,6 +5835,10 @@ test(
       sw_dlg20_save_dispatch: (gameType) => (gameType === 'rpg' ? 0 : 'absent'),
       sw_save_commit_tail: () => 0,
       sw_save_resync: () => 0,
+      // save_check_valid is not assembled at all without a Save, so its labels are absent; the
+      // kernel-hi body keeps its labels outside its own `.if SAVE_ENABLED`, so it is present+0.
+      save_check_y_stream: () => 'absent',
+      sw_save_streamed_screen: () => 0,
     };
     // Per-label expectation on the ordinary/with-Save shape: the whole of engine/streamworld.asm is
     // absent (not streamed), so only the two labels living outside it can be present at all.
@@ -5838,6 +5850,10 @@ test(
       sw_dlg20_save_dispatch: () => 'absent',
       sw_save_commit_tail: () => 'absent',
       sw_save_resync: () => 'absent',
+      // An ordinary project with a Save: the non-streaming save_check_valid assembles exactly
+      // the two original instructions, so neither the call-site span nor the kernel-hi body exists.
+      save_check_y_stream: () => 'absent',
+      sw_save_streamed_screen: () => 'absent',
     };
     const SEVEN_SAVE_TERM_SPANS = [
       ['script_op_save_dispatch_start', 'script_op_save_dispatch_end'],
@@ -5847,6 +5863,8 @@ test(
       ['sw_dlg20_save_dispatch_start', 'sw_dlg20_save_dispatch_end'],
       ['sw_save_commit_tail_start', 'sw_save_commit_tail_end'],
       ['sw_save_resync_start', 'sw_save_resync_end'],
+      ['save_check_y_stream_start', 'save_check_y_stream_end'],
+      ['sw_save_streamed_screen_start', 'sw_save_streamed_screen_end'],
     ];
     for (const gameType of ['action', 'rpg']) {
       const noSave = createStreamedProject({ gameType });

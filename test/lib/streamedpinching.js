@@ -65,7 +65,18 @@ function observerCommands(variant) {
 // (engine/entities.asm, -42) frees nothing here: this inventory places no Move command, so the folded
 // arms are not assembled into it. Chris ruled on 2026-09-30: the trim is accepted (the brief's stop-and-report
 // for a test project that stops fitting was answered), and S1_SAVE_ACTORS_DROPPED stays 3.
-export const S1_SAVE_ACTORS_DROPPED = 3;
+//
+// The entity-pass fix (update_entities' first-contact-wins game_state test, +4 kernel-lo on every RPG,
+// BATTLE_KERNEL_ALLOWANCE_BY_MAPPER 229 -> 233 on UNROM 512) took the free lookup bytes from 282 to 278
+// against the same 280 needed: one more placed actor (8 bytes) has to go. 20 placed actors with Save now.
+// FLAGGED to the orchestrator in handoff-next/fix-battle-slot5-report.md -- the Chris ruling above was
+// for a different slice, and this is another real capacity cost of the same kind.
+//
+// The streamed-save y gate (continue-y fix: save_check_valid's `cmp #240 / bcs / lda / jsr / beq`,
+// STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE, +12 kernel-lo on every streamed Save build) took the free lookup
+// bytes from 278 to 266 against the 272 the four-dropped inventory needs: one more placed actor (8 bytes)
+// has to go. 19 placed actors with Save now. FLAGGED in handoff-next/fix-continue-y-report.md.
+export const S1_SAVE_ACTORS_DROPPED = 5;
 
 function dropActorsForS1KernelLo(p, count) {
   const placed = [];

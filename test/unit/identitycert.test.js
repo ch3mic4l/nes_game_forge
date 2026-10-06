@@ -23,7 +23,7 @@ function mock({ direct = 7, reuses = 2, confirms = 1 } = {}) {
   const luaOf = (id) => sha(`lua ${id}`);
   const base = (id, stage) => {
     const prov = { ...OLD, project: sha(`project ${id}`), rom: sha(`rom ${id}`) };
-    return { id, stage, gt: 'action', wide: false, anim: 'P1', n: 16, sizes: [2, 2, 2, 2, 2, 2, 2, 2], scenario: 'walk', done: true, timeout: false, status: 0, frames: 643, prov, phases: { walkD: { maxG: 20000, gateFail: 0, n: 100 } } };
+    return { id, stage, gt: 'action', wide: false, anim: 'P1', n: 16, sizes: [2, 2, 2, 2, 2, 2, 2, 2], scenario: 'walk', done: true, timeout: false, status: 0, frames: stage === 'R' ? 580 : 643, prov, phases: { walkD: { maxG: 20000, gateFail: 0, n: 100 } }, ...(stage === 'R' ? { contact: { frame: 580, phase: 'walkD' } } : {}) }; // a VALID R endpoint: the run ended on the frame of its marker, in the terminal collected phase (contactEndpointProblems)
   };
   const rows = [];
   for (let i = 0; i < direct - confirms; i++) { const r = base(`d${i}`, STAGES[i % STAGES.length]); r.cacheKey = measurementKey({ project: r.prov.project, rom: r.prov.rom, lua: luaOf(r.id), prov: r.prov }); rows.push(r); }

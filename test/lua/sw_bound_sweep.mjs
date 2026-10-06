@@ -53,7 +53,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { runManifest, SCENARIOS, GATE } from './run_sw_manifest.mjs';
+import { runManifest, SCENARIOS, GATE, contactEndpointProblems } from './run_sw_manifest.mjs';
 import { REPO } from './sw_manifest_scene.mjs';
 import { engineFingerprint } from '../lib/enginefingerprint.js';
 import { makeMutate, shapes, YSET, POS } from './sw_sweep_mutate.mjs';
@@ -320,21 +320,29 @@ const JOB_FIELDS = ['gt', 'wide', 'anim', 'n', 'sizes', 'y', 'k', 'shape', 'boun
 export const jobConfig = (r) => JSON.stringify(JOB_FIELDS.map((f) => r?.[f] ?? null));
 export const MAX_ATTEMPTS = 3; // an operational error is retried on resume at most this many attempts in all (the explicit retry policy)
 
-/** `ctx`: { expect (the stage's source state), cache (a MeasurementCache), mesen, waitInflight }. */
-export async function runJob(job, ctx = {}) {
+/** The runManifest arguments of one planned job (the one place a job becomes a scene and a script). `ctx`: see runJob. */
+export function manifestArgs(job, ctx = {}) {
   const ph = structuredClone(SCENARIOS[job.scenario ?? 'walk']);
   for (const p of ph) if (p.trace) p.trace = false;
   if (job.idle) ph.splice(1, 0, { name: 'idle', frames: job.idle });
   const cfg = job.cfg ? structuredClone(job.cfg) : null;
-  const r = await runManifest({
+  const args = {
     gt: job.gt, sizes: job.sizes, wide: !!job.wide, scenario: job.scenario ?? 'walk', phases: ph,
     flashAt: job.y !== null && job.y !== undefined ? [job.flashX ?? 242, job.y] : (cfg ? [242, 234] : null),
     anim: ANIM_PRESETS[job.anim ?? 'P0'], root: job.root, ...(job.gridH ? { gridH: job.gridH } : {}), mutate: cfg ? makeMutate(cfg) : null,
+    // R-ONLY: the RPG walk ends at the completed contact body (run_sw_manifest.mjs CONTACT_IDLE_REG); no other stage's script changes
+    ...(job.stage === 'R' ? { contactEndpoint: true } : {}),
     expect: ctx.expect ?? null, cache: ctx.cache ?? null, prepareOnly: !!ctx.prepareOnly, jobId: job.id, waitInflight: ctx.waitInflight ?? true, ...(ctx.mesen ? { mesen: ctx.mesen } : {})
-  });
+  };
+  return ctx.tweak ? ctx.tweak(args, job) : args; // `tweak`: a probe's hook (marks, trace, a Code Forge override); the sweep never sets it
+}
+
+/** `ctx`: { expect (the stage's source state), cache (a MeasurementCache), mesen, waitInflight }. */
+export async function runJob(job, ctx = {}) {
+  const r = await runManifest(manifestArgs(job, ctx));
   if (r.pending) return { pending: true };
   if (ctx.prepareOnly) return { id: job.id, cacheKey: r.cacheKey, prov: r.prov }; // builds the scene and computes the measurement key; no Mesen
-  const out = { ...job, n: job.sizes.reduce((a, b) => a + b, 0), done: r.done, timeout: r.timeout, status: r.status, frames: r.frames, timing: r.timing, prov: r.prov, cacheKey: r.cacheKey, ...(r.reuse ? { reuse: r.reuse } : {}), phases: {} };
+  const out = { ...job, n: job.sizes.reduce((a, b) => a + b, 0), done: r.done, timeout: r.timeout, status: r.status, frames: r.frames, timing: r.timing, prov: r.prov, cacheKey: r.cacheKey, ...(r.reuse ? { reuse: r.reuse } : {}), phases: {}, ...(r.contact ? { contact: r.contact } : {}) };
   for (const [k, v] of Object.entries(r.phases)) out.phases[k] = { maxG: v.maxG, gateFail: v.gateFail, n: v.n };
   return out;
 }
@@ -363,8 +371,18 @@ export const jobMax = (r) => Math.max(...Object.values(r.phases).map((p) => p.ma
 const jobFails = (r) => Object.values(r.phases).reduce((a, p) => a + p.gateFail, 0);
 /** A phase's gateFail and its maxG must say the same thing about the gate (failure is strictly G > GATE). */
 const gateInconsistent = (r) => Object.values(r.phases ?? {}).some((p) => (p.gateFail > 0) !== (p.maxG > GATE));
+/** An R record without a VALID contact-completed marker (run_sw_manifest.mjs CONTACT_IDLE_REG) measured a prefix of a run that never finished its contact body: never a result, whoever wrote it. */
+let plannedRIds = null;
+/** Is this record's id a PLANNED R job (a confirmation's id names its original)? Decided from the plan, never from the record's own `stage`, which a saved row may lack or contradict. */
+const plannedR = (id) => (plannedRIds ??= new Set(stageR().map((j) => j.id))).has(String(id).replace(/#confirm$/, ''));
+/**
+ * The reasons a record's contact endpoint is not valid: [] for a record that needs none. A record needs one if it claims stage R OR is a planned R
+ * job by id (`planned`: the job a resume matched it to, when the caller has one), so stripping `stage` or `contact` from a saved R row never makes it valid.
+ */
+export const endpointProblems = (r, planned = null) => ((r.stage === 'R' || planned?.stage === 'R' || plannedR(r.id)) ? contactEndpointProblems(r, SCENARIOS[r.scenario ?? 'walk']?.at(-1)?.name) : []);
+const contactMissing = (r, planned = null) => endpointProblems(r, planned).length > 0;
 /** Not a usable measurement: an operational error, an unfinished or timed-out session, a failed process, no phases, or fields that disagree about the gate. */
-export const isBad = (r) => !!(r.error || !r.done || r.timeout || r.status !== 0 || !r.phases || gateInconsistent(r));
+export const isBad = (r, planned = null) => !!(r.error || !r.done || r.timeout || r.status !== 0 || !r.phases || gateInconsistent(r) || contactMissing(r, planned));
 /** A GENUINE gate failure: a complete measurement in which some phase's worst frame exceeds the gate. */
 export const genuineFailure = (r) => !isBad(r) && Object.values(r.phases).some((p) => p.gateFail > 0 && p.maxG > GATE);
 const candidateCurve = (r) => (r.bound ? 'bound' : 'plain');
@@ -399,11 +417,13 @@ export function confirmationProblems(orig, confirm) {
 }
 
 // ---- resume: reuse only what is valid ---------------------------------------------------------------------------------------
-const measurementSig = (r) => JSON.stringify([jobConfig(r), r.cacheKey ?? null, r.prov ?? null, r.done ?? null, r.timeout ?? null, r.status ?? null, r.frames ?? null, Object.entries(r.phases ?? {}).map(([k, v]) => [k, v.maxG, v.gateFail, v.n]), r.error ?? null]);
+// the contact-completed marker is part of the measurement: absent and present stay distinct, key order does not matter
+const canon = (v) => (v === undefined ? ['absent'] : ['present', v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v]);
+const measurementSig = (r) => JSON.stringify([jobConfig(r), r.cacheKey ?? null, r.prov ?? null, r.done ?? null, r.timeout ?? null, r.status ?? null, r.frames ?? null, Object.entries(r.phases ?? {}).map(([k, v]) => [k, v.maxG, v.gateFail, v.n]), r.error ?? null, canon(r.contact)]);
 /**
  * THE record-validity function shared by agg (`validateRows`) and resume (`loadResume`): the relationships of ONE raw record to the records
- * around it. `rowsOf(id)` lists the records with that id. A confirmation needs its original; a reuse needs a DIRECT measurement
- * (not itself a reuse) with the same cache key, project, ROM and measurement, and its own reference key must be its cache key.
+ * around it. `rowsOf(id)` lists the records with that id. A confirmation needs its original; a reuse needs a DIRECT, VALID measurement
+ * (not itself a reuse) with the same cache key, project, ROM, measurement and contact endpoint, and its own reference key must be its cache key.
  */
 export function relationProblems(r, rowsOf) {
   const p = [];
@@ -412,7 +432,8 @@ export function relationProblems(r, rowsOf) {
     const all = rowsOf(r.reuse.of); const srcs = all.filter((x) => !x.reuse);
     if (all.length === 0) p.push(`${r.id}: reuse source ${r.reuse.of} is absent`);
     else if (srcs.length === 0) p.push(`${r.id}: reuse source ${r.reuse.of} is itself a reuse`);
-    else if (!srcs.some((src) => src.cacheKey === r.cacheKey && r.reuse.key === r.cacheKey && src.prov?.project === r.prov?.project && src.prov?.rom === r.prov?.rom && JSON.stringify(src.phases) === JSON.stringify(r.phases) && src.frames === r.frames)) p.push(`${r.id}: reuse of ${r.reuse.of} does not match its key, project, ROM or measurement`);
+    else if (!srcs.some((src) => !isBad(src))) p.push(`${r.id}: reuse source ${r.reuse.of} is not a valid measurement (error, unfinished, or an invalid endpoint)`);
+    else if (!srcs.some((src) => !isBad(src) && JSON.stringify(canon(src.contact)) === JSON.stringify(canon(r.contact)) && src.cacheKey === r.cacheKey && r.reuse.key === r.cacheKey && src.prov?.project === r.prov?.project && src.prov?.rom === r.prov?.rom && JSON.stringify(src.phases) === JSON.stringify(r.phases) && src.frames === r.frames)) p.push(`${r.id}: reuse of ${r.reuse.of} does not match its key, project, ROM or measurement`);
   }
   return p;
 }
@@ -442,11 +463,12 @@ export function loadResume(outFile, jobs, stageProv) {
   const raw = readLines(outFile);
   const groups = groupRows(raw, outFile);
   const have = new Map(); const dropped = []; const attempts = new Map(); const permanent = [];
-  const usable = (r, job) => !isBad(r) && provenanceFieldProblems(r.prov).length === 0 && sourceDifferences(r.prov, stageProv).length === 0 && (!job || jobConfig(job) === jobConfig(r));
+  const bad = (r, job) => isBad(r, job); // `job` (the plan's own job) decides whether an endpoint is required: a saved row's stage may be missing or wrong
+  const usable = (r, job) => !bad(r, job) && provenanceFieldProblems(r.prov).length === 0 && sourceDifferences(r.prov, stageProv).length === 0 && (!job || jobConfig(job) === jobConfig(r));
   for (const [id, r] of groups) { // originals and foreign rows first, then confirmations of the kept originals
     if (r.confirmOf) continue;
     const job = byId.get(id);
-    if (isBad(r)) {
+    if (bad(r, job)) {
       const n = r.attempt ?? 1;
       attempts.set(id, n);
       if (n >= MAX_ATTEMPTS) { have.set(id, r); permanent.push(id); } else dropped.push({ ...r, supersededBecause: `operational error, attempt ${n}` });
@@ -457,7 +479,7 @@ export function loadResume(outFile, jobs, stageProv) {
     if (!r.confirmOf) continue;
     const orig = have.get(r.confirmOf);
     const job = byId.get(r.confirmOf);
-    if (isBad(r)) { const n = r.attempt ?? 1; attempts.set(id, n); if (orig && n >= MAX_ATTEMPTS) { have.set(id, r); permanent.push(id); } else dropped.push({ ...r, supersededBecause: `operational error, attempt ${n}` }); }
+    if (bad(r, job)) { const n = r.attempt ?? 1; attempts.set(id, n); if (orig && n >= MAX_ATTEMPTS) { have.set(id, r); permanent.push(id); } else dropped.push({ ...r, supersededBecause: `operational error, attempt ${n}` }); }
     else if (!orig || !usable(r, job)) dropped.push({ ...r, supersededBecause: orig ? 'stale confirmation' : 'its original is not kept' });
     else have.set(id, r);
   }
@@ -482,7 +504,7 @@ export function loadResume(outFile, jobs, stageProv) {
 }
 
 const seedCache = (cache, have) => {
-  for (const r of have.values()) if (r.cacheKey && !r.reuse && !isBad(r)) cache.seed(r.cacheKey, { jobId: r.id, measurement: { done: r.done, timeout: r.timeout, status: r.status, frames: r.frames, phases: r.phases } });
+  for (const r of have.values()) if (r.cacheKey && !r.reuse && !isBad(r)) cache.seed(r.cacheKey, { jobId: r.id, measurement: { done: r.done, timeout: r.timeout, status: r.status, frames: r.frames, phases: r.phases, ...(r.contact ? { contact: r.contact } : {}) } });
 };
 const countOf = (rows) => ({ reused: rows.filter((r) => r.reuse).length, executed: rows.filter((r) => !r.reuse && r.timing?.mesenMs > 0).length });
 
@@ -679,7 +701,7 @@ export const SAMPLING = [
   'EXHAUSTIVE (the design of Chris\'s 2026-09-30 ruling, fact 1 unchanged by the 2026-10-03 amendment): at the candidate n of each curve (plain 16, bound tiles 15), action: presets P1-P8 x both arts x shapes even/front/back/scatter x k {0,4,7,8} x (the 12 Flash y values + Flash-free; k=8 is Flash-free only); and the full unordered-partition set of that n on presets P1/P2/P6/P8 x both arts x k=0 x y 225 and 234.',
   'THE PROBE (Chris\'s 2026-10-03 amendment of the second fact): the certified n is the POLICY figure (plain 16, bound tiles 15) and `probe` records where the cliff is -- ONE shape (action, wide art, P8, k=7, Flash y 212, Flash x 241, even split) at every n from certified+1 up, each curve ending at its first failing row, CONFIRMED by an isolated re-run; the cliff must be at least certified+2. Stage F (500 candidates per curve at certified+1) found no failing row and is kept as sampled evidence only.',
   'NAMED rows at the candidate n: the R3-F1 scenes (turn, control, reset, eight chasers), review 2 (Flash x 241, placement (174,203), sizes [1,3,1,3,1,3,1,3] at k=5), the dense Flash y band 186-238 on P6/P8 wide k=7 even/front, and a placement grid (plain curve only).',
-  'SAMPLED, NOT COVERED: every n other than the four above; the partitions of presets P3/P4/P5/P7 and of y values other than 225/234 (those presets and y are covered by the Q1c-grid shapes only); odd k (1,3,5) on a sample (P6/P8 wide, even/front, y 212/216/225); the placement grid on the plain curve only; Flash x other than 241/242; animation durations and frame counts outside P0-P8; RPG beyond the n=16 spot checks (P0/P1/P5/P7/P8 x both arts x k {0,7} x 25 partitions incl. uneven ones, y 234); the bound-tile cell/switch values (one bound tile: row 0, col 0, switch 0, metatile 2).'
+  'SAMPLED, NOT COVERED: every n other than the four above; the partitions of presets P3/P4/P5/P7 and of y values other than 225/234 (those presets and y are covered by the Q1c-grid shapes only); odd k (1,3,5) on a sample (P6/P8 wide, even/front, y 212/216/225); the placement grid on the plain curve only; Flash x other than 241/242; animation durations and frame counts outside P0-P8; RPG beyond the n=16 spot checks (P0/P1/P5/P7/P8 x both arts x k {0,7} x 25 partitions incl. uneven ones, y 234; each R run ends at the completed contact body, and a run that never reaches it is refused); the bound-tile cell/switch values (one bound tile: row 0, col 0, switch 0, metatile 2).'
 ];
 
 export const buildRecord = (files, opts = {}) => buildRecordFromRows(readOut(files), opts);

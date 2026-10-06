@@ -24,7 +24,10 @@ Each of these cost real debugging time and now has a regression test. They are e
 - **A helper called from a loop must hand back the registers the loop owns.** `combatant_alive`
   clobbering X made `battle_round` skip half the party — and the fix has a trap of its own, because
   `ldx`/`ldy` set the flags, so a routine that answers with the Z flag has to reload A *after*
-  restoring them.
+  restoring them. The same rule reaches through a `jmp` chain: `entity_contact` -> `touch_encounter` ->
+  `battle_begin` returns into `update_entities`' loop, and `battle_begin` clearing `pc_status` with X left X = 4 there, so a contact
+  monster in slot 5 re-triggered its fight for ever; it now uses Y, and the loop ends its pass once a fight has begun
+  (`docs/reference-engine.md`, "The entity pass and a battle").
 - **A guard copied from another routine may not mean the same thing.** `draw_entities` reads
   `oam_idx == 0` as "the shadow filled up"; `battle_draw_sprites` starts at zero, so the same test
   meant "nothing drawn" and silently skipped parking, leaving the field's HUD on the battle screen.

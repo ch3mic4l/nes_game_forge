@@ -138,6 +138,17 @@ update_entities:
 update_entities_loop:
   lda ent_active,x
   beq update_entities_next
+  ; The first fight wins (RPG only; an action game's contact is hurt_player and starts nothing).
+  ; Once game_state has left ST_GAMEPLAY the pass ends: a monster touching at the same moment as
+  ; the one that began the fight must not start a second encounter over it (touch_encounter
+  ; overwrites bt_from_ent and the formation), and a random encounter update_player already began
+  ; this frame must not be overwritten by a monster underfoot. The slot that began the fight is
+  ; the last one to run -- entity_contact hands back X (touch_encounter and battle_begin use Y), so
+  ; its own entity_trigger_touch and the `inx` below act on the right slot, and this test ends it.
+  .if BATTLE_ENABLED
+  lda <game_state
+  bne update_entities_done
+  .endif
   lda ent_hurt,x
   beq update_entities_behave
   dec ent_hurt,x            ; the flash after being struck
@@ -189,6 +200,9 @@ update_entities_next:
   inx
   cpx #MAX_ENTITIES
   bne update_entities_loop
+  .if BATTLE_ENABLED
+update_entities_done:       ; a fight began: the pass ends here (the label is RPG-only so an action
+  .endif                    ; build's symbol table is unchanged)
   rts
 
 ; Walk in a straight line, reversing at a wall or the screen edge.

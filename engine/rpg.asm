@@ -164,11 +164,17 @@ battle_begin:
   sta <bt_tgt_vis            ; no targeting cursor until a target phase shows one
   ; A status only means anything inside a battle, so every battle starts clean;
   ; the monsters' side is reset in setup_monsters when the slots are filled.
-  ldx #0
+  ;
+  ; Y, never X, throughout this routine: touch_encounter reaches it by `jmp` from entity_contact,
+  ; which update_entities `jsr`s with X = the entity slot it is walking, and the rts below returns
+  ; into that loop. X is the loop's and must come back unchanged (a monster in slot 5 re-triggered
+  ; the same fight for ever when this cleared pc_status with X and left it at MAX_PARTY). Y is
+  ; free: the loop reloads it before every use.
+  ldy #0
 battle_begin_status:
-  sta pc_status,x
-  inx
-  cpx #MAX_PARTY
+  sta pc_status,y
+  iny
+  cpy #MAX_PARTY
   bne battle_begin_status
   ; Captured before the reset below clears it: NO_ENTITY here for a random or
   ; contact-damage fight, neither of which ever set talk_ent to begin with,
@@ -182,8 +188,8 @@ battle_begin_status:
   sta <bt_owner_ent
   cmp #MAX_ENTITIES
   bcs battle_begin_no_owner
-  tax
-  lda ent_record,x
+  tay
+  lda ent_record,y
   sta <bt_owner_rec
 battle_begin_no_owner:
   lda #NO_ENTITY

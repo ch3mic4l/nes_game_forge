@@ -211,6 +211,9 @@ Supported: NROM, CNROM, GxROM, Color Dreams, UxROM, MMC1, MMC3, UNROM 512. Read
 - `Heal`/`Damage` — commands, metatiles and items alike — mean whichever health model
   `BATTLE_ENABLED` selected. A killing hit must `jmp player_died` from the routine that was itself
   reached by `jmp`; a callee reached by `jsr` answers with `rts` and lets its caller decide.
+- The entity pass hands X back across a battle and **the first contact wins**: `battle_begin` uses Y, and
+  `update_entities_loop` ends the pass once `game_state` has left `ST_GAMEPLAY` (RPG only, inside
+  `.if BATTLE_ENABLED`; `docs/reference-engine.md`, "The entity pass and a battle").
 - `init_session` is the single definition of "new game"; `do_action` (`input.asm`) the single
   place that decides what an action means in the current state.
 

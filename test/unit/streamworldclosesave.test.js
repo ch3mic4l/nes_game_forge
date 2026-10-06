@@ -2896,6 +2896,17 @@ function historicalEngineOverrides(rev) {
   return engineFileNames().map((name) => ({ name, text: gitShowEngineFileAt(rev, name) }));
 }
 
+// The entity-pass/battle fix (a contact battle no longer clobbers the entity loop's X, and the first contact wins) changed
+// engine/entities.asm and engine/rpg.asm in every RPG build, and nothing else. An RPG row compared against flat 2563ef4 would
+// differ by exactly that, so it lifts those two files at their CURRENT text, as build_identity_baseline.mjs's --carry-* levers
+// lift a fix into the parent; an action build assembles neither change (both are inside .if BATTLE_ENABLED or byte-neutral),
+// so its row stays a genuine flat comparison. The fix itself is held by entitypassbattle.test.js.
+function historicalEngineOverridesCarryingEntityPassFix(rev) {
+  return historicalEngineOverrides(rev).map((o) => (o.name === 'entities.asm' || o.name === 'rpg.asm'
+    ? { name: o.name, text: fs.readFileSync(path.join(ROOT, 'engine', o.name), 'utf8') }
+    : o));
+}
+
 // UPDATE (fix round 1b, B1): a flat historicalEngineOverrides('2563ef4') is no longer a valid
 // baseline for a STREAMED shape. B1 (still uncommitted, on top of 2563ef4/HEAD) unconditionally
 // relocated several routines from kernel-lo files into streamworld.asm's kernel-hi region; a flat
@@ -2992,8 +3003,8 @@ const A4_SHAPES = [
   [
     'ordinary UNROM-512, camera+Say+Save, rpg',
     () => createOrdinaryCameraProject({ gameType: 'rpg' }),
-    historicalEngineOverrides,
-    { short: '2563ef4', full: "2563ef4 -- every engine/*.asm file reverted to its exact 2563ef4 text (a genuine flat whole-engine comparison; this shape never touches B1's relocated code)" },
+    historicalEngineOverridesCarryingEntityPassFix,
+    { short: '2563ef4', full: "2563ef4 -- every engine/*.asm file reverted to its exact 2563ef4 text EXCEPT engine/entities.asm and engine/rpg.asm, which stay at their CURRENT text (the entity pass's first-contact-wins contract, a battle-only change that every RPG carries; docs/reference-engine.md, 'The entity pass and a battle'); this shape never touches B1's relocated code" },
   ],
   [
     'streamed, Say without Save, action',
@@ -3243,7 +3254,10 @@ for (const gameType of ['action', 'rpg']) {
       // adds its 18-byte kernel-lo allowance (OAM_BUSY_KERNEL_LO_ALLOWANCE, main/build/generate.js) to every streamed project, and (a1)'s mover parity gate its 7 (MOVER_PARITY_GATE_KERNEL_ALLOWANCE): -501 + 18 + 7 = -476. This shape places no actor on a
       // streamed screen (createStreamedNoProjectionProject), so the projection's own 3-byte
       // kernel-lo setup call is absent and the hi delta is B1's 474 exactly.
-      assert.equal(loDelta, -501 + 18 + 7, `${gameType}: kernel-lo delta must be Item 4's -501 plus S1's 18-byte OAM_BUSY cost and (a1)'s 7-byte mover parity gate`);
+      // The entity pass's first-contact-wins test (4 bytes of BATTLE_KERNEL_ALLOWANCE_BY_MAPPER) is in
+      // every RPG build and in none of 2563ef4's, so an RPG's kernel-lo is 4 bytes dearer than the flat baseline's; an action build has none.
+      const ENTITY_PASS_BATTLE_LO = gameType === 'rpg' ? 4 : 0;
+      assert.equal(loDelta, -501 + 18 + 7 + ENTITY_PASS_BATTLE_LO, `${gameType}: kernel-lo delta must be Item 4's -501 plus S1's 18-byte OAM_BUSY cost and (a1)'s 7-byte mover parity gate (plus an RPG's 4-byte entity-pass battle test)`);
       // Phase 3a S3a.5: this baseline is the flat 2563ef4 engine, which still has sw_camera_window_recompute's two
       // repeated-subtract loops; the current engine's closed forms are 78 bytes smaller (STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE
       // 1102 -> 1024), so the kernel-hi delta is B1's 474 less that 78 = 396 and the total moves with it (-2 - 78 = -80).
@@ -3253,7 +3267,7 @@ for (const gameType of ['action', 'rpg']) {
       // the lifecycle/terrain/consumer allowance, 523/520 -> 540/537). Kernel-lo is untouched.
       const OVERRUN_HI_COST = 23;
       assert.equal(hiDelta, 474 - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost (474) less S3a.5's 78-byte camera-window saving, plus the overrun fix's 23`);
-      assert.equal(totalDelta, -27 + 18 + 7 - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: total kernel-lo+hi delta is a net 57-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78, plus the overrun fix's 23), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
+      assert.equal(totalDelta, -27 + 18 + 7 + ENTITY_PASS_BATTLE_LO - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: total kernel-lo+hi delta is a net 57-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78, plus the overrun fix's 23), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
     }
   );
 }

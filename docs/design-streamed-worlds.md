@@ -467,6 +467,10 @@ response, not a silent clamp. A *structural* edit to a streamed map (reordering 
 resizing its grid) uses the identical `saveCompatToken` bump every other structural edit already
 gets (item 7's own mechanism) — never a parallel, streaming-specific one.
 
+Shipped 2026-10-05 (the Continue-at-local-y fix): `save_check_valid`'s y gate is `.if STREAMING_ENABLED` and asks `sw_save_streamed_screen`
+(`engine/streamworld.asm`) — the owning map of `SAVE_FLAT_SCREEN` via `map_base`, then its `stream_type_bits` bit, the same walk
+`sw_resolve_screen` does — before choosing 0-239 over 0-`MAX_Y`. `player_x` needs no arm: its bound is the byte's own 0-255 on every screen.
+
 The project-wide screen ceiling is **255**, not 256: `NO_SCREEN = $FF` is the existing
 neighbour-table sentinel, so a real screen id of 255 would be indistinguishable from "no screen"
 the instant a project reached exactly 256 — the identical "the cap is the sentinel's own value"

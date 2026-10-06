@@ -32,6 +32,10 @@
 //                   (direction-specific turn animations and chasers in a solid patch), review 2's out-of-grid cases (Flash x 241,
 //                   placement (174,203), sizes [1,3,1,3,1,3,1,3] at k=5), a dense Flash y band 186-238 on P6/P8 wide, odd k, and
 //                   (plain only) the placement grid. RPG: 500 spot checks at n = 16, P0/P1/P5/P7/P8 x both arts x k {0,7}, y 234.
+//                   (Those 500 R rows, as measured up to 2026-10-05, are completed PRE-CONTACT prefixes -- 177 bodies each -- of a run whose
+//                   mainline hung in battle_begin (the slot-5 bug) while the harness's frames and DONE went on; they never entered a battle.
+//                   The harness now ends each R run at the completed contact body and refuses one that never gets there
+//                   (docs/reference-engine.md); the corrected sweep replaces that evidence.)
 //                   Fact 2 (AMENDED by Chris, 2026-10-03; until then "a CONFIRMED failing row at certified+1"): the certified n is
 //                   a POLICY figure, and the record's `probe` (stage P) runs ONE shape (action, wide art, P8, k = 7, Flash y 212,
 //                   Flash x 241, even split) at every n from certified+1 up, each curve ending at its first failing row, CONFIRMED

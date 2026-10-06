@@ -16,12 +16,12 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  runAll, runF, mkJob, relationProblems, confirmationProblems, loadResume, groupRows, validateRows, buildRecord, buildRecordFromRows, aggregate, isBad, genuineFailure, isCandidateFailure, makeProvenance, MAX_ATTEMPTS, stageF, plan
+  runAll, runF, runJob, manifestArgs, mkJob, relationProblems, confirmationProblems, loadResume, groupRows, validateRows, buildRecord, buildRecordFromRows, aggregate, isBad, genuineFailure, isCandidateFailure, makeProvenance, MAX_ATTEMPTS, stageF, plan
 } from '../lua/sw_bound_sweep.mjs';
 import {
   harnessHash, generatorHash, engineHash, processProvenance, mesenHash, sourceDifferences, assertSameSources, SourceChangedError, measurementKey, EXEC_FLAGS, MeasurementCache, HARNESS_FILES, UNIFORM_FIELDS
 } from '../lua/sw_provenance.mjs';
-import { runManifest, GATE } from '../lua/run_sw_manifest.mjs';
+import { runManifest, GATE, IDLE_REG, CONTACT_IDLE_REG, parseOutput, contactEndpointProblems } from '../lua/run_sw_manifest.mjs';
 import { buildSceneProject } from '../lua/sw_manifest_scene.mjs';
 import { makeMutate, shapes, BOUND_TILE } from '../lua/sw_sweep_mutate.mjs';
 import { ANIM_PRESETS } from '../lua/sw_bound_sweep.mjs';
@@ -142,10 +142,10 @@ test('F1: runF -- an absent original or a bad confirmation row on file is never 
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------
-// the CLI, against a fake Mesen
+// the CLI, against a fake Mesen (which, like the real contact endpoint, prints the CONTACT marker only for a script that carries the endpoint)
 const FAKE = (dir, { fail = false, exitCode = 0, name = 'fake-mesen', dieFromRun = 0 } = {}) => {
   const f = path.join(dir, name); const count = path.join(dir, `${name}.count`);
-  fs.writeFileSync(f, `#!/bin/sh\necho run >> ${count}\n${dieFromRun ? `if [ $(wc -l < ${count}) -ge ${dieFromRun} ]; then exit 7; fi\n` : ''}${exitCode ? '' : `echo "PHASE walkD n=240 maxG=${fail ? GATE + 1500 : 27000} maxMain=1 maxIntr=1 maxRel=1 overruns=0 gateFail=${fail ? 1 : 0} maxOam=1 maxPlusMax=2 guards=0 bigN=0 bigAdv=0"\necho "DONE frames=643"\n`}exit ${exitCode}\n`);
+  fs.writeFileSync(f, `#!/bin/sh\necho run >> ${count}\n${dieFromRun ? `if [ $(wc -l < ${count}) -ge ${dieFromRun} ]; then exit 7; fi\n` : ''}${exitCode ? '' : `echo "PHASE walkD n=240 maxG=${fail ? GATE + 1500 : 27000} maxMain=1 maxIntr=1 maxRel=1 overruns=0 gateFail=${fail ? 1 : 0} maxOam=1 maxPlusMax=2 guards=0 bigN=0 bigAdv=0"\nfor a in "$@"; do case "$a" in *.lua) L="$a";; esac; done\nF=643\nif grep -q contactPhase "$L"; then F=580; echo "CONTACT frame=580 phase=walkD"; fi\necho "DONE frames=$F"\n`}exit ${exitCode}\n`);
   fs.chmodSync(f, 0o755);
   return { path: f, runs: () => (fs.existsSync(count) ? fs.readFileSync(count, 'utf8').split('\n').filter(Boolean).length : 0) };
 };
@@ -625,4 +625,239 @@ test('R2-4: the Mesen stat key includes device, inode and ctime (an atomic same-
     await runF(path.join(dir, 'jobsF.jsonl'), path.join(dir, 'f2.jsonl'), 1, async (j) => ok(j), { provenance: (fresh) => { fcalls.push(!!fresh); return CURRENT; }, log: () => {} });
     assert.equal(fcalls.at(-1), true);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The R-stage CONTACT ENDPOINT (test/lua/run_sw_manifest.mjs CONTACT_IDLE_REG; the real-Mesen half is test/lua/run_sw_contact_check.mjs). The RPG walk ends in
+// the contact battle, but phases advance on emulator frames and DONE prints whatever the mainline is doing, so a hung contact body (the slot-5 battle_begin
+// bug) was blessed as 177 completed bodies. These tests run the REAL scene build and script rendering against a fake Mesen that captures the rendered Lua and
+// prints a chosen report; they prove the harness's rules, not the Lua's behaviour in Mesen.
+// A fake Mesen that keeps the rendered script, and prints a PHASE report plus (contact: 'always' | 'never' | 'wrapped' = only for a script carrying the endpoint) a CONTACT line.
+const FAKE_CAPTURE = (dir, { contact = 'wrapped', gateFail = 0, name = 'cap', marker = null, frames = 580 } = {}) => {
+  const f = path.join(dir, name);
+  fs.writeFileSync(f, `#!/bin/sh
+for a in "$@"; do case "$a" in *.lua) L="$a";; esac; done
+cp "$L" "${dir}/${name}.lua"
+echo "PHASE walkD n=178 maxG=${gateFail ? GATE + 1500 : 20663} maxMain=1 maxIntr=1 maxRel=1 overruns=0 gateFail=${gateFail} maxOam=1 maxPlusMax=2 guards=0 bigN=0 bigAdv=0"
+${marker ? `echo "${marker}"` : contact === 'always' ? 'echo "CONTACT frame=580 phase=walkD"' : contact === 'wrapped' ? 'grep -q contactPhase "$L" && echo "CONTACT frame=580 phase=walkD"' : ''}
+echo "DONE frames=${frames}"
+exit 0
+`);
+  fs.chmodSync(f, 0o755);
+  return { path: f, lua: () => fs.readFileSync(`${dir}/${name}.lua`, 'utf8') };
+};
+const rJob = () => plan('R')[0];
+
+test('CONTACT: a completed contact is a usable R record (marker kept, the phase summary intact) and the rendered script carries the endpoint -- catches an R script without the wrapper', async () => {
+  const dir = tmpdir();
+  try {
+    const fake = FAKE_CAPTURE(dir);
+    const r = await runJob(rJob(), { mesen: fake.path });
+    assert.deepEqual(r.contact, { frame: 580, phase: 'walkD' });
+    assert.equal(isBad(r), false);
+    assert.deepEqual(r.phases.walkD, { maxG: 20663, gateFail: 0, n: 178 });
+    const lua = fake.lua();
+    assert.ok(lua.includes(CONTACT_IDLE_REG) && !lua.includes(IDLE_REG), 'the wrapper replaces the plain registration, once');
+    assert.match(lua, /\["ST_BATTLE"\]=\d+/, 'the state values come from this build\'s equates, never a number in the template');
+    // the wrapper runs the COMPLETE onIdle measurement, THEN may end the run: a contact body that finish() skipped would never be measured
+    assert.ok(CONTACT_IDLE_REG.indexOf('onIdle()') !== -1 && CONTACT_IDLE_REG.indexOf('onIdle()') < CONTACT_IDLE_REG.indexOf('finish()'), 'onIdle first, finish after');
+    assert.match(CONTACT_IDLE_REG, /exec, SYM\.wait_vblank_loop\)$/, 'registered at the idle poll, never battle_begin or main_loop_ready');
+    assert.ok(!/battle_begin|main_loop_ready|endFrame/.test(CONTACT_IDLE_REG), 'no other stopping point');
+    // the endpoint ends only the TERMINAL phase, on a body that BEGAN in gameplay and ended in battle
+    assert.match(CONTACT_IDLE_REG, /ph == contactPhase and ph\.collect and gs0 == SYM\.ST_GAMEPLAY and rd\(SYM\.game_state\) == SYM\.ST_BATTLE/);
+    assert.deepEqual(parseOutput('CONTACT frame=580 phase=walkD\nDONE frames=580').contact, { frame: 580, phase: 'walkD' });
+    assert.equal('contact' in parseOutput('DONE frames=1'), false, 'no marker, no field');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: an R run that reaches its frame limit without the marker is an operational failure, never a passing prefix -- catches a missing marker treated as a pass', async () => {
+  const dir = tmpdir();
+  try {
+    const none = FAKE_CAPTURE(dir, { contact: 'never', name: 'none' });
+    await assert.rejects(runJob(rJob(), { mesen: none.path }), /contact endpoint was not reached/);
+    // through the runner: the job becomes an ERROR row (exit 3, retried on resume), not a measurement
+    const jf = path.join(dir, 'jobs.jsonl'); const out = path.join(dir, 'out.jsonl'); write(jf, [rJob()]);
+    const r = cli(['run', jf, out, '--procs=1', `--mesen=${none.path}`]);
+    assert.equal(r.status, 3, r.stderr.slice(-300));
+    const rows = readRows(out);
+    assert.equal(rows.length, 1); assert.match(rows[0].error, /contact endpoint was not reached/); assert.equal(isBad(rows[0]), true);
+    // and the same job with the marker is a clean pass
+    const yes = FAKE_CAPTURE(dir, { contact: 'always', name: 'yes' });
+    const out2 = path.join(dir, 'out2.jsonl');
+    assert.equal(cli(['run', jf, out2, '--procs=1', `--mesen=${yes.path}`]).status, 0);
+    assert.equal(readRows(out2)[0].contact.phase, 'walkD');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- the persisted endpoint: ONE validator (run_sw_manifest.mjs contactEndpointProblems), applied to every record that is a planned R job ------------------
+const EP = { frame: 580, phase: 'walkD' };
+const rOk = (job, over = {}) => ok(job, { frames: 580, contact: { ...EP }, ...over }); // a VALID R record: the run ended on the frame of its marker, in the terminal collected phase
+const strip = (r, ...fields) => { const x = structuredClone(r); for (const f of fields) delete x[f]; return x; };
+const resumeOf = (dir, rows, jobs, name = 'r.jsonl') => { const f = path.join(dir, name); write(f, rows); return loadResume(f, jobs, CURRENT); };
+
+test('CONTACT: a valid endpoint is accepted by every record check, an absent one refused, and a non-R record is unaffected -- catches a check that looks only at the runner', () => {
+  const r = rOk(rJob());
+  assert.equal(isBad(r), false);
+  assert.equal(isBad(ok(rJob())), true, 'an R record from the old harness (no marker) is not a measurement');
+  assert.equal(isBad(ok(bJob(0))), false, 'stage B has no contact endpoint');
+  assert.equal(isBad(ok(fJob(0))), false);
+  // the checks every consumer uses (resume, agg, confirmation) all go through isBad
+  assert.ok(confirmationProblems(bad(rJob(), { frames: 580, contact: { ...EP } }), bad({ ...rJob(), id: `${rJob().id}#confirm`, confirmOf: rJob().id })).some((m) => /not a valid measurement/.test(m)), 'a confirmation without the marker is refused');
+  assert.equal(aggregate([ok(rJob())]).bad, 1, 'agg counts it as a bad record, not as a row');
+  assert.equal(aggregate([r]).bad, 0);
+});
+
+test('CONTACT: a malformed or inconsistent marker is refused by isBad, aggregation AND resume, never kept or seeded -- catches a truthiness check on the marker', () => {
+  const dir = tmpdir();
+  try {
+    const job = rJob();
+    const cases = {
+      'an empty object': { contact: {} }, 'true': { contact: true }, 'a string': { contact: 'walkD' }, 'an array': { contact: [580, 'walkD'] },
+      'frame 0 in phase boot': { contact: { frame: 0, phase: 'boot' } }, 'a wrong phase': { contact: { frame: 580, phase: 'walkR' } },
+      'a non-integer frame': { contact: { frame: 580.5, phase: 'walkD' } }, 'a string frame': { contact: { frame: '580', phase: 'walkD' } }, 'a negative frame': { contact: { frame: -580, phase: 'walkD' } },
+      'an extra field': { contact: { ...EP, extra: 1 } }, 'a frame that is not where the run ended': { contact: { frame: 579, phase: 'walkD' } },
+      'a run with no frame count': { frames: undefined }, 'a non-integer run frame count': { frames: 580.5 },
+      'a terminal phase with no bodies': { phases: { walkD: { maxG: 20663, gateFail: 0, n: 0 } } }, 'no terminal phase': { phases: { walkR: { maxG: 15802, gateFail: 0, n: 260 } } }
+    };
+    for (const [what, over] of Object.entries(cases)) {
+      const r = rOk(job, over);
+      assert.equal(isBad(r), true, `isBad: ${what}`);
+      assert.equal(aggregate([r]).bad, 1, `aggregate: ${what}`);
+      const res = resumeOf(dir, [r], [job]);
+      assert.equal(res.have.size, 0, `resume must not keep: ${what}`);
+      assert.match(res.dropped[0].supersededBecause, /operational error/, `resume supersedes it as an operational error: ${what}`);
+    }
+    assert.equal(resumeOf(dir, [rOk(job)], [job], 'valid.jsonl').have.size, 1, 'the valid record is kept');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: a planned R row whose stage and contact were stripped (or whose stage was rewritten) is refused on resume and aggregation -- the PLAN decides, not the row\'s own stage', () => {
+  const dir = tmpdir();
+  try {
+    const job = rJob();
+    for (const [what, r] of Object.entries({
+      'stage and contact both removed': strip(rOk(job), 'stage', 'contact'), 'stage rewritten to B, contact removed': { ...strip(rOk(job), 'contact'), stage: 'B' }, 'contact removed': strip(rOk(job), 'contact'),
+      'stage rewritten to B, contact malformed': { ...rOk(job, { contact: {} }), stage: 'B' }
+    })) {
+      assert.equal(isBad(r), true, `isBad: ${what}`);
+      assert.equal(aggregate([r]).bad, 1, `aggregate: ${what}`);
+      const res = resumeOf(dir, [r], [job]);
+      assert.equal(res.have.size, 0, `resume must not keep: ${what}`);
+      assert.equal(res.dropped.length, 1, what);
+    }
+    assert.equal(isBad(strip(rOk(job), 'stage')), false, 'a missing stage alone is harmless: the endpoint is valid');
+    assert.equal(resumeOf(dir, [strip(rOk(job), 'stage')], [job], 'nostage.jsonl').have.size, 1);
+    // the job the resume matched the row to decides too, for an id the plan does not name
+    const custom = { ...job, id: 'custom-r-job' };
+    const loose = strip(rOk(custom), 'stage', 'contact');
+    assert.equal(isBad(loose), false, 'by itself that row names no planned R job');
+    assert.equal(resumeOf(dir, [loose], [custom], 'custom.jsonl').have.size, 0, 'but the job it resumes is an R job');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: raw copies of one R record that differ only in the endpoint are refused before deduplication, in BOTH orders, by agg and resume -- catches a marker left out of the measurement signature', () => {
+  const dir = tmpdir();
+  try {
+    const job = rJob();
+    const valid = rOk(job);
+    const variants = { 'no marker': strip(valid, 'contact'), 'a different marker': { ...valid, contact: { frame: 579, phase: 'walkD' } }, 'a null marker': { ...valid, contact: null } };
+    for (const [what, other] of Object.entries(variants)) {
+      for (const [order, rows] of [['valid first', [valid, other]], ['valid second', [other, valid]]]) {
+        assert.throws(() => validateRows(rows), /recorded more than once with different/, `validateRows, ${what}, ${order}`);
+        assert.throws(() => groupRows(rows), /recorded more than once/, `groupRows, ${what}, ${order}`);
+        assert.throws(() => resumeOf(dir, rows, [job]), /recorded more than once with different/, `resume, ${what}, ${order}`);
+      }
+    }
+    // exact duplicates (key order aside) are one record, as before
+    assert.equal(validateRows([valid, { ...valid, contact: { phase: 'walkD', frame: 580 } }]).length, 1);
+    assert.equal(resumeOf(dir, [valid, structuredClone(valid)], [job], 'same.jsonl').have.size, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: a reuse must carry its source\'s endpoint, and its source must itself be a valid measurement -- catches reuse equality that ignores the marker', () => {
+  const dir = tmpdir();
+  try {
+    const [a, b] = plan('R');
+    const src = rOk(a);
+    const reuseOf = (over = {}) => ({ ...rOk(b), cacheKey: src.cacheKey, prov: src.prov, phases: src.phases, reuse: { of: src.id, key: src.cacheKey }, ...over });
+    assert.equal(validateRows([src, reuseOf()]).length, 2, 'a faithful reuse is accepted');
+    for (const [what, r] of Object.entries({ 'a different marker': reuseOf({ contact: { frame: 579, phase: 'walkD' } }), 'no marker': strip(reuseOf(), 'contact'), 'a null marker': reuseOf({ contact: null }) })) {
+      assert.throws(() => validateRows([src, r]), /REFUSED/, what);
+      assert.throws(() => validateRows([r, src]), /REFUSED/, `${what}, reversed`);
+    }
+    // a source that is not a valid measurement (its marker stripped, or malformed) is no source, however faithfully the reuse copies it
+    for (const [what, badSrc] of Object.entries({ 'stripped': strip(src, 'contact', 'stage'), 'malformed': { ...src, contact: {} } })) {
+      assert.ok(relationProblems(reuseOf({ contact: badSrc.contact }), (id) => (id === src.id ? [badSrc] : [])).some((m) => /not a valid measurement/.test(m)), `source ${what}`);
+      assert.throws(() => validateRows([badSrc, reuseOf({ contact: badSrc.contact })]), /REFUSED/, `source ${what}`);
+      assert.equal(resumeOf(dir, [badSrc, reuseOf({ contact: badSrc.contact })], [a, b], `src-${what}.jsonl`).have.size, 0, `resume keeps neither: source ${what}`);
+    }
+    assert.equal(resumeOf(dir, [src, reuseOf()], [a, b], 'good.jsonl').have.size, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: a stage A / stage B overlap (one id planned by both) is still ONE valid record, with no endpoint on either -- catches "fixing" the stripped-stage hole by requiring equal stages', () => {
+  const dir = tmpdir();
+  try {
+    const a = ok({ ...bJob(0), stage: 'A' }); const b = ok(bJob(0));
+    assert.equal(a.id, b.id); assert.notEqual(a.stage, b.stage);
+    assert.equal(isBad(a) || isBad(b), false);
+    for (const rows of [[a, b], [b, a]]) {
+      assert.equal(validateRows(rows).length, 1);
+      assert.equal(resumeOf(dir, rows, [bJob(0)], 'ab.jsonl').have.size, 1);
+    }
+    assert.equal(aggregate(validateRows([a, b])).bad, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: a fresh run whose marker is inconsistent (wrong phase, a frame that is not where the run ended) is an operational failure, by the same validator -- catches a presence-only check in runManifest', async () => {
+  const dir = tmpdir();
+  try {
+    for (const [what, opts] of Object.entries({ 'wrong phase': { marker: 'CONTACT frame=580 phase=walkR' }, 'frame not where the run ended': { marker: 'CONTACT frame=579 phase=walkD' }, 'no run frame count': { frames: 'x' } })) {
+      const fake = FAKE_CAPTURE(dir, { ...opts, name: `bad-${what.replace(/\W/g, '')}` });
+      await assert.rejects(runJob(rJob(), { mesen: fake.path }), /not a valid completed endpoint|not reached/, what);
+    }
+    assert.equal((await runJob(rJob(), { mesen: FAKE_CAPTURE(dir, { name: 'good' }).path })).contact.frame, 580);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: an over-gate contact body is KEPT and judged, not dropped -- catches an endpoint that ends the run before the body is measured, or discards an over-gate one', async () => {
+  const dir = tmpdir();
+  try {
+    const fake = FAKE_CAPTURE(dir, { contact: 'always', gateFail: 1, name: 'over' });
+    const r = await runJob({ ...rJob(), n: 16 }, { mesen: fake.path });
+    assert.equal(isBad(r), false, 'a failing contact body is a valid measurement');
+    assert.equal(genuineFailure(r), true); assert.equal(r.phases.walkD.gateFail, 1);
+    assert.equal(isCandidateFailure(r), true, 'at the candidate n of an R row, a gate failure is the candidate failure the stage stops on');
+    // the ordering that makes this true in the Lua: the wrapper calls onIdle (which counts the body and its gateFail) before it can finish
+    assert.ok(/onIdle\(\)\n  if began/.test(CONTACT_IDLE_REG));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: the endpoint is R-only and a non-R rendered script is byte-identical to the one before the endpoint existed -- catches a wrapper (or any new binding) emitted for every job', async () => {
+  // the template with its one substitution token restored to the line it replaced IS the pre-change template. Re-pin ONLY when a template edit is meant to change
+  // every non-R measurement (and then the harness stamp invalidates every record anyway).
+  const PRE_CHANGE_TEMPLATE_SHA = '190c41da07f851b9bc83b641cafb3a819e90dcfb5fec1c0e2f6580aa01f14486';
+  const template = fs.readFileSync(path.join(ROOT, 'test/lua/sw_manifest.lua.template'), 'utf8');
+  assert.equal(template.split('__IDLE_REG__').length, 2, 'one token');
+  assert.equal(sha(template.split('__IDLE_REG__').join(IDLE_REG)), PRE_CHANGE_TEMPLATE_SHA);
+  assert.equal(IDLE_REG, 'emu.addMemoryCallback(onIdle, emu.callbackType.exec, SYM.wait_vblank_loop)');
+  // only stage R opts in
+  for (const st of ['A', 'B', 'C', 'P', 'S']) assert.equal(manifestArgs(plan(st)[0]).contactEndpoint, undefined, `stage ${st}`);
+  assert.equal(manifestArgs(fJob(0)).contactEndpoint, undefined, 'stage F');
+  assert.equal(manifestArgs(rJob()).contactEndpoint, true);
+  // a representative job of each non-R kind, built for real: the rendered script holds the plain registration once and nothing of the endpoint
+  const dir = tmpdir();
+  try {
+    for (const [label, job] of [['A', plan('A')[0]], ['B', plan('B')[0]], ['C', plan('C')[0]], ['F', fJob(0)], ['P', plan('P')[0]], ['S', plan('S')[0]]]) {
+      const fake = FAKE_CAPTURE(dir, { contact: 'never', name: `n${label}` });
+      await runJob(job, { mesen: fake.path });
+      const lua = fake.lua();
+      assert.equal(lua.split(IDLE_REG).length, 2, `${label}: the plain registration, once`);
+      assert.ok(!/contactPhase|ST_BATTLE|CONTACT|__IDLE_REG__/.test(lua), `${label}: nothing of the endpoint`);
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CONTACT: runManifest refuses an endpoint on a script whose terminal phase is not collected (before it builds anything)', async () => {
+  await assert.rejects(runManifest({ gt: 'rpg', sizes: [2, 2, 2, 2, 2, 2, 2, 2], phases: [{ name: 'boot', waitFor: 'gameplay' }, { name: 'pre', frames: 5 }], contactEndpoint: true, mesen: '/nonexistent' }), /TERMINAL phase/);
 });

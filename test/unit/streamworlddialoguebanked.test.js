@@ -48,6 +48,7 @@ import {
   dropS3a5RetiredFromOld,
   stripOverrunFromStreamworld,
   stripOverrunCloseFromFlat,
+  stripSaveRangeFromStreamworld,
   dropOverrunRetiredFromOld
 } from '../lib/enginehistory.js';
 import { buildCommittedInventory } from '../lib/streamedinventory.js';
@@ -87,7 +88,7 @@ function code(text) {
 // The resident-placement flattening (test/lib/enginesource.js) equals the pre-slice text.
 // ---------------------------------------------------------------------------------------------
 
-test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 in every code line, S1, S3a and S3a.5 aside', () => {
+test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 in every code line, S1, S3a, S3a.5 and the save-range helper aside', () => {
   const old = spawnSync('git', ['show', '59d4468:engine/streamworld.asm'], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(old.status, 0, `git show must succeed: ${old.stderr}`);
   // S1 (phase 3a) added a Flash guard and the projection wrapper to this file, and S3a added four
@@ -101,7 +102,7 @@ test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 
   // and the blank line at its include's end were always the only other additions).
   const flat = stripOverrunCloseFromFlat(
     stripOverrunFromStreamworld(
-      stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS3bFromStreamworld(stripS1FromStreamworld(readEngineSource('streamworld.asm')))))
+      stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS3bFromStreamworld(stripS1FromStreamworld(stripSaveRangeFromStreamworld(readEngineSource('streamworld.asm'))))))
     )
   );
   const codeLines = (text) => text.split('\n').filter((l) => l.trim() !== '' && !/^\s*;/.test(l));

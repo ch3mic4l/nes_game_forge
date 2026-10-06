@@ -8121,6 +8121,10 @@ test('arm-time death restoration: cast_all killing the flashing monster then re-
   nes.cpu.mem[BT_HURT_LEFT] = 20;
 
   callRoutine(nes, addrOf('cast_all'));
+  // vram_drain is NMI-only: force blank so the PPU address cannot move between the $2006 pair and the $2007 write (the
+  // vram_drain-outside-NMI trap, as the multi-target hit-feedback test below does); without it this test's pass/fail
+  // followed the boot's frame phase, and a 4-byte kernel change flipped it.
+  nes.mmap.write(0x2001, 0);
   callRoutine(nes, addrOf('vram_drain'));
 
   assert.equal(
