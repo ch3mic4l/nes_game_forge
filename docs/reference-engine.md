@@ -530,7 +530,7 @@ stand; `STREAM_TILE_MARGIN_CYCLES.boundTiles` is 4,665 (was 4,669). The old ROM-
 enters a battle), so the ROM-identity certificate carried nothing and `sw_bound_sweep.mjs` was run again end to end (the overrun fix's resweep.sh: A 658, B 5,120, C 5,312, R 500, F 1,000, P 98 records, 16 processes,
 70 min 33 s; A/B/C/R/P exit 0, F exit 4 as before). The figures are identical to the overrun fix's: 12,590 jobs, 0 bad; tightest passing row at the certified n **25,012 (plain n = 16, 4,768 under)** and
 **25,115 (bound tiles n = 15, 4,665 under)**; probe cliff **n = 56 plain / n = 54 bound**; certified 16 / 15 and shipped 15 / 14 stand and `shared/streambound.js` did not change. The overrun fix's
-certificate and equivalence record were retired to `handoff-next/p3b-s0/retired/`; `test/fixtures/streambound-equivalence.json` was rebuilt (11,760/11,760 matched, 832 reuses covered, recorded generator equal to the
+certificate and equivalence record were retired (kept outside the repository); `test/fixtures/streambound-equivalence.json` was rebuilt (11,760/11,760 matched, 832 reuses covered, recorded generator equal to the
 final one, so no certificate is needed), and `test/fixtures/crossstage/exclusions-evidence.json` was re-made by the overrun fix's refresh-exclusions.mjs (340 refusals and 340 parent receipts re-established; only its note and
 its two new-tree fingerprints changed).
 
