@@ -1,0 +1,12 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..d93a78a 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -1489,6 +1489,7 @@ sw_stream_start_col:
+   and #1
+   asl a
+   asl a
++  ora #$08
+   sta st_fnt                  ; nt-hi contribution = (screenCol&1)*4
+   ; st_vary starting value = (win_row_screen&1)*15 + win_row_local -- the
+   ; window's own current physical row start.

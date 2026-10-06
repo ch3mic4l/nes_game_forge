@@ -1,0 +1,15 @@
+diff --git a/a/engine/rpg.asm b/b/engine/rpg.asm
+index 22458cb..5b5230f 100644
+--- a/a/engine/rpg.asm
++++ b/b/engine/rpg.asm
+@@ -227,7 +227,9 @@ battle_end_status:
+   inx
+   cpx #MAX_PARTY
+   bne battle_end_status
+-  jsr redraw_screen
++  nop
++  nop
++  nop
+   lda #NO_ENTITY
+   sta <pending_ent
+   ldx <bt_from_ent

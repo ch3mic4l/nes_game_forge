@@ -1,0 +1,12 @@
+diff --git a/a/engine/streamdialog.asm b/b/engine/streamdialog.asm
+index 7e74b89..775bada 100644
+--- a/a/engine/streamdialog.asm
++++ b/b/engine/streamdialog.asm
+@@ -314,7 +314,6 @@ sw_dlg_attr_addr:
+   asl a
+   asl a
+   asl a
+-  asl a
+   sta <sw_dlgw_shadowlo
+   lda <sw_dlgw_curarow
+   asl a

@@ -1,0 +1,24 @@
+{
+ "expected": 19,
+ "missing": [
+  "new/rpg//tight/few-large-1/P1/bound/tail-say/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-1/P1/bound/tail-move2/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-4/P1/bound/tail-move2/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-1/P1/bound/tail-none/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-4/P1/bound/tail-flash/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-1/P1/bound/tail-flash/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-4/P1/bound/tail-none/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-1/P1/bound/tail-switch/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-4/P1/bound/tail-say/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-4/P1/bound/tail-switch/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-5/P1/bound/tail-move2/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-5/P1/bound/tail-flash/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-5/P1/bound/tail-switch/enter-set/x246y210d10",
+  "new/rpg//wide/few-large-5/P1/bound/tail-flash/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-5/P1/bound/tail-say/enter-set/x246y210d10",
+  "new/rpg//tight/few-large-5/P1/bound/tail-none/enter-set/x246y210d10",
+  "new/rpg//wide/few-large-5/P1/bound/tail-move2/enter-set/x246y210d10",
+  "new/rpg//wide/few-large-5/P1/bound/tail-say/enter-set/x246y210d10",
+  "new/rpg//wide/few-large-5/P1/bound/tail-none/enter-set/x246y210d10"
+ ]
+}

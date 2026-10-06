@@ -1,0 +1,13 @@
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index 99490a6..08b7ed0 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4247,7 +4247,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     `JOIN_NAMING_ENABLED = ${usesJoinNaming ? 1 : 0}`,
+     `HERO_NAMING_ENABLED = ${usesHeroNaming ? 1 : 0}`,
+     `NAME_ENTRY_BANKED = ${nameEntryBanked ? 1 : 0}`,
+-    `SW_DLG_BANKED = ${streamworldDialogueBanked(project, mapper) ? 1 : 0}`,
++    `SW_DLG_BANKED = 1`,
+     `NAME_SEED_ENABLED = ${usesNameSeed ? 1 : 0}`,
+     // The Say token (docs/design-name-entry.md §9a) -- no battleEnabledFor
+     // term: text.asm is kernel-lo on every board and every game type.

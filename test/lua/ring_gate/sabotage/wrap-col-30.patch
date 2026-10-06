@@ -1,0 +1,13 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..8be3fe0 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -1730,7 +1730,7 @@ sw_ns_loop:
+   lda st_vary
+   .if STREAM_RING
+ sw_ring_wrap_col:
+-  cmp #SW_RING_COL_LEN
++  cmp #30
+   .else
+   cmp #30
+   .endif

@@ -1,0 +1,13 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..567e214 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -3121,7 +3121,7 @@ sw_position_jump_guard:
+   lda sw_fc_desr
+   sta win_row_screen
+   lda sw_fc_desrl
+-  sta win_row_local
++  lda win_row_local
+   jsr sw_render_window        ; full torus redraw at the target origin --
+                               ; never incremental
+   jsr build_oam

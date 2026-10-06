@@ -1,0 +1,13 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..f63e587 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -3362,7 +3362,7 @@ sw_pjg_lt_abs:
+   clc
+   adc #1                        ; two's-complement negate: A = |A|
+ sw_pjg_lt_abs_done:
+-  cmp #6
++  cmp #7
+   bcc sw_pjg_lt_no
+ sw_pjg_lt_yes:
+   lda #1

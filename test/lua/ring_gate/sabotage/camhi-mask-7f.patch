@@ -1,0 +1,12 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..f827aaf 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -2949,6 +2949,7 @@ sw_fcw_yo_done:
+   ; ---- desired window X: camBlockX = (camPx_hi<<4) + (camPx_lo>>4);
+   ; desiredBlockX = camBlockX-8, floored at 0; split by divmod 16; clamp ----
+   lda sw_fc_px_hi
++  and #$7F
+   sta sw_tmp
+   lda #0
+   sta sw_tmp2

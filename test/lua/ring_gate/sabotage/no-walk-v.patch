@@ -1,0 +1,20 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..981405f 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -508,6 +508,7 @@ sw_pr_calc:
+   rts
+ 
+ sw_pstep_right:
++  rts
+   lda #DIR_RIGHT
+   sta <player_dir
+   jsr sw_pr_calc
+@@ -579,6 +580,7 @@ sw_pl_calc:
+   rts
+ 
+ sw_pstep_left:
++  rts
+   lda #DIR_LEFT
+   sta <player_dir
+   jsr sw_pl_calc

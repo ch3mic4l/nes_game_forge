@@ -26,7 +26,7 @@ for (const [name, want] of [['matrix160', 160], ['spikeReview3_19', 19], ['spike
 }
 
 test('the 19 spike-review-3 combinations the review found missing are present (the exact list)', () => {
-  const missing19 = JSON.parse(fs.readFileSync(path.join(ROOT, 'handoff-next/s3b/reviewer6/missing19.json'), 'utf8'));
+  const missing19 = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/crossstage/missing19.json'), 'utf8'));
   assert.equal(missing19.missing.length, 19);
   for (const id of missing19.missing) assert.ok(byId.has(id), id);
 });

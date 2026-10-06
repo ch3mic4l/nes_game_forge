@@ -1,0 +1,13 @@
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index 99490a6..68732d7 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4316,7 +4316,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     // Phase 3b ring prototype: 0 four-screen / 1 vertical X ring / 2 horizontal Y ring, and the four constants the forks read.
+     // SW_RW_NT_STEP/END are the render-window nametable index sequence: vertical 0,1 (end 2), horizontal 0,2 (end 4).
+     `STREAM_RING = ${ringMode}`,
+-    `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
++    `SW_RING_COL_LEN = 30`,
+     `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,
+     `SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`,
+     `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,

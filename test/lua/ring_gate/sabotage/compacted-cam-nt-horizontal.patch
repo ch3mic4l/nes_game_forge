@@ -1,0 +1,40 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..86dea13 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -2368,9 +2368,9 @@ sw_rwa_fill_row:
+   sta sw_last_screen_row
+   rts
+ 
+-sw_rw_nt_hi:  .db $20, $24, $28, $2C
+-sw_rw_ntx:    .db 0, 16, 0, 16
+-sw_rw_nty:    .db 0, 0, 15, 15
++sw_rw_nt_hi:  .db $20, $28, $28, $2C
++sw_rw_ntx:    .db 0, 0, 0, 16
++sw_rw_nty:    .db 0, 15, 15, 15
+ 
+ ; ==========================================================================
+ ; sw_resolve_screen -- phase 2 slice 2b. The runtime counterpart of
+@@ -2941,7 +2941,6 @@ sw_fcw_yo_done:
+ 
+   lda sw_fc_scr
+   and #1
+-  asl a
+   ora sw_tmp
+   sta <cam_nt
+   dec <cam_dirty
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index 99490a6..6141231 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4318,8 +4318,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     `STREAM_RING = ${ringMode}`,
+     `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
+     `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,
+-    `SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`,
+-    `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
++    `SW_RW_NT_STEP = 1`,
++    `SW_RW_NT_END = ${ringMode ? 2 : 4}`,
+     // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on
+     // projectUsesStreaming alone. STREAM_PROJ_ENABLED: the cheap streamed entity projection,
+     // gated on projectUsesStreamedActors (a streaming project with no placed actor keeps the

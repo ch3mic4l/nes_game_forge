@@ -1,0 +1,13 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..3332e25 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -70,7 +70,7 @@ sw_goto:
+   stx sw_tmp3                ; row
+   ldx #0
+ sw_goto_coldiv:
+-  cmp #STREAM_SCREENS_PER_REGION
++  cmp #23
+   bcc sw_goto_colrem
+   sec
+   sbc #STREAM_SCREENS_PER_REGION

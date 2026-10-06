@@ -1,0 +1,15 @@
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index 99490a6..62c489e 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4318,8 +4318,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     `STREAM_RING = ${ringMode}`,
+     `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
+     `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,
+-    `SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`,
+-    `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
++    `SW_RW_NT_STEP = 1`,
++    `SW_RW_NT_END = 4`,
+     // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on
+     // projectUsesStreaming alone. STREAM_PROJ_ENABLED: the cheap streamed entity projection,
+     // gated on projectUsesStreamedActors (a streaming project with no placed actor keeps the

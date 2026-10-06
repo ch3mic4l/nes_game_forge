@@ -1,0 +1,20 @@
+diff --git a/a/engine/player.asm b/b/engine/player.asm
+index 6189e64..16c3aa7 100644
+--- a/a/engine/player.asm
++++ b/b/engine/player.asm
+@@ -336,9 +336,15 @@ cross_left_cut:
+   pla
+   .endif
+   .if !CAMERA_SLIDE_H
++  .if STREAM_RING
++  bne ring_far1
++  jmp cross_none
++ring_far1:
++  .else
+   beq cross_none
+   .endif
+   .endif
++  .endif
+   .if !CAMERA_SLIDE_ENABLED
+   beq cross_none
+   .endif

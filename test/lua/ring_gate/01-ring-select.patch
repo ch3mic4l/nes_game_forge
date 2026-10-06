@@ -1,0 +1,87 @@
+diff --git a/a/shared/cartridge.js b/b/shared/cartridge.js
+index 25a7265..2a87cfe 100644
+--- a/a/shared/cartridge.js
++++ b/b/shared/cartridge.js
+@@ -369,6 +369,18 @@ export function streamCapableTwoNametable(mapper, mirroringId) {
+   return Boolean(mapper?.streamable && !mirroringById(mirroringId).fourScreen);
+ }
+ 
++/**
++ * Which streamed-ring geometry a build uses (the single writer; main/build/generate.js emits it as STREAM_RING):
++ * 0 = four-screen torus, 1 = vertical mirroring (32 x 15 blocks, an X ring), 2 = horizontal mirroring
++ * (16 x 30 blocks, a Y ring). Derived from cameraAxes, never from a second reading of the mirroring string.
++ */
++export function streamRingMode(mapper, mirroringId) {
++  if (!streamCapableTwoNametable(mapper, mirroringId)) return 0;
++  const axes = cameraAxes(mapper, { mirroring: mirroringId });
++  if (axes.horizontal && axes.vertical) return 0;
++  return axes.horizontal ? 1 : 2;
++}
++
+ /** Either ring: is a `map.streamed` legal on this board and mirroring at all? */
+ export function streamCapable(mapper, mirroringId) {
+   return streamCapableFourScreen(mapper, mirroringId) || streamCapableTwoNametable(mapper, mirroringId);
+diff --git a/a/shared/project.js b/b/shared/project.js
+index 14bb178..2422d4d 100644
+--- a/a/shared/project.js
++++ b/b/shared/project.js
+@@ -6825,25 +6825,6 @@ export function streamedBoardProblems(project) {
+           'UNROM 512 with horizontal or vertical mirroring -- change the board in the Build panel, or remove ' +
+           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
+       );
+-    } else if (!streamCapableFourScreen(mapper, mirroringId)) {
+-      // Phase 2 slice 2b: the resolver/render engine (engine/streamworld.asm's
+-      // sw_resolve_screen, cam_nt) was built and measured only against a
+-      // four-screen ring's four independent physical nametables -- the
+-      // two-nametable ring streamCapable() otherwise admits is phase 3,
+-      // "addressing only" today (shared/cartridge.js's own doc comment on
+-      // streamCapableTwoNametable), so a board that only qualifies through
+-      // that ring is refused here even though streamCapable() calls it
+-      // capable in the abstract. Distinct from the !capable message above:
+-      // that one says "this board can never stream," this one says "not yet,
+-      // on this board, in this build."
+-      add(
+-        'capability',
+-        'Build',
+-        `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
+-          'which only reaches the two-nametable ring -- not implemented yet. Streamed maps need UNROM 512 with ' +
+-          'four-screen mirroring today; change the board and mirroring in the Build panel, or remove "streamed" ' +
+-          '(or set it to false) for this map in the project\'s map JSON.'
+-      );
+     }
+     for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message);
+     // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index 49598e7..99490a6 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -203,6 +203,7 @@ import {
+   rpgCapable,
+   saveMediaImplemented,
+   screenRegions,
++  streamRingMode,
+   tilesetLimit
+ } from '../../shared/cartridge.js';
+ 
+@@ -4073,6 +4074,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+   // exists, and identical to it -- byte for byte, including row order -- when none does.
+   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
+   const hasStreamed = streamedPlan !== null;
++  const ringMode = hasStreamed ? streamRingMode(resolveMapper(project.cartridge.mapper), project.cartridge.mirroring) : 0;
+   const projA = projectUsesStreamedActors(project);
+   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
+ 
+@@ -4311,6 +4313,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     // slice 2a. A project with no streamed map assembles with the file
+     // absent: ROM byte-identical.
+     `STREAMING_ENABLED = ${hasStreamed ? 1 : 0}`,
++    // Phase 3b ring prototype: 0 four-screen / 1 vertical X ring / 2 horizontal Y ring, and the four constants the forks read.
++    // SW_RW_NT_STEP/END are the render-window nametable index sequence: vertical 0,1 (end 2), horizontal 0,2 (end 4).
++    `STREAM_RING = ${ringMode}`,
++    `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
++    `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,
++    `SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`,
++    `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
+     // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on
+     // projectUsesStreaming alone. STREAM_PROJ_ENABLED: the cheap streamed entity projection,
+     // gated on projectUsesStreamedActors (a streaming project with no placed actor keeps the

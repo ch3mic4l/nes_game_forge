@@ -1,0 +1,24 @@
+diff --git a/a/engine/boot.asm b/b/engine/boot.asm
+index 8f5f939..f6cecc9 100644
+--- a/a/engine/boot.asm
++++ b/b/engine/boot.asm
+@@ -784,7 +784,8 @@ nmi_scroll_cam_stale:
+   sta <nmi_tmp
+   lda <nmi_cam_nt
+   bcc nmi_scroll_cam_shake_pos_nt
+-  eor #1
++  nop
++  nop
+ nmi_scroll_cam_shake_pos_nt:
+   jmp nmi_scroll_cam_shake_apply
+ nmi_scroll_cam_shake_neg:
+@@ -794,7 +795,8 @@ nmi_scroll_cam_shake_neg:
+   sta <nmi_tmp
+   lda <nmi_cam_nt
+   bcs nmi_scroll_cam_shake_neg_nt
+-  eor #1
++  nop
++  nop
+ nmi_scroll_cam_shake_neg_nt:
+ nmi_scroll_cam_shake_apply:
+   ora #PPUCTRL_ON

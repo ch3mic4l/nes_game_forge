@@ -1,0 +1,13 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..0015d96 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -3117,7 +3117,7 @@ sw_position_jump_guard:
+   lda sw_fc_desc
+   sta win_col_screen         ; target-origin install: current := desired,
+   lda sw_fc_desl             ; both axes, immediately -- never sw_win_arm's
+-  sta win_col_local           ; own one-block-at-a-time approach
++  lda win_col_local           ; own one-block-at-a-time approach
+   lda sw_fc_desr
+   sta win_row_screen
+   lda sw_fc_desrl

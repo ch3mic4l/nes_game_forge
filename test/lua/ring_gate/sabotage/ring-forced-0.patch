@@ -1,0 +1,13 @@
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index 99490a6..1098c68 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4074,7 +4074,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+   // exists, and identical to it -- byte for byte, including row order -- when none does.
+   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
+   const hasStreamed = streamedPlan !== null;
+-  const ringMode = hasStreamed ? streamRingMode(resolveMapper(project.cartridge.mapper), project.cartridge.mirroring) : 0;
++  const ringMode = 0;
+   const projA = projectUsesStreamedActors(project);
+   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
+ 

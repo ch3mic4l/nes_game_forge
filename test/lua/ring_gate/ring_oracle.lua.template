@@ -1,0 +1,239 @@
+-- ring_oracle.lua.template -- the Mesen recorder/interpreter for ringscene.mjs steps (ring gate, row 3).
+-- TEMPLATE: ringrun_mesen.mjs substitutes the STEPS placeholder below (the step list as a Lua table). It only RECORDS: at each checkpoint it prints one
+-- REC line holding the player/camera state and the four nametables read through the board's own mirroring (emu.memType.nesPpuMemory, which
+-- is Mesen's own PPU-bus view). The judge (ringjudge.mjs, Node) decides every record against the project-data oracle, so Mesen and jsnes are
+-- judged by the same code on the same scenario. Positions drive every step, never frame counts.
+local STEPS = __STEPS__
+
+local A = __ADDR__ -- ringaddr.mjs's RING_ADDR (the single transcription of engine/constants.asm; the Node side checks it against every build)
+local function rd(a) return emu.read(a, emu.memType.nesMemory) end
+local function rdp(a) return emu.read(a, emu.memType.nesPpuMemory) end
+
+local held = {}
+local frames = 0
+local ppuctrl = 0
+local blanks, maskOn = 0, false -- forced-blank accounting: a redraw disables rendering and enables it again when it is done
+local sramWrites = 0 -- writes into the battery RAM window $6000-$7FFF (a battery-board Save is witnessed by its own medium, as in the jsnes recorder)
+local function wr(a, v) emu.write(a, v, emu.memType.nesMemory) end
+local function frame() coroutine.yield() end
+local function run(n) for _ = 1, n do frame() end end
+
+local function worldPos(axis)
+  if axis == "x" then return rd(A.sw_col) * 256 + rd(A.player_x) end
+  return rd(A.sw_row) * 240 + rd(A.player_y)
+end
+
+local function settle()
+  local quiet = 0
+  local i = 0
+  while i < 900 and quiet < 30 do
+    frame()
+    i = i + 1
+    if rd(A.st_active) == 0 and rd(A.vram_len) == 0 then quiet = quiet + 1 else quiet = 0 end
+  end
+end
+
+local function record(label, kind)
+  local parts = {}
+  for _, base in ipairs({ 0x2000, 0x2400, 0x2800, 0x2c00 }) do
+    local t = {}
+    for i = 0, 0x3ff do t[#t + 1] = string.format("%02x", rdp(base + i)) end
+    parts[#parts + 1] = table.concat(t)
+  end
+  print(string.format("REC %s %s %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s %s %s %s",
+    label, kind, rd(A.game_state), rd(A.sw_col), rd(A.sw_row), rd(A.player_x), rd(A.player_y), rd(A.cam_nt), rd(A.cam_x_lo), rd(A.cam_y_lo),
+    rd(A.st_active), rd(A.vram_len), rd(A.box_state), rd(A.map_is_streamed), ppuctrl & 3, rd(A.msg_col), rd(A.msg_line), parts[1], parts[2], parts[3], parts[4]))
+end
+
+local function placeFields()
+  return string.format("worldX=%d worldY=%d curMap=%d flatScreen=%d", rd(A.sw_col) * 256 + rd(A.player_x), rd(A.sw_row) * 240 + rd(A.player_y), rd(A.cur_map), rd(A.flat_screen))
+end
+
+local function tapA() held.a = true; frame(); held.a = false; run(4) end
+
+local function dialog(label)
+  local i = 0
+  local typing = false
+  while i < 600 and rd(A.box_state) ~= 3 and rd(A.box_state) ~= 6 do
+    if (not typing) and rd(A.box_state) == 2 and rd(A.msg_col) >= 3 then record(label .. ":typing", "dlg-typing"); typing = true end
+    frame(); i = i + 1
+  end
+  i = 0
+  while i < 30 and rd(A.vram_len) ~= 0 do frame(); i = i + 1 end -- the typed state is recorded once its last packet (the page arrow) has drained
+  record(label .. ":open", "dlg-open")
+  i = 0
+  while i < 60 and rd(A.game_state) ~= 0 do tapA(); run(20); i = i + 1 end
+  if rd(A.game_state) ~= 0 then error("dialogue " .. label .. " never closed") end
+  settle()
+  record(label .. ":closed", "settled")
+end
+
+local function steps()
+  for _, step in ipairs(STEPS) do
+    if step.op == "boot" then
+      local i = 0
+      while i < 400 and not (rd(A.map_is_streamed) == 1 and frames > 30) do frame(); i = i + 1 end
+      if rd(A.map_is_streamed) ~= 1 then error("never reached a streamed map") end
+      if rd(A.game_state) == 2 then dialog("boot") else settle() end
+    elseif step.op == "check" then
+      if rd(A.game_state) == 2 then dialog(step.label .. "~unexpected") end
+      settle()
+      record(step.label, "settled")
+    elseif step.op == "hold" then
+      local still, last, why = 0, worldPos(step.axis), "max"
+      held[step.btn] = true
+      for _ = 1, step.max do
+        frame()
+        if rd(A.game_state) == 2 then
+          held[step.btn] = false
+          dialog(step.axis .. "~" .. worldPos(step.axis))
+          held[step.btn] = true
+        end
+        local p = worldPos(step.axis)
+        if step.gte and p >= step.gte then why = "target"; break end
+        if step.lte and p <= step.lte then why = "target"; break end
+        if p == last then still = still + 1 else still = 0 end
+        last = p
+        if still > 40 then why = "blocked"; break end
+      end
+      held[step.btn] = false
+      print(string.format("HOLD %s %s %s %d", step.btn, tostring(step.gte or step.lte), why, worldPos(step.axis)))
+    elseif step.op == "to" then
+      -- fine positioning: single-frame taps toward an EXACT world position (the walking speed is fractional, so a held button can step over a pixel)
+      local ok = false
+      for _ = 1, step.max do
+        local p = worldPos(step.axis)
+        if p == step.target then ok = true; break end
+        local b = step.back
+        if p < step.target then b = step.fwd end
+        held[b] = true; frame(); held[b] = false; run(3)
+      end
+      print(string.format("HOLD %s %s %s %d", step.btn, tostring(step.target), ok and "target" or "max", worldPos(step.axis)))
+    elseif step.op == "lag" then
+      -- the position-jump guard: the live window origin is moved dc blocks from where the camera wants it; the guard's own run is the entry
+      local sc, lo, u = A.win_col_screen, A.win_col_local, 16
+      if step.axis ~= "x" then sc, lo, u = A.win_row_screen, A.win_row_local, 15 end
+      local cur = rd(sc) * u + rd(lo)
+      local nb = cur + step.dc
+      if nb < 0 then nb = cur - step.dc end -- only a window already off its plan (a faulted run) can need the other sign
+      if nb < 0 then error("lag drives the window origin below 0") end
+      wr(sc, nb // u); wr(lo, nb % u)
+      local b0, i = blanks, 0
+      while i < 200 and not (blanks > b0 and maskOn) do frame(); i = i + 1 end
+      local ok = blanks > b0 and maskOn
+      print(string.format("HOLD lag %s %s %d guard %d", step.target, ok and "target" or "no-blank", worldPos(step.axis), blanks - b0))
+    elseif step.op == "jumpwait" then
+      local b0, prev, why = blanks, worldPos(step.axis), "max"
+      held[step.btn] = true
+      for _ = 1, step.max do
+        frame()
+        if rd(A.game_state) == 2 then
+          held[step.btn] = false
+          dialog(step.axis .. "~warp")
+          held[step.btn] = true
+        end
+        local p = worldPos(step.axis)
+        if math.abs(p - prev) >= 40 then why = "target"; break end
+        prev = p
+      end
+      held[step.btn] = false
+      local i = 0
+      while i < 300 and not (blanks > b0 and maskOn) do frame(); i = i + 1 end
+      if why == "target" and not (blanks > b0) then why = "no-blank" end
+      print(string.format("HOLD jump %s %s %d warp %d", step.target, why, worldPos(step.axis), blanks - b0))
+    elseif step.op == "battle" then
+      local b0, why, slot = blanks, "max", -1
+      held[step.btn] = true
+      local i = 0
+      while i < step.max and rd(A.game_state) ~= 5 do frame(); i = i + 1 end
+      held[step.btn] = false
+      if rd(A.game_state) == 5 then
+        slot = rd(A.bt_from_ent) -- read on the very frame the battle began, as the jsnes recorder does
+        why = "fought"
+        i = 0
+        while i < 400 and rd(A.game_state) == 5 do held.a = true; frame(); held.a = false; run(10); i = i + 1 end
+        if rd(A.game_state) == 5 then why = "never-ended" end
+      end
+      i = 0
+      while i < 300 and not maskOn do frame(); i = i + 1 end
+      if why == "fought" and blanks - b0 < 2 then why = "no-blank" end
+      print(string.format("HOLD battle %s %s %d battle %d slot=%d want=%d", step.target, why, worldPos(step.axis), blanks - b0, slot, step.slot or -1))
+    elseif step.op == "shake" then
+      -- a real horizontal Shake (see ringrun_jsnes.mjs): walk into the touch NPC, release once the shake runs, record every quiet frame until it ends
+      local why = "max"
+      held[step.btn] = true
+      for _ = 1, step.max do
+        frame()
+        if rd(A.game_state) == 2 then
+          held[step.btn] = false
+          dialog(step.axis .. "~shake")
+          held[step.btn] = true
+        end
+        if rd(A.shake_left) > 0 then why = "target"; break end
+      end
+      held[step.btn] = false
+      local quiet, ended = 0, false
+      for _ = 1, 200 do
+        if rd(A.shake_left) == 0 then ended = true; break end
+        if rd(A.st_active) == 0 and rd(A.vram_len) == 0 and quiet < 12 then record("shake:" .. step.label .. ":f" .. quiet, "shake-frame"); quiet = quiet + 1 end
+        frame()
+      end
+      if why == "target" and not ended then why = "never-ended" end
+      if why == "target" and quiet < 8 then why = "too-few-quiet-frames" end
+      print(string.format("HOLD shake %s %s %d shake %d", step.label, why, worldPos(step.axis), quiet))
+    elseif step.op == "title" then
+      -- the title screen: START begins the game on the streamed start map
+      run(90)
+      if rd(A.game_state) ~= 3 then error("no title screen (game_state " .. rd(A.game_state) .. ")") end
+      local r = 0
+      while r < 40 and not (rd(A.map_is_streamed) == 1 and rd(A.game_state) == 0) do held.start = true; frame(); held.start = false; run(15); r = r + 1 end
+    elseif step.op == "save" then
+      -- walk into a Save NPC; the save is witnessed by its own medium: a forced blank (the flash commit) or a write into the battery RAM window
+      local w0, b0, saved, i = sramWrites, blanks, false, 0
+      held[step.btn] = true
+      while i < step.max and not saved do
+        frame(); i = i + 1
+        if step.battery then saved = sramWrites > w0 else saved = blanks > b0 end
+      end
+      held[step.btn] = false
+      settle()
+      print(string.format("HOLD save %s %s %d save %d %s", step.target, saved and "target" or "no-save", worldPos(step.axis), saved and 1 or 0, placeFields()))
+    elseif step.op == "fresh" then
+      -- the far side of a power cycle: this Mesen process IS the power-on (the previous invocation's battery RAM / flash was seeded into this
+      -- process's own private save directory by the Node chain, ringrun_mesen.mjs); Continue from the title, then the same checks as the jsnes `cycle`
+      run(90)
+      local ok, why = false, (rd(A.game_state) == 3) and "no-continue" or "no-title"
+      local b0, r = blanks, 0
+      while r < 20 and rd(A.game_state) == 3 and not ok do
+        held.select = true; frame(); held.select = false
+        local i = 0
+        while i < 90 and not ok do
+          frame(); i = i + 1
+          ok = rd(A.game_state) == 0 and rd(A.map_is_streamed) == 1 and blanks > b0 and maskOn
+        end
+        r = r + 1
+      end
+      if ok then why = "target" end
+      print(string.format("HOLD cycle %s %s %d continue %d %s", step.target, why, worldPos(step.axis), blanks - b0, placeFields()))
+    elseif step.op == "dialog" then
+      if rd(A.game_state) == 2 then dialog(step.label) end
+    else
+      error("unknown step op " .. tostring(step.op))
+    end
+  end
+end
+
+local co = coroutine.create(function() local ok, e = xpcall(steps, debug.traceback); if not ok then error(e, 0) end end)
+local function onFrame()
+  frames = frames + 1
+  if coroutine.status(co) == "dead" then return end
+  local ok, err = coroutine.resume(co)
+  if not ok then print("ERROR " .. tostring(err)); emu.stop(3); return end
+  if coroutine.status(co) == "dead" then print("END " .. placeFields()); print("DONE frames=" .. frames); emu.stop(0) end
+end
+local function onInput() emu.setInput(held, 0) end
+emu.addMemoryCallback(function(_, v) ppuctrl = v end, emu.callbackType.write, 0x2000)
+emu.addMemoryCallback(function() sramWrites = sramWrites + 1 end, emu.callbackType.write, 0x6000, 0x7fff)
+emu.addMemoryCallback(function(_, v) local on = (v & 0x18) ~= 0; if maskOn and not on then blanks = blanks + 1 end; maskOn = on end, emu.callbackType.write, 0x2001)
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
