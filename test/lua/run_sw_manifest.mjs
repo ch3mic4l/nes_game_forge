@@ -4,6 +4,7 @@
 // the result as JSON:
 //   node test/lua/run_sw_manifest.mjs --gt=action --sizes=2,2,2,2,2,2,2,2 [--wide] [--root=<repo>]
 //        [--flashAt=x,y] [--scenario=walk|say|stand|stress|m9f|name|ord] [--mesen=<path>] [--out=<dir>]
+//        [--ring=MMC1-V|MMC1-H|MMC3-V|MMC3-H|U512-V|U512-H [--ringN=<screens>]]   (phase 3b S1b: the ring-cartridge scene, through the gate's patched tree)
 // `mutate(project, {createMap, createScreen})` (test/lua/sw_sweep_mutate.mjs) is an authored change to the scene's project, applied before
 // it is normalized and validated. The result also carries `prov` (the engine, harness, generator and Mesen hashes of this process, and the
 // sha-256 of this job's normalized project and ROM: test/lua/sw_provenance.mjs), `frames` (frames the Mesen session ran) and `timing`
@@ -122,6 +123,22 @@ emu.addMemoryCallback(function()
   end
 end, emu.callbackType.exec, SYM.wait_vblank_loop)`;
 
+/**
+ * A RING cell's version of a scripted run (phase 3b S1b): the same phases with the held buttons on the ring's own axis. A vertical-mirroring ring
+ * (ring 1) scrolls horizontally and its y axis is dead, so only `right` is held; a horizontal-mirroring ring (ring 2) holds only `down`. The phases,
+ * their lengths and their measured/unmeasured roles are unchanged, so a ring's rows line up with the four-screen walk's.
+ */
+export function ringScript(script, ring) {
+  const keep = ring.ring === 1 ? 'right' : 'down';
+  const drop = ring.ring === 1 ? 'down' : 'right';
+  return script.map((ph) => {
+    if (!ph.held) return ph;
+    const held = Object.fromEntries(Object.entries(ph.held).filter(([k]) => k !== drop));
+    // a phase that only held the dead axis (the four-screen walk's `pre`) keeps walking along the ring
+    return { ...ph, held: Object.keys(held).length === 0 && ph.held[drop] ? { [keep]: true } : held };
+  });
+}
+
 const posInt = (v) => Number.isSafeInteger(v) && v > 0;
 /**
  * THE validity of a contact-completed endpoint, for a fresh run (runManifest) and for every persisted record (test/lua/sw_bound_sweep.mjs isBad): `m` is
@@ -154,23 +171,43 @@ export function parseOutput(text) {
   const trace = {};
   const marksOut = {};
   let contact = null;
+  const counters = {};
+  const events = {};
   for (const line of text.split('\n')) {
     let m;
     if ((m = /^PHASE (\S+) (.*)$/.exec(line))) phases[m[1]] = { ...kv(m[2]), classes: {} };
     else if ((m = /^BIND (\S+) (.*)$/.exec(line))) phases[m[1]].bind = kv(m[2]);
     else if ((m = /^CLASS (\S+) (\S+) (.*)$/.exec(line))) phases[m[1]].classes[m[2]] = kv(m[3]);
     else if ((m = /^MK (\S+) f=(\d+) (.*)$/.exec(line))) (marksOut[m[1]] ??= []).push({ f: Number(m[2]), line: m[3] });
+    else if ((m = /^CN (\S+) (.*)$/.exec(line))) (counters[m[1]] ??= []).push(kv(m[2]));
+    else if ((m = /^EV (\S+) f=(\d+) (\S+)$/.exec(line))) (events[m[1]] ??= []).push({ f: Number(m[2]), ev: m[3].split(';') });
     else if ((m = /^CONTACT frame=(\d+) phase=(\S+)/.exec(line))) contact = { frame: Number(m[1]), phase: m[2] };
     else if ((m = /^TR (\S+) (.*)$/.exec(line))) (trace[m[1]] ??= []).push({ ...kv(m[2].replace(/st=(\d+)\/(\d+)/, 'st0=$1 st1=$2')) });
   }
-  return { phases, trace, marks: marksOut, ...(contact ? { contact } : {}), done: /^DONE /m.test(text), timeout: /^TIMEOUT/m.test(text) };
+  return { phases, trace, marks: marksOut, ...(Object.keys(counters).length ? { counters } : {}), ...(Object.keys(events).length ? { events } : {}), ...(contact ? { contact } : {}), done: /^DONE /m.test(text), timeout: /^TIMEOUT/m.test(text) };
+}
+
+/** A ring gate run may only spawn Mesen with an environment whose HOME is a private directory, never the user's own (which holds ~/.config/Mesen2/Saves). */
+export function requirePrivateHome(env) {
+  const h = env?.HOME;
+  if (!h) throw new Error('a ring Mesen run needs a private environment (mesenEnv with its own HOME): refusing to spawn Mesen under the parent HOME');
+  if (path.resolve(h) === path.resolve(os.homedir())) throw new Error(`a ring Mesen run's HOME is the user's own (${h}): refusing to spawn Mesen there`);
 }
 
 export async function runManifest({
   root = REPO, gt = 'action', sizes = null, wide = false, scenario = 'walk', phases = null, beh = null,
   mesen = MESEN_DEFAULT, outDir = null, gridH, nosfx, flashAt = null, flashBeh, flashCmds, gauntlet = null, anim = null, marks = [], mutate = null, contactEndpoint = false,
-  expect = null, cache = null, jobId = null, prepareOnly = false, waitInflight = true
+  expect = null, cache = null, jobId = null, prepareOnly = false, waitInflight = true,
+  // phase 3b S1b: `ring` = { mapper, mirroring, ring: 1|2, n } builds the scene on a ring cartridge (sw_manifest_scene.mjs) and `root` is the patched tree;
+  // `extraLua` is appended after the idle registration (it sees every file-level local of the template: the ring gate's counters use it), `extraSyms` /
+  // `extraRam` are further code / RAM symbols it binds. All three absent, the rendered script and the build are byte-for-byte what they were.
+  ring = null, extraLua = '', extraSyms = [], extraRam = [], start = null,
+  // Phase 3b S1b: the Mesen process's environment (a private HOME, so no run touches the user's own ~/.config/Mesen2) and a hook handed the spawned child (its pid and the files it maps are stamped)
+  // `allowParentHome` is the human CLI's explicit opt-in to the user's own HOME; a RING run (the gate's) without a private HOME is refused before anything is built (finding 3, round 1:
+  // a calibration run once escaped the isolation)
+  mesenEnv = null, onMesenChild = null, allowParentHome = false
 }) {
+  if (ring && !prepareOnly && !allowParentHome) requirePrivateHome(mesenEnv);
   if (contactEndpoint && !(phases ?? SCENARIOS[scenario])?.at(-1)?.collect) throw new Error('the contact endpoint ends the TERMINAL phase, which must be a collected one');
   const dir = outDir ?? await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sw-manifest-run-'));
   const t0 = Date.now();
@@ -183,20 +220,34 @@ export async function runManifest({
     const standStart = scenario === 'stand';
     const ordinaryStart = scenario === 'ord';
     const sayOnFlash = scenario === 'say';
-    const built = await buildScene({ root, gt, sizes, wide, beh: beh ?? (standStart ? 'patroller' : null), nameStart, standStart, ordinaryStart, sayOnFlash, outDir: dir, flashAt, gauntlet, anim, mutate, ...(flashBeh ? { flashBeh } : {}), ...(flashCmds ? { flashCmds } : {}), ...(gridH ? { gridH } : {}), ...(nosfx !== undefined ? { nosfx } : {}) });
+    const built = await buildScene({ root, gt, sizes, wide, beh: beh ?? (standStart ? 'patroller' : null), nameStart, standStart, ordinaryStart, sayOnFlash, outDir: dir, flashAt, gauntlet, anim, mutate, ...(ring ? { ring } : {}), ...(start ? { start } : {}), ...(flashBeh ? { flashBeh } : {}), ...(flashCmds ? { flashCmds } : {}), ...(gridH ? { gridH } : {}), ...(nosfx !== undefined ? { nosfx } : {}) });
     const sym = { ...Object.fromEntries(RAM_SYMS.filter((n) => n in built.symbols.ram).map((n) => [n, built.symbols.ram[n]])) };
     // the contact endpoint's own binding: ONLY an opt-in run carries ST_BATTLE, so every other rendered script's symbol table is unchanged
     if (contactEndpoint) {
       if (!('ST_BATTLE' in built.symbols.ram)) throw new Error('the contact endpoint needs ST_BATTLE, which this build lacks (an RPG-only state)');
       sym.ST_BATTLE = built.symbols.ram.ST_BATTLE;
     }
+    for (const n of extraRam) {
+      if (!(n in built.symbols.ram)) throw new Error(`${n} is not a RAM symbol of this build`);
+      sym[n] = built.symbols.ram[n];
+    }
     for (const n of [...CODE_SYMS, ...marks]) {
       if (!Number.isFinite(built.symbols.code[n])) throw new Error(`${n} is not a symbol of this build`);
       sym[n] = built.symbols.code[n];
     }
+    // an extra symbol named '?label' is OPTIONAL (the counters bind labels some game types do not assemble, e.g. the action-only knockback step);
+    // the script sees an absent one as nil, and the result's `boundSyms` says which were bound
+    const boundSyms = [];
+    for (const n0 of extraSyms) {
+      const optional = n0.startsWith('?');
+      const n = optional ? n0.slice(1) : n0;
+      if (!Number.isFinite(built.symbols.code[n])) { if (optional) continue; throw new Error(`${n} is not a symbol of this build`); }
+      sym[n] = built.symbols.code[n];
+      boundSyms.push(n);
+    }
     let t = await fs.promises.readFile(path.join(HERE, 'sw_manifest.lua.template'), 'utf8');
-    const script = phases ?? SCENARIOS[scenario];
-    for (const [token, value] of [['__SYM__', lua(sym)], ['__MARKS__', lua(marks)], ['__PHASES__', lua(script)], ['__ICON__', String(Math.max(0, built.symbols.icon))], ['__IDLE_REG__', contactEndpoint ? CONTACT_IDLE_REG : IDLE_REG]]) {
+    const script = ring ? ringScript(phases ?? SCENARIOS[scenario], ring) : (phases ?? SCENARIOS[scenario]);
+    for (const [token, value] of [['__SYM__', lua(sym)], ['__MARKS__', lua(marks)], ['__PHASES__', lua(script)], ['__ICON__', String(Math.max(0, built.symbols.icon))], ['__IDLE_REG__', (contactEndpoint ? CONTACT_IDLE_REG : IDLE_REG) + (extraLua ? '\n' + extraLua : '')]]) {
       if (t.split(token).length !== 2) throw new Error(`expected one ${token}`);
       t = t.split(token).join(value);
     }
@@ -219,7 +270,8 @@ export async function runManifest({
     // A spawn failure (no Mesen at that path) is an 'error' event, not a 'close': without a listener Node throws it
     // unhandled, bypassing the `finally` below and leaking the scene folder. Reject instead, so `finally` runs.
     const r = await new Promise((resolve, reject) => {
-      const child = spawn(mesen, [...EXEC_FLAGS.args, luaPath, built.romPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(mesen, [...EXEC_FLAGS.args, luaPath, built.romPath], { stdio: ['ignore', 'pipe', 'pipe'], ...(mesenEnv ? { env: mesenEnv } : {}) });
+      if (onMesenChild) onMesenChild(child);
       let stdout = ''; let stderr = '';
       child.stdout.on('data', (d) => { stdout += d; });
       child.stderr.on('data', (d) => { stderr += d; });
@@ -231,7 +283,7 @@ export async function runManifest({
     // ... and the sources must still be what they were when it was taken
     assertSameSources(before, processProvenance(root, mesen), 'during this job');
     const frames = Number(/^DONE frames=(\d+)/m.exec(r.stdout)?.[1] ?? NaN);
-    const measurement = { ...parsed, status: r.status, symbols: built.symbols, stderr: r.stderr.slice(0, 400), frames };
+    const measurement = { ...parsed, status: r.status, symbols: built.symbols, stderr: r.stderr.slice(0, 400), frames, ...(extraSyms.length ? { boundSyms } : {}), ...(ring ? { script, sceneProject: built.project, sceneScreens: built.project.maps[0].screens.map((sc) => (sc.entities ?? []).map((e) => ({ actor: e.actorId, x: e.x, y: e.y }))) } : {}) };
     // LIVENESS: a contact-endpoint run that reached its frame limit without the CONTACT marker measured a prefix of a run that never completed
     // its contact body (a hang in the mainline looks exactly like this: the frames go on, DONE prints). It is an operational failure, never a result.
     if (contactEndpoint) {
@@ -253,10 +305,23 @@ export async function runManifest({
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const a = Object.fromEntries(process.argv.slice(2).map((s) => { const [k, v] = s.replace(/^--/, '').split('='); return [k, v ?? true]; }));
-  const res = await runManifest({
-    gt: a.gt ?? 'action', flashAt: a.flashAt ? a.flashAt.split(',').map(Number) : null, sizes: a.sizes ? a.sizes.split(',').map(Number) : null, wide: Boolean(a.wide), root: a.root ?? REPO,
-    scenario: a.scenario ?? 'walk', mesen: a.mesen ?? MESEN_DEFAULT, outDir: a.out ?? null, beh: a.beh ?? null
-  });
-  const { symbols, ...rest } = res;
-  console.log(JSON.stringify(rest, null, 1));
+  // --ring=<MMC1-V|MMC1-H|MMC3-V|MMC3-H|U512-V|U512-H> [--ringN=<screens>]: build the scene on that ring cell through the gate's patched tree
+  // (test/lua/ring_gate/ringcli.mjs; imported only when the flag is given). Absent, nothing below differs from the four-screen CLI.
+  let ringArg = {}; let cleanup = null;
+  if (a.ring !== undefined) {
+    if (a.ring === true) { console.error('--ring needs a cell id (MMC1-V, MMC1-H, MMC3-V, MMC3-H, U512-V, U512-H)'); process.exit(2); }
+    if (a.root !== undefined) { console.error('--ring builds its own patched tree: it cannot be combined with --root'); process.exit(2); }
+    const { prepareRing } = await import('./ring_gate/ringcli.mjs');
+    const sizes0 = a.sizes ? a.sizes.split(',').map(Number) : null;
+    const r = await prepareRing({ cellId: a.ring, gt: a.gt ?? 'action', n: a.ringN ? Number(a.ringN) : null, sizes: sizes0, wide: Boolean(a.wide) });
+    ringArg = { ring: r.ring, root: r.tree.root }; cleanup = () => r.dispose();
+  }
+  try {
+    const res = await runManifest({
+      gt: a.gt ?? 'action', flashAt: a.flashAt ? a.flashAt.split(',').map(Number) : null, sizes: a.sizes ? a.sizes.split(',').map(Number) : null, wide: Boolean(a.wide), root: a.root ?? REPO,
+      scenario: a.scenario ?? 'walk', mesen: a.mesen ?? MESEN_DEFAULT, outDir: a.out ?? null, beh: a.beh ?? null, ...ringArg, ...(a.ring !== undefined ? { allowParentHome: true } : {})
+    });
+    const { symbols, ...rest } = res;
+    console.log(JSON.stringify(rest, null, 1));
+  } finally { cleanup?.(); }
 }

@@ -6,9 +6,9 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { makeTree, PATCH_DIR } from './ringtree.mjs';
+import { makeTree, PATCH_DIR, sha256 } from './ringtree.mjs';
 import { cellById, ringProject, buildCell } from './ringworld.mjs';
-import { mesenStamp, fileStamp, stampResult, harnessFingerprint, fingerprintGaps, writeAttempt, finishAttempt } from './ringprov.mjs';
+import { mesenStamp, fileStamp, stampResult, harnessFingerprint, fingerprintGaps, writeAttempt, finishAttempt, EVIDENCE_ENTRIES } from './ringprov.mjs';
 import { matrixScripts } from './ringjobs.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -23,34 +23,60 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../..');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ring-prov-unit-'));
 
-// A counted skip when no Mesen can run, or the one resolved is not a full release (this test symlinks and compares its sibling files). An invalid configured $MESEN is NOT a skip: the test body throws it.
-const mesenTestSkip = () => (MESEN_ERROR ? false : !MESEN ? 'no executable Mesen (set $MESEN or put Mesen on PATH)'
-  : ['Mesen.dll', 'MesenCore.so', 'Mesen.runtimeconfig.json', 'Mesen.deps.json'].some((f) => !fs.existsSync(path.join(path.dirname(MESEN), f))) ? `${MESEN} has no sibling Mesen release files` : false);
-// ---- the Mesen implementation stamp identifies the core, not only the host (review 2: a dummy sibling core left the old stamp unchanged)
-test('mesenStamp: a different MesenCore.so beside an identical host changes the stamp; the loaded core is identified by hash', { skip: mesenTestSkip() }, () => {
-  if (MESEN_ERROR) throw new Error(MESEN_ERROR); // an invalid configured $MESEN is an error, never a skip
-  const real = path.dirname(MESEN);
+// ---- the Mesen implementation stamp identifies the core, not only the host (review 2: a dummy sibling core left the old stamp unchanged).
+// Built from a COMPLETE SYNTHETIC release in a mkdtemp directory, so the core assertions need no installed Mesen. `release(dir, {core})` writes the five
+// files a release holds; the executable under test is `Mesen` unless a test names another.
+const SYNTH = { 'Mesen': 'synthetic host', 'Mesen.dll': 'synthetic managed assembly', 'Mesen.runtimeconfig.json': '{"runtimeOptions":{"tfm":"net8.0"}}', 'Mesen.deps.json': '{}', 'MesenCore.so': 'synthetic native core' };
+const release = (dir, over = {}) => { fs.mkdirSync(dir, { recursive: true }); for (const [f, body] of Object.entries({ ...SYNTH, ...over })) fs.writeFileSync(path.join(dir, f), body, { mode: f === 'Mesen' ? 0o755 : 0o644 }); return path.join(dir, 'Mesen'); };
+test('mesenStamp: a different MesenCore.so beside an identical host changes the stamp; the loaded core is identified by hash (synthetic release, no installed Mesen needed)', () => {
   const dir = tmp();
   try {
-    for (const f of ['Mesen', 'Mesen.dll', 'Mesen.runtimeconfig.json', 'Mesen.deps.json']) fs.symlinkSync(path.join(real, f), path.join(dir, f));
-    fs.writeFileSync(path.join(dir, 'MesenCore.so'), 'a dummy core');
-    const dummy = mesenStamp(path.join(dir, 'Mesen'));
-    const genuine = mesenStamp(MESEN);
+    const a = release(path.join(dir, 'a'));
+    const b = release(path.join(dir, 'b'), { 'MesenCore.so': 'a dummy core' });
+    const genuine = mesenStamp(a), dummy = mesenStamp(b);
     assert.equal(dummy.binarySha256, genuine.binarySha256, 'the host binary is identical');
     assert.notEqual(dummy.siblingFiles['MesenCore.so'].sha256, genuine.siblingFiles['MesenCore.so'].sha256);
     assert.notDeepEqual(dummy, genuine);
     // a core the process really loaded (a path outside the binary's directory, as Mesen does) is hashed and compared with the sibling
     const loaded = path.join(dir, 'loaded-core.so');
     fs.writeFileSync(loaded, 'the extracted core');
-    const withLoaded = mesenStamp(path.join(dir, 'Mesen'), [loaded]);
+    const withLoaded = mesenStamp(b, [loaded]);
     assert.equal(withLoaded.loadedCoreSha256, null, 'a loaded file not named MesenCore.so is not mistaken for the core');
     const loadedCore = path.join(dir, 'extracted', 'MesenCore.so');
     fs.mkdirSync(path.dirname(loadedCore));
     fs.writeFileSync(loadedCore, 'the extracted core');
-    const w2 = mesenStamp(path.join(dir, 'Mesen'), [loadedCore]);
+    const w2 = mesenStamp(b, [loadedCore]);
     assert.equal(w2.loadedCoreSha256, fileStamp(loadedCore).sha256);
     assert.equal(w2.coreLoadedFromSibling, false, 'the executed core differs from the sibling one');
+    const same = mesenStamp(a, [path.join(dir, 'a', 'MesenCore.so')]);
+    assert.equal(same.coreLoadedFromSibling, true, 'the sibling core itself, loaded, is the sibling');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+test('mesenStamp: the RESOLVED EXECUTABLE is hashed as itself -- a renamed `mesen-custom` is never stamped as its sibling `Mesen`; the sibling release host is kept separately', () => {
+  const dir = tmp();
+  try {
+    const rel = release(path.join(dir, 'r'));
+    const custom = path.join(dir, 'r', 'mesen-custom');
+    fs.writeFileSync(custom, '#!/bin/sh\nprintf "CUSTOM %s\\n" "$0"\n', { mode: 0o755 });
+    const s = mesenStamp(custom);
+    assert.equal(s.binary, custom);
+    assert.equal(s.binarySha256, sha256(fs.readFileSync(custom)), 'the stamp must hash the executable that ran');
+    assert.notEqual(s.binarySha256, sha256(fs.readFileSync(rel)), 'it must not hash the sibling Mesen');
+    assert.equal(s.binaryBytes, fs.statSync(custom).size);
+    assert.equal(s.siblingHostSha256, sha256(fs.readFileSync(rel)), 'the sibling release host is recorded apart');
+    assert.equal(s.siblingFiles.Mesen.sha256, s.siblingHostSha256);
+    // the plain-named executable is itself and its own sibling
+    const plain = mesenStamp(rel);
+    assert.equal(plain.binarySha256, plain.siblingHostSha256);
+    assert.notEqual(plain.binarySha256, s.binarySha256);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+// the availability of a real installed Mesen is its own (counted) check; none of the stamp assertions above depends on it
+test('an installed Mesen release, when one resolves, stamps as itself with its own sibling files', { skip: MESEN_ERROR ? false : !MESEN ? 'no executable Mesen (set $MESEN or put Mesen on PATH)' : false }, () => {
+  if (MESEN_ERROR) throw new Error(MESEN_ERROR); // an invalid configured $MESEN is an error, never a skip
+  const s = mesenStamp(MESEN);
+  assert.equal(s.binary, MESEN);
+  assert.equal(s.binarySha256, sha256(fs.readFileSync(MESEN)));
 });
 
 // ---- the harness fingerprint includes what the import closure misses (review 2 finding 3)
@@ -174,6 +200,16 @@ test('harnessFingerprint covers EVERY script the matrix executes (argv[0] of eac
     assert.deepEqual(gaps.map((g) => path.basename(g)), [drop], `dropping ${drop} from the seed must leave exactly it unhashed`);
     assert.throws(() => harnessFingerprint({ seed }), (e) => e.message.includes(drop), `a fingerprint missing ${drop} must be refused`);
   }
+  // round 2, finding 7: the evidence-producing entry points (the builder-identity proof, the report tables, the isolated-HOME spawner, ...) are matrix jobs AND named evidence: dropping one is a gap
+  for (const drop of ['s1b_noflag.mjs', 's1b_tables.mjs']) {
+    assert.ok(scripts.some((x) => x.endsWith(drop)), `${drop} is a script the matrix executes`);
+    assert.ok(EVIDENCE_ENTRIES.includes(drop), `${drop} is a named evidence entry`);
+    const seed = ['test/lua/ring_gate/run_matrix.mjs', ...scripts.filter((x) => !x.endsWith(drop))];
+    const gaps = fingerprintGaps(harnessFingerprint({ seed, check: false }));
+    assert.deepEqual(gaps.map((g) => path.basename(g)), [drop], `dropping ${drop} must leave exactly it unhashed`);
+    assert.throws(() => harnessFingerprint({ seed }), (e) => e.message.includes(drop));
+  }
+  for (const must of ['s1b_noflag.mjs', 's1b_tables.mjs', 'ringhome.mjs', 'iso_unit.mjs']) assert.ok(`test/lua/ring_gate/${must}` in harnessFingerprint(), `${must} is in the default fingerprint`);
   // and a fingerprint is sensitive to the dropped script's CONTENT only when it is seeded: with the script seeded its hash is present
   assert.ok('test/lua/ring_gate/repro_continue_y.mjs' in harnessFingerprint());
 });
@@ -342,4 +378,17 @@ test('a campaign that requests Mesen when none can run fails EXPLICITLY: an UNME
     assert.match(r.stdout, /redraw-guard resident mesen\s+UNMEASURED Mesen is unavailable: \$MESEN=.*is not an executable file/);
     assert.match(r.stdout, /^1 executed, 0 FAIL, 0 ERROR, 0 N\/A, 1 unmeasured$/m);
   } finally { fs.rmSync(sb.root, { recursive: true, force: true }); }
+});
+
+// ---- an oracle (row 3) Mesen row retains the invocation and the user-saves attestation, and the audit refuses one that does not (S1b part A.3)
+test('auditCampaignResult: an oracle Mesen row without userSavesUntouched or its invocation fails the audit; with both it is clean; a jsnes oracle row needs neither', async () => {
+  const { auditCampaignResult } = await import('./ringprovindex.mjs');
+  const inv = { n: 1, ops: 'boot,check', status: 0, pid: 4242, settingsSha256: 'a'.repeat(64), seededSaves: {}, producedSaves: {} };
+  const good = { cell: 'MMC1-V', emu: 'mesen', vramOk: true, emulatorStamp: { emulator: 'Mesen2 --testRunner' }, mesenChain: [inv], userSavesUntouched: true };
+  const probs = (r) => auditCampaignResult(r, 'x').join(' | ');
+  assert.equal(probs(good), '');
+  assert.match(probs({ ...good, userSavesUntouched: undefined }), /does not attest/);
+  assert.match(probs({ ...good, mesenChain: undefined }), /does not retain its one Mesen invocation/);
+  assert.match(probs({ ...good, mesenChain: [{ ...inv, status: 3 }] }), /does not retain its one Mesen invocation/);
+  assert.equal(probs({ cell: 'MMC1-V', emu: 'jsnes', vramOk: true, emulatorStamp: { emulator: 'jsnes (vendored core)' } }), '');
 });

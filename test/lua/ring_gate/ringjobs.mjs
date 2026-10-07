@@ -7,10 +7,17 @@ import path from 'node:path';
 const O = 'test/lua/ring_gate/run_oracle.mjs';
 const I = 'test/lua/ring_gate/run_identity.mjs';
 const CAMP = 'test/lua/ring_gate/run_campaign.mjs';
+const S1B = 'test/lua/ring_gate/run_s1b.mjs';
+const PAD_CELLS = ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H'];
+const CELL_IDS = ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H'];
 const ALL_SABOTAGE = ['strip-len-30-vertical', 'wrap-col-30', 'wrap-row-32', 'dest-plus08-vertical', 'render-four-nts', 'compacted-cam-nt-horizontal', 'ring-forced-0', 'dlg-attr-offset-n32',
   'dlg-attr-nomask', 'wrong-glyph', 'instant-text', 'forced-banked', 'no-walk-v', 'no-walk-h',
   // round 3 campaign sabotages: declared invisible to the identity row (they need a large world, a redraw entry or a Shake)
-  'region-carry-23', 'camhi-mask-7f', 'blk-hi-drop', 'pjg-lag-7', 'pjg-no-col-local', 'pjg-no-row-local', 'battle-return-no-render', 'continue-pos-zero', 'shake-no-nt-flip', 'shake-nt-eor2'];
+  'region-carry-23', 'camhi-mask-7f', 'blk-hi-drop', 'pjg-lag-7', 'pjg-no-col-local', 'pjg-no-row-local', 'battle-return-no-render', 'continue-pos-zero', 'shake-no-nt-flip', 'shake-nt-eor2',
+  // S1b: the full-system padding mutation (over = fails the G gate; under = its matching positive)
+  'pad-mainline-over', 'pad-mainline-under',
+  // S1b round 2: seam sabotages (a stale Move scroll; a strip read from the wrong source column)
+  'move-scroll-stale', 'strip-src-eor1'];
 
 /**
  * The job list. A job: { name, argv, expect: { exit, log: RegExp }, group }. `group` orders execution (a later group starts after an earlier one ends).
@@ -78,11 +85,44 @@ export function jobs(P, L) {
   out.push({ name: 'repro-battle-slot5', argv: ['test/lua/ring_gate/repro_battle_slot5.mjs', 'streamed'], expect: { exit: 0, log: /^all 8 fights \(slots 0-7\) and the overlap \(slot 2 first, then 5\) each fresh, fought out and returned to gameplay$/m }, group: 3, raw: true, stamps: false });
   out.push({ name: 'repro-battle-slot5-ordinary', argv: ['test/lua/ring_gate/repro_battle_slot5.mjs', 'ordinary'], expect: { exit: 0, log: /^all 8 fights \(slots 0-7\) and the overlap \(slot 2 first, then 5\) each fresh, fought out and returned to gameplay$/m }, group: 3, raw: true, stamps: false });
   out.push({ name: 'repro-continue-y', argv: ['test/lua/ring_gate/repro_continue_y.mjs', '239'], expect: { exit: 0, log: /^continue landed in gameplay at the saved place: worldX \d+ worldY \d+ \(local y \d+ > MAX_Y 224\) cur_map \d+ flat_screen \d+$/m }, group: 3, raw: true, stamps: false });
+  // S1b rows 2, 4, 7 (run_s1b.mjs): every cell x game type x reachable dialogue placement. A positive's declared outcome = every item PASS or N/A with a source proof.
+  const s1bPass = /^\S+ (action|rpg) (resident|banked): S1b all pass \(\d+ items, \d+ N\/A\)$/m;
+  for (const c of CELL_IDS) {
+    add(`s1b-${c}-action-resident`, S1B, [`--cell=${c}`, '--gt=action', '--placement=resident'], { exit: 0, log: s1bPass }, 4);
+    add(`s1b-${c}-rpg-resident`, S1B, [`--cell=${c}`, '--gt=rpg', '--placement=resident'], { exit: 0, log: s1bPass }, 4);
+    add(`s1b-${c}-rpg-banked`, S1B, [`--cell=${c}`, '--gt=rpg', '--placement=banked'], { exit: 0, log: s1bPass }, 4);
+    // action banked: N/A, PROVED by the real capacity check refusing the bulk text that would force the overlay out of the resident kernel-hi
+    add(`s1b-${c}-action-banked-na`, S1B, [`--cell=${c}`, '--gt=action', '--placement=banked'], { exit: 0, log: /action banked  N\/A  an action project cannot place the dialogue overlay/ }, 4, { stamp: false });
+  }
+  // the full-system padding mutation: padded past the gate it must FAIL the G gate (CAUGHT), the matching under-gate pad must pass
+  for (const c of PAD_CELLS) {
+    add(`s1b-pad-over-${c}`, S1B, [`--cell=${c}`, '--gt=action', '--sabotage=pad-mainline-over', '--expect=gate-fail'], { exit: 0, log: /sabotage pad-mainline-over \(expect gate-fail\): CAUGHT/ }, 5);
+    add(`s1b-pad-under-${c}`, S1B, [`--cell=${c}`, '--gt=action', '--sabotage=pad-mainline-under', '--expect=bound-fail'], { exit: 0, log: /CAUGHT: sampled estimate refusal -- the measured gate passed and the class estimate alone refused/ }, 5);
+  }
+  // the S1 test 3b control: a classifier that drops the Move body (frozen-state filter) must fail the class, reads and seam rules
+  add('s1b-fault-freeze-drops-move-MMC1-H', S1B, ['--cell=MMC1-H', '--gt=action', '--fault=freeze-drops-move', '--expect=fail'], { exit: 0, log: /fault freeze-drops-move \(expect fail\): CAUGHT/ }, 5);
+  add('s1b-fault-freeze-drops-move-U512-V-rpg', S1B, ['--cell=U512-V', '--gt=rpg', '--fault=freeze-drops-move', '--expect=fail'], { exit: 0, log: /fault freeze-drops-move \(expect fail\): CAUGHT/ }, 5);
+  // round 2, finding 4: a deliberately wrong executed-path counter hook must fail the transaction arithmetic / the required evidence (per mapper for the mapper-write range)
+  const cf = (name, cell, fault) => add(`s1b-fault-${name}-${cell}`, S1B, [`--cell=${cell}`, '--gt=action', '--specs=walk,mv-say', `--fault=${fault}`, '--expect=fail'], { exit: 0, log: new RegExp(`fault ${fault} \\(expect fail\\): CAUGHT: the transaction arithmetic`) }, 5);
+  cf('loc-half', 'MMC1-V', 'counter-loc-half'); cf('price-addr', 'MMC3-V', 'counter-price-addr'); cf('dead', 'U512-H', 'counter-dead');
+  for (const c of ['MMC1-V', 'MMC3-H', 'U512-V']) cf('mwm-range', c, 'counter-mwm-range');
+  // round 2, finding 5: the seam sabotages -- a stale Move scroll and a strip read from the wrong source column -- must each fail a seam item on the distinguishable-terrain specs, on every cell
+  for (const c of CELL_IDS) for (const sb of ['move-scroll-stale', 'strip-src-eor1']) add(`s1b-seam-${sb}-${c}`, S1B, [`--cell=${c}`, '--gt=action', '--specs=seam-walk,seam-move', '--emu=jsnes', `--sabotage=${sb}`, '--expect=seam-fail'], { exit: 0, log: new RegExp(`sabotage ${sb} \\(expect seam-fail\\): CAUGHT: a seam item failed`) }, 5);
+  // selection errors of the new runner stay errors
+  add('selection-s1b-misspelled-cell', S1B, ['--cell=MMCl-V'], { exit: 2, log: /is not one of/ }, 3, { stamp: false });
+  add('selection-s1b-undeclared-sabotage', S1B, ['--cell=MMC1-V', '--sabotage=no-such-patch'], { exit: 2, log: /not a declared sabotage/ }, 3, { stamp: false });
+  add('selection-s1b-unknown-argument', S1B, ['--bogus=1'], { exit: 2, log: /unknown argument/ }, 3, { stamp: false });
   // the harness's own tests: judge/record/provenance/matrix controls
   const test = (name, file) => out.push({ name, argv: ['--test', file], expect: { exit: 0, log: /^# fail 0$/m }, group: 3, raw: true, stamps: false });
   test('judge-unit', 'test/lua/ring_gate/judge_unit.mjs');
   test('record-controls', 'test/lua/ring_gate/record_controls.mjs');
   test('prov-unit', 'test/lua/ring_gate/prov_unit.mjs');
+  test('s1b-unit', 'test/lua/ring_gate/s1b_unit.mjs');
+  test('iso-unit', 'test/lua/ring_gate/iso_unit.mjs');
+  // the builder-identity proof (flag-absent output of the two G-gate builders equals the pre-flag snapshot) and the report tables are certificate evidence: executed by the matrix, so fingerprinted
+  out.push({ name: 's1b-noflag', argv: ['test/lua/ring_gate/s1b_noflag.mjs', 'check', 'handoff-next/s1b-noflag-before.json'], expect: { exit: 0, log: /no-flag output byte-identical/ }, group: 3, raw: true, stamps: false });
+  out.push({ name: 's1b-tables', argv: ['test/lua/ring_gate/s1b_tables.mjs', L], expect: { exit: 0, log: /^## Verdicts per cell/m }, group: 6, raw: true, stamps: false });
+  out.push({ name: 's1b-coverage', argv: ['test/lua/ring_gate/s1b_coverage.mjs', L], expect: { exit: 0, log: /^# S1b round 3: coverage, agreement, class estimate and seam evidence/m }, group: 6, raw: true, stamps: false });
   // deliberate selection / usage errors: each must STAY an error (exit 2), never become "all pass"
   add('selection-misspelled-cell', O, ['--cell=MMCl-V', '--emu=jsnes'], { exit: 2, log: /names nothing valid/ }, 3, { stamp: false });
   add('selection-unknown-argument', O, ['--bogus=1'], { exit: 2, log: /unknown argument/ }, 3, { stamp: false });

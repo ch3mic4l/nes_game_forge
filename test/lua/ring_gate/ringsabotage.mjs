@@ -43,6 +43,12 @@ export const IDENTITY_OUTCOME = {
   'forced-banked': (cell, gameType, banked) => (gameType === 'rpg' && !banked ? 'catch' : 'pass'),
   // compacted tables on horizontal: STEP/END changed to 1/2, which is the vertical geometry; the vertical cells' row-1 operands are unchanged
   'compacted-cam-nt-horizontal': (cell) => (cell.ring === 2 ? 'catch' : 'pass'),
+  // S1b padding mutation: a delay loop at the top of the mainline body; no row-1 operand reads it
+  'pad-mainline-over': () => 'pass',
+  'pad-mainline-under': () => 'pass',
+  // S1b round 2 seam sabotages: a stale Move scroll and a strip read from the wrong source column; both leave every ROW-1 operand identity as shipped (they only change what a Move frame publishes / which source byte a strip takes)
+  'move-scroll-stale': () => 'pass',
+  'strip-src-eor1': () => 'pass',
   // STREAM_RING forced 0: every cell that builds reports STREAM_RING 0 where it wants 1 or 2
   'ring-forced-0': () => 'catch'
 };

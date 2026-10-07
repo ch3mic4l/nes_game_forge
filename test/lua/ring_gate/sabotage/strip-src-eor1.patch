@@ -1,0 +1,20 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 24c538e..86f5834 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -1546,6 +1546,7 @@ sw_ssc_read:
+   asl a
+   clc
+   adc sw_ss_lc
++  eor #1
+   tay
+   lda [mtptr_lo],y
+   jmp sw_ssc_store
+@@ -1657,6 +1658,7 @@ sw_ssr_read:
+   asl a
+   clc
+   adc sw_probe_col_local
++  eor #1
+   tay
+   lda [mtptr_lo],y
+   jmp sw_ssr_store

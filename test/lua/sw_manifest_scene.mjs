@@ -31,6 +31,10 @@
 //     metasprite of the actor is unchanged, so the project's tile count and art bounds are too: only the
 //     entity_animate advance/wrap work and the pose mix move. Actors with different duration vectors are out of
 //     phase with one another; actors with the same vector advance on the same body.
+//   - `ring` (phase 3b S1b) = { mapper, mirroring, ring: 1|2, n } puts the same workload on a RING cartridge (shared/cartridge.js, the plan's six
+//     mapper/mirroring cells): an N x 1 world (ring 1, vertical mirroring: the player walks RIGHT) or a 1 x N world (ring 2, horizontal mirroring: the
+//     player walks DOWN) of `n` screens, the two eight-actor targets on the 3rd- and 2nd-to-last screens (the deepest rows/banks, the last one left empty so a Move/walk past the second
+//     target still scrolls, as the four-screen grid's last row does), the start on the screen before them, and the touch Shake/Flash/Sfx npc / damage npc on the walk's own corridor. Absent, every path below is exactly what it was.
 // Every scene is passed through normalizeProject and must validate with zero errors before it is built (an
 // admitted, authorable project, not a hand-rolled one).
 // The action fixture is 3x61 (the packing ceiling); the RPG fixture is 3x30 with no Sfx, because a
@@ -137,24 +141,34 @@ export async function buildScene({ root = REPO, outDir, ...opts }) {
 }
 
 export async function buildSceneProject({
-  root = REPO, gt = 'action', sizes = null, wide = false, beh = null, nosfx = gt === 'rpg',
-  gridH = gt === 'rpg' ? 30 : 61, anim = null, flashAt = null, flashBeh = 'npc', flashCmds = null, gauntlet = null, stretch = 0, stretchTouchYs = [40, 54, 68, 82], nameStart = false, standStart = false, ordinaryStart = false, sayOnFlash = false, mutate = null
+  root = REPO, gt = 'action', sizes = null, wide = false, beh = null, nosfx = gt === 'rpg', ring = null,
+  gridH = gt === 'rpg' ? 30 : 61, start = null, anim = null, flashAt = null, flashBeh = 'npc', flashCmds = null, gauntlet = null, stretch = 0, stretchTouchYs = [40, 54, 68, 82], nameStart = false, standStart = false, ordinaryStart = false, sayOnFlash = false, mutate = null
 }) {
   const { createProject, createMap, createScreen, normalizeProject, validateProject } = await import(path.join(root, 'shared/project.js'));
+  if (ring && (stretch || gauntlet || ordinaryStart)) throw new Error('a ring scene has no stretch / gauntlet / ordinary-start variant');
+  if (ring && !(Number.isInteger(ring.n) && ring.n >= 4 && (ring.ring === 1 || ring.ring === 2))) throw new Error(`bad ring spec ${JSON.stringify(ring)}`);
   const LR = gridH - 3;
-  const idx = (c, r) => r * GRID_W + c;
+  const GW = ring ? (ring.ring === 1 ? ring.n : 1) : GRID_W;
+  const GH = ring ? (ring.ring === 1 ? 1 : ring.n) : gridH;
+  const idx = (c, r) => r * GW + c;
   const project = createProject('Manifest Scene', gt);
-  project.cartridge.mapper = 30;
-  project.cartridge.mirroring = 'fourscreen';
+  project.cartridge.mapper = ring ? ring.mapper : 30;
+  project.cartridge.mirroring = ring ? ring.mirroring : 'fourscreen';
   project.cartridge.camera = true;
   if (!nosfx) project.sfx.push({ name: 'Blip', volume: 15, steps: [{ note: 8, duration: 4 }] });
   const map = createMap(0, 'Streamed');
-  map.gridW = GRID_W; map.gridH = gridH; map.streamed = true; map.tilesetId = 0;
-  map.screens = Array.from({ length: GRID_W * gridH }, () => createScreen());
+  map.gridW = GW; map.gridH = GH; map.streamed = true; map.tilesetId = 0;
+  map.screens = Array.from({ length: GW * GH }, () => createScreen());
   project.maps = [map];
+  if (ring?.terrain) {
+    // S1b round 2 (row 7): a DISTINGUISHABLE-terrain ring, so a strip drawn from the wrong source or to the wrong place shows. Every block's metatile is a function of (screen, col, row) over 23 ids,
+    // each with its own four tiles and a palette (id & 3): the formula of ring_gate/ringworld.mjs terrainId (s1b_unit.mjs asserts the two equal). A scene WITHOUT the flag is byte-identical to before.
+    for (let id = 1; id <= 24; id++) project.metatiles[id] = { id, name: `Seam ${id}`, tiles: [id * 4, id * 4 + 1, id * 4 + 2, id * 4 + 3], palette: id & 3, collision: id === 24 ? 'solid' : 'open' };
+    map.screens.forEach((screen, sIdx) => { for (let i = 0; i < screen.metatiles.length; i++) screen.metatiles[i] = 1 + ((sIdx * 5 + (i & 15) * 7 + (i >> 4) * 3 + (i >> 4)) % 23); });
+  }
   project.project.startMap = 0;
-  project.project.startScreen = (nameStart || standStart) ? idx(2, LR) : idx(1, stretch ? LR + 3 - stretch - 1 : LR - 1);
-  project.project.startX = 120; project.project.startY = 120;
+  project.project.startScreen = ring ? ((nameStart || standStart) ? ring.n - 3 : ring.n - 4) : (nameStart || standStart) ? idx(2, LR) : idx(1, stretch ? LR + 3 - stretch - 1 : LR - 1);
+  project.project.startX = start?.x ?? 120; project.project.startY = start?.y ?? 120;
   if (nameStart) project.party[0].renamable = true;
 
   const S = sizes ?? [null, null, null, null, null, null, null, null];
@@ -165,11 +179,13 @@ export async function buildSceneProject({
   const sayProps = { trigger: 'touch', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }, { op: 'say', text: 'Ouch. That was bright.' }] }] } };
   const actorAt = (i, name, behavior, damage) => ({ name, behavior, hp: 1, damage });
   const actorIds = [];
-  for (let i = 0; i < 7; i++) { actorIds.push(project.sprites.actors.length); project.sprites.actors.push(actorAt(i, `Chaser${i}`, beh ?? 'chaser', 0)); }
+  for (let i = 0; i < 7; i++) { actorIds.push(project.sprites.actors.length); project.sprites.actors.push(actorAt(i, `Chaser${i}`, beh ?? 'chaser', ring?.chaserDamage ?? 0)); }
   const flashId = project.sprites.actors.length; project.sprites.actors.push(actorAt(7, 'ShakeFlashNpc', flashBeh, 0));
   // only a stretch scene carries the extra actor: every other scene's actor table (and so the curve's evidence) is unchanged
   const flashChaserId = stretch ? project.sprites.actors.length : -1; if (stretch) project.sprites.actors.push(actorAt(7, 'FlashChaser', 'chaser', 0));
   const dmgId = project.sprites.actors.length; project.sprites.actors.push(actorAt(7, 'DamageNpc', 'npc', 1));
+  // only a banked-dialogue ring scene carries the bulk-text actor (it takes slot 7's art like the other npcs)
+  const bulkId = ring?.bulk > 0 ? project.sprites.actors.length : -1; if (bulkId >= 0) project.sprites.actors.push(actorAt(7, 'Bulk', 'npc', 0));
   const place = (screenIdx, list) => { const scr = map.screens[screenIdx]; scr.entities = scr.entities ?? []; for (const e of list) scr.entities.push(e); };
   const chaserEnts = (screenTag) => Array.from({ length: 7 }, (_, i) => ({ actorId: actorIds[i], x: 20 + (i % 4) * 40, y: 20 + Math.floor(i / 4) * 40, props: { trigger: 'interact' } }));
   // Right target: 7 chasers + the touch Shake/Flash/Sfx npc (slot 7). Down target: 7 chasers + the damage npc.
@@ -181,6 +197,22 @@ export async function buildSceneProject({
     ...stretchTouchYs.map((y) => ({ actorId: flashId, x: 242, y, props: flashProps })),
     ...[80, 170].map((y) => ({ actorId: flashChaserId, x: 100, y, props: { trigger: 'touch', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: flashCmds ?? [{ op: 'flash' }] }] } } }))
   ];
+  // a ring scene's corridor runs along the ring axis (V: right at the start's y; H: down at the start's x), so the touch npcs sit on it
+  const ringAt = (along, across) => (ring.ring === 1 ? [along, across] : [across, along]);
+  if (ring) {
+    // across = 120: the player's own row/column, so a walk along the ring axis really touches them (measured by the S1b counters)
+    const [fx, fy] = flashAt ?? ringAt(40, 120);
+    const [dx, dy] = sayOnFlash ? ringAt(90, 120) : ringAt(200, 120);
+    place(ring.n - 3, [...chaserEnts(), { actorId: flashId, x: fx, y: fy, props: flashProps }]);
+    place(ring.n - 2, [...chaserEnts(), { actorId: dmgId, x: dx, y: dy, props: sayOnFlash ? sayProps : { trigger: 'interact' } }]);
+    if (ring.bulk > 0) {
+      // never-reached text on the empty last screen, sized to push music+sfx+text past the resident kernel-hi ceiling so the dialogue overlay is placed in the
+      // battle bank (streamworldDialogueBanked), as ringworld.ringProject's bulkText does
+      const commands = [];
+      for (let i = 0; i * 100 < ring.bulk; i++) commands.push({ op: 'say', text: `BULK ${i} `.padEnd(100, String.fromCharCode(65 + (i % 26))) });
+      place(ring.n - 1, [{ actorId: bulkId, x: 232, y: 216, props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }]);
+    }
+  } else
   if (stretch) { for (let j = 0; j < stretch; j++) place(idx(2, LR + 3 - stretch + j), stretchEnts()); } else
   if (gauntlet) { place(idx(2, LR), gauntletEnts()); place(idx(2, LR + 1), gauntletEnts()); } else {
   place(idx(2, LR), [...chaserEnts(), { actorId: flashId, x: flashAt ? flashAt[0] : 12, y: flashAt ? flashAt[1] : 15, props: flashProps }]);
@@ -220,7 +252,7 @@ export async function buildSceneProject({
     }
     // actors 0-6 are the chasers (S[0..6]); the flash npc and the damage npc both take S[7]
     const bySlot = new Map(); const slotOf = new Map();
-    actorIds.forEach((id, i) => { bySlot.set(id, S[i]); slotOf.set(id, i); }); bySlot.set(flashId, S[7]); if (stretch) { bySlot.set(flashChaserId, S[7]); slotOf.set(flashChaserId, 7); } bySlot.set(dmgId, S[7]); slotOf.set(flashId, 7); slotOf.set(dmgId, 7);
+    actorIds.forEach((id, i) => { bySlot.set(id, S[i]); slotOf.set(id, i); }); bySlot.set(flashId, S[7]); if (stretch) { bySlot.set(flashChaserId, S[7]); slotOf.set(flashChaserId, 7); } if (bulkId >= 0) { bySlot.set(bulkId, S[7]); slotOf.set(bulkId, 7); } bySlot.set(dmgId, S[7]); slotOf.set(flashId, 7); slotOf.set(dmgId, 7);
     const maxK = Math.max(...S.map((v) => v ?? 0));
     for (const [id, k] of bySlot) {
       const a = project.sprites.actors[id];
@@ -238,7 +270,7 @@ export async function buildSceneProject({
       project.sprites.animations.push({ id: wideAn, name: 'wide', loop: true, frames: [{ metaspriteId: wideMs, duration: 8 }] });
       const wid = project.sprites.actors.length; wideActor = wid;
       project.sprites.actors.push({ name: 'WideFar', behavior: 'npc', hp: 1, damage: 0, anims: { walkDown: wideAn, walkUp: wideAn, walkSide: wideAn } });
-      place(idx(0, 0), [{ actorId: wid, x: 100, y: 100, props: { trigger: 'interact' } }]);
+      place(ring ? 0 : idx(0, 0), [{ actorId: wid, x: 100, y: 100, props: { trigger: 'interact' } }]);
     }
   }
   if (ordinaryStart) {

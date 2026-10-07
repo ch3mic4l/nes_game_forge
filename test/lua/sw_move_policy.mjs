@@ -75,7 +75,7 @@ export const oneOf = (raw, name, allowed, dflt) => {
 /** A cell is measured on a COMPACTED copy of its scene when it is an RPG project with a switch-bound tile and a Flash command (below). */
 export const needsCompact = (c) => c.gt === 'rpg' && Boolean(c.bound) && (c.lead === 'flash' || c.tail === 'flash');
 
-export const cellId = (c) => [...(c.scenario ? ['close', c.scenario] : []), c.which, c.gt, c.wide ? 'wide' : 'tight', c.pop, c.anim ?? 'P0', c.bound ? 'bound' : 'plain', `lead-${c.lead}`, `tail-${c.tail}`, `d${c.dist}`, `y${c.touchY}`, ...(needsCompact(c) ? ['compact'] : [])].join('/');
+export const cellId = (c) => [...(c.ring ? ['ring', c.ring, ...(c.ringN ? [`n${c.ringN}`] : [])] : []), ...(c.scenario ? ['close', c.scenario] : []), c.which, c.gt, c.wide ? 'wide' : 'tight', c.pop, c.anim ?? 'P0', c.bound ? 'bound' : 'plain', `lead-${c.lead}`, `tail-${c.tail}`, `d${c.dist}`, `y${c.touchY}`, ...(needsCompact(c) ? ['compact'] : [])].join('/');
 
 /** What a cell must show for its figures to count (validateCell's `expect`). */
 export function expectFor(c) {
@@ -125,13 +125,23 @@ export function cellProblems(summary, cell, { gate = GATE } = {}) {
 export const cellTiles = (c, tiles) => (c.bound ? tiles - 1 : tiles);
 
 /** One measurement of a cell (the compaction, when the cell needs it, goes through the compacting root). */
-export function measureCell(c, { tiles = 15, root = REPO } = {}) {
-  return measureMove({ ...c, tiles: cellTiles(c, tiles), root: needsCompact(c) ? compactRoot(root) : root, ...(c.scenario ? { script: scenarioScript(c.scenario) } : {}) });
+export async function measureCell(c, { tiles = 15, root = REPO } = {}) {
+  if (!c.ring) return measureMove({ ...c, tiles: cellTiles(c, tiles), root: needsCompact(c) ? compactRoot(root) : root, ...(c.scenario ? { script: scenarioScript(c.scenario) } : {}) });
+  // a ring cell (phase 3b S1b): the gate's patched tree builds it (test/lua/ring_gate/ringcli.mjs, imported only here), `c.ring` the cell id
+  const { prepareRing } = await import('./ring_gate/ringcli.mjs');
+  const { populations, TAILS, LEADS } = await import('./run_sw_move_manifest.mjs');
+  // the capacity bisection builds the same event the measurement will (lead, Move, tail): its text and commands are part of the world's resources
+  const flashCmds = [...LEADS[c.lead], { op: 'move', who: 'player', dir: c.ring.endsWith('-V') ? 'right' : 'down', dist: c.dist }, ...TAILS[c.tail]];
+  const r = await prepareRing({ cellId: c.ring, gt: c.gt, n: c.ringN ?? null, sizes: populations(cellTiles(c, tiles))[c.pop], wide: c.wide, scene: { flashCmds } });
+  try {
+    const { ring: _id, ringN: _n, ...rest } = c;
+    return await measureMove({ ...rest, tiles: cellTiles(c, tiles), root: r.tree.root, ring: r.ring, allowParentHome: true }); // the standalone command: the user's own HOME, as every four-screen CLI run
+  } finally { r.dispose(); }
 }
 
 // ----------------------------------------------------------------- the standalone command's options
 
-const CELL_FLAGS = { gt: 'value', tail: 'value', lead: 'value', dist: 'value', pop: 'value', anim: 'value', bound: 'value', touchY: 'value', root: 'value', which: 'value', wide: 'value', tiles: 'value', coincide: 'value' };
+const CELL_FLAGS = { ring: 'value', ringN: 'value', gt: 'value', tail: 'value', lead: 'value', dist: 'value', pop: 'value', anim: 'value', bound: 'value', touchY: 'value', root: 'value', which: 'value', wide: 'value', tiles: 'value', coincide: 'value' };
 
 /**
  * `node test/lua/run_sw_move_manifest.mjs ...` : one cell, held to the same rules as a campaign cell. Every malformed or out-of-range option
@@ -165,7 +175,15 @@ export function parseCellOptions(argv, { running } = {}) {
     throw new Error(`--lead=flash on the new engine must name the coincidence it claims: --coincide=${COINCIDENCE_KINDS.join('|')}`);
   }
   assertRoom(1, running ?? countMesen());
-  const cell = { which, gt, wide, pop, anim, bound, lead, tail, dist, touchY, ...(kind ? { kind } : {}) };
+  let ring;
+  if (a.ring !== undefined) {
+    if (a.root !== undefined) throw new Error('--ring builds its own patched tree: it cannot be combined with --root');
+    if (which !== 'new') throw new Error('--ring measures the new engine only');
+    ring = oneOf(a.ring, 'ring', ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H']);
+  }
+  const ringN = a.ringN === undefined ? undefined : wholeNumber(a.ringN, 'ringN', 3, 255, 3);
+  if (ringN !== undefined && ring === undefined) throw new Error('--ringN needs --ring');
+  const cell = { which, gt, wide, pop, anim, bound, lead, tail, dist, touchY, ...(kind ? { kind } : {}), ...(ring ? { ring, ...(ringN ? { ringN } : {}) } : {}) };
   return { cell, tiles, root };
 }
 

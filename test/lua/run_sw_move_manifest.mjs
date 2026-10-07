@@ -102,10 +102,34 @@ export function relocateTouchActor(project, y = TOUCH.y) {
   down.entities.push(touch);
 }
 
+/**
+ * A RING scene's counterpart (phase 3b S1b): the touch actor moves from the first target (screen n-3) to the second (n-2) and onto the walk's own
+ * corridor -- ring 1 (vertical mirroring) walks RIGHT at the player's y, so the actor sits at (along = `y`, across = 120); ring 2 walks DOWN at the
+ * player's x, at (across = 120, along = `y`). Its damage npc is removed, as in the four-screen scene.
+ */
+export function relocateTouchActorRing(project, y, ring) {
+  const map = project.maps[0];
+  const a = map.screens[ring.n - 3];
+  const b = map.screens[ring.n - 2];
+  const touchIdx = a.entities.findIndex((e) => project.sprites.actors[e.actorId].name === 'ShakeFlashNpc');
+  const dmgIdx = b.entities.findIndex((e) => project.sprites.actors[e.actorId].name === 'DamageNpc');
+  if (touchIdx < 0 || dmgIdx < 0) throw new Error('ring scene shape changed: no touch / damage actor to swap');
+  const [touch] = a.entities.splice(touchIdx, 1);
+  b.entities.splice(dmgIdx, 1);
+  if (ring.ring === 1) { touch.x = y; touch.y = RING_ACROSS; } else { touch.x = RING_ACROSS; touch.y = y; }
+  b.entities.push(touch);
+}
+export const RING_ACROSS = 120;
+/** The frames a ring walk takes from the start (screen n-3, (120,120)) to 24 px before the relocated touch actor (the player moves 2 px a frame). */
+export function ringWalkFrames(ring, touchY = TOUCH.y) {
+  const screen = ring.ring === 1 ? 256 : 240;
+  return Math.floor((2 * screen + touchY - 120 - 24) / 2);
+}
+
 /** The scene's authored mutation: the touch actor relocated, and (bound) the one switch-bound tile on an ordinary second map. */
-export function sceneMutation({ y = TOUCH.y, bound = false, code = null, title = false } = {}) {
+export function sceneMutation({ y = TOUCH.y, bound = false, code = null, title = false, ring = null } = {}) {
   return (project, { createMap, createScreen } = {}) => {
-    relocateTouchActor(project, y);
+    if (ring) relocateTouchActorRing(project, y, ring); else relocateTouchActor(project, y);
     // a Save command is refused without a title screen: the scene's first map and screen serve (the harness holds Start through the boot)
     if (title) { project.project.titleMap = 0; project.project.titleScreen = 0; }
     if (code) project.code = structuredClone(code);
@@ -139,18 +163,24 @@ export async function measureMove({
   extraMarks = [], customCode = null, prepareOnly = false,
   // The close stage (test/lua/sw_close_scenarios.mjs): `script` = { cmds, presses, frames } replaces the event and the input schedule -- the touch event's
   // commands, the frame offsets (from the measured phase's start) at which B is held for two frames, and the phase's length.
-  script = null
+  script = null,
+  // Phase 3b S1b: `ring` = { mapper, mirroring, ring, n } measures the SAME scene on a ring cartridge (root = the patched tree): the walk goes along the
+  // ring axis to the last screen's touch actor (ringWalkFrames) and the Move follows it (`down` on a horizontal-mirroring ring, `right` on a vertical one).
+  ring = null, extraLua = '', extraSyms = [], extraRam = [], touchBody = null, mesenEnv = null, onMesenChild = null, allowParentHome = false
 }) {
+  if (ring && (bound || script?.title)) throw new Error('a ring Move scene has no bound-tile / title variant');
   if (!(tail in TAILS) || !(lead in LEADS)) throw new Error(`unknown lead/tail ${lead}/${tail}`);
   const sizes = populations(tiles)[pop];
   if (!sizes) throw new Error(`unknown population ${pop}`);
   if (anim !== null && !(anim in ANIM_PRESETS)) throw new Error(`unknown animation preset ${anim}`);
-  const flashCmds = script ? script.cmds : [...LEADS[lead], { op: 'move', who: 'player', dir: 'down', dist }, ...TAILS[tail]];
+  const moveDir = ring && ring.ring === 1 ? 'right' : 'down';
+  const flashCmds = script ? script.cmds : [...LEADS[lead], { op: 'move', who: 'player', dir: moveDir, dist }, ...TAILS[tail]];
   const total = script ? script.frames : 140 + Math.ceil(dist * 1.2) + tail2Frames;
   // A Say before the Move needs one B press, once the box waits (a press while it types cancels the event). `held` is static per phase, so the
   // measured phase is split into same-named parts (the harness accumulates statistics per NAME). The touch fires on body TOUCH_BODY of this
   // phase on every build (measured: a lead-less run's first move_tick body, all four game type x art shapes); the box waits well before +45.
-  const TOUCH_BODY = 192;
+  // a ring scene's touch body depends on the board, game type and touchY: the caller (ring_gate/ringwork.mjs calibrateTouchBody) MEASURES it from a lead-less run (the first move_tick body) and passes it
+  const TOUCH_BODY = ring ? (touchBody ?? 26) : 192;
   const M = { name: 'M11', collect: true, marks: true, trace: true };
   // a scripted press schedule: alternating `down` and `down+b` (two frames) segments, one phase NAME per segment would split the statistics, so
   // every segment is named M11 (the harness accumulates per name)
@@ -170,14 +200,16 @@ export async function measureMove({
     : lead !== 'say'
     ? [{ ...M, frames: total, held: held('down') }]
     : [{ ...M, frames: TOUCH_BODY + 45, held: held('down') }, { ...M, frames: 2, held: held('down', 'b') }, { ...M, frames: total - TOUCH_BODY - 47, held: held('down') }];
-  const phases = [
+  const phases = ring
+    ? [{ name: 'boot', waitFor: 'gameplay' }, { name: 'walkR', frames: ringWalkFrames(ring, touchY), held: held('down') }, ...measured]
+    : [
     { name: 'boot', waitFor: 'gameplay', ...(script?.title ? { held: held('start') } : {}) },
     { name: 'pre', frames: 95, held: held('down') },
     { name: 'walkR', frames: 260, held: held('right', 'down') },
     ...measured
   ];
   const res = await runManifest({
-    root, gt, sizes, wide, anim: anim ? ANIM_PRESETS[anim] : null, flashCmds, mutate: sceneMutation({ y: touchY, bound, code: customCode, title: Boolean(script?.title) }), phases,
+    root, gt, sizes, wide, anim: anim ? ANIM_PRESETS[anim] : null, flashCmds, mutate: sceneMutation({ y: touchY, bound, code: customCode, title: Boolean(script?.title), ring }), phases, ...(ring ? { ring, extraLua, extraSyms, extraRam, mesenEnv, onMesenChild, allowParentHome } : {}),
     // (a title screen -- a Save scenario's -- takes one 8 KB region of the 60 an action world may use, so its 61-row world drops to 59)
     ...(bound && gt === 'action' ? { gridH: BOUND_GRID_H } : script?.title && gt === 'action' ? { gridH: TITLE_GRID_H } : {}), marks: [...new Set([...marksFor({ lead, tail, moves: !script || script.cmds.some((c) => c.op === 'move') }), ...(script?.marks ?? []), ...extraMarks])], mesen, outDir, prepareOnly
   });

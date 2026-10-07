@@ -106,7 +106,9 @@ for (const cell of cells) for (const gameType of gts) for (const placement of pl
         vramOk: !bad.length, dialogueOk: !dlgBad.length, coverageOk: cov.ok,
         vramFails: bad.slice(0, 3).map((v) => `${v.label}: ${v.fails.slice(0, 3).join(' | ')}`), coverageFails: cov.fails.slice(0, 6), seen: cov.seen };
       rows.push(row);
-      stampResult(built.provPath, { ...base, emu, vramOk: row.vramOk, dialogueOk: row.dialogueOk, coverageOk: row.coverageOk, checkpoints: row.checkpoints, emulatorStamp: stampOf, sabotage: sabotage ?? null });
+      stampResult(built.provPath, { ...base, emu, vramOk: row.vramOk, dialogueOk: row.dialogueOk, coverageOk: row.coverageOk, checkpoints: row.checkpoints, emulatorStamp: stampOf, sabotage: sabotage ?? null,
+        // a Mesen oracle row retains what runMesen returned, as the persistence-chain stamps do: the invocation(s) and the attestation that the user's own saves were untouched
+        ...(emu === 'mesen' ? { mesenChain: recs.invocations, userSavesUntouched: recs.userSavesUntouched } : {}) });
       if (verbose) recs.forEach((r, i) => r.kind !== 'hold' && console.log('   ', verdicts[i].ok ? 'ok  ' : 'FAIL', r.label.padEnd(16), `cam_nt=${r.state.cam_nt} cam=(${r.state.cam_x_lo},${r.state.cam_y_lo}) ppuctrl_nt=${r.state.ppuctrl_nt} scr=(${r.state.sw_col},${r.state.sw_row}) p=(${r.state.player_x},${r.state.player_y}) msg=(${r.state.msg_line},${r.state.msg_col}) vlen=${r.state.vram_len}`, verdicts[i].fails.join(' | ')));
     }
     fs.rmSync(built.dir, { recursive: true, force: true });

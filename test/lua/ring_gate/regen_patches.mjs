@@ -313,7 +313,17 @@ sw_rw_nty:    .db 0, 15, 15, 15`);
     edit(t, 'main/build/generate.js', 'SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}', 'SW_RW_NT_STEP = 1');
     edit(t, 'main/build/generate.js', 'SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}', 'SW_RW_NT_END = ${ringMode ? 2 : 4}');
   } },
+  // S1b full-system padding mutation (plan 2.6's only G-gate control): a delay loop at the TOP of every mainline body (main_loop_body_start: every frame class
+  // runs it). Each outer pass costs 256 x 5 - 1 + 7 = 1,286 CPU cycles (ldx #0 / dex / bne x256, dey / bne). `over` adds 12 passes = 15,432 cycles, enough to push the
+  // worst walking/crossing body past the 29,780-cycle gate; `under` adds 6 passes = 7,716, which no measured class can exceed the gate with: the matching positive.
+  'pad-mainline-over': { files: ['engine/boot.asm'], apply: (t) => edit(t, 'engine/boot.asm', 'main_loop_body_start:\n  jsr read_pad', 'main_loop_body_start:\n  ldy #12\ngate_pad_outer:\n  ldx #0\ngate_pad_inner:\n  dex\n  bne gate_pad_inner\n  dey\n  bne gate_pad_outer\n  jsr read_pad') },
+  'pad-mainline-under': { files: ['engine/boot.asm'], apply: (t) => edit(t, 'engine/boot.asm', 'main_loop_body_start:\n  jsr read_pad', 'main_loop_body_start:\n  ldy #6\ngate_pad_outer:\n  ldx #0\ngate_pad_inner:\n  dex\n  bne gate_pad_inner\n  dey\n  bne gate_pad_outer\n  jsr read_pad') },
   'ring-forced-0': { files: ['main/build/generate.js'], apply: (t) => edit(t, 'main/build/generate.js', 'const ringMode = hasStreamed ? streamRingMode(resolveMapper(project.cartridge.mapper), project.cartridge.mirroring) : 0;', 'const ringMode = 0;') },
+  // S1b round 2, row 7 (finding 5): a scripted Move publishes a STALE scroll while its RAM origin stays coherent -- the camera lock is left raised after every Move step's camera update, so the NMI
+  // never refreshes its snapshot (the coherent-stale-frame policy, docs/design-camera.md section 2) and the PPU keeps the scroll of the Move's first frame. Only a Move reaches it.
+  'move-scroll-stale': { files: ['engine/entities.asm'], apply: (t) => edit(t, 'engine/entities.asm', 'move_tick_s_done:\n  lda <moving\n  beq move_wall              ; the driver refused the step: blocked, exactly as shipped\n  jsr sw_frame_camera_window\n', 'move_tick_s_done:\n  lda <moving\n  beq move_wall              ; the driver refused the step: blocked, exactly as shipped\n  jsr sw_frame_camera_window\n  inc <cam_dirty\n') },
+  // a strip read from the WRONG SOURCE: the entering block is taken from the neighbouring column of its screen (index eor 1) in both strip starters; every RAM identity, the strip's length and destination stay coherent.
+  'strip-src-eor1': { files: ['engine/streamworld.asm'], apply: (t) => { edit(t, 'engine/streamworld.asm', '  adc sw_probe_col_local\n  tay\n  lda [mtptr_lo],y\n  jmp sw_ssr_store', '  adc sw_probe_col_local\n  eor #1\n  tay\n  lda [mtptr_lo],y\n  jmp sw_ssr_store'); edit(t, 'engine/streamworld.asm', '  adc sw_ss_lc\n  tay\n  lda [mtptr_lo],y\n  jmp sw_ssc_store', '  adc sw_ss_lc\n  eor #1\n  tay\n  lda [mtptr_lo],y\n  jmp sw_ssc_store'); } },
   'dlg-attr-offset-n32': { files: ['engine/streamdialog.asm'], apply: (t) => edit(t, 'engine/streamdialog.asm', `  pha
   tax
   txa

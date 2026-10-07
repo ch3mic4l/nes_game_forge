@@ -11,7 +11,11 @@ import { matrixScripts } from './ringjobs.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The entry points of the gate that no matrix job names (the matrix's own scripts come from the job list itself, below: matrixScripts()); the closure
 // of their local imports is hashed, plus the Lua template and the patch files' directory listing.
-const ENTRIES = ['ringworld.mjs', 'ringjudge.mjs', 'ringrun_jsnes.mjs', 'ringrun_mesen.mjs', 'run_oracle.mjs', 'run_identity.mjs', 'ringidentity.mjs', 'ringscene.mjs',
+// EVIDENCE entry points: scripts that PRODUCE certificate evidence without being a stamped matrix job's argv (the builder-identity proof of the G-gate builders, the report tables,
+// the isolated-HOME spawner). Round 2, finding 7: round 1 left s1b_noflag.mjs and s1b_tables.mjs out of the fingerprint. Each is also hashed WITH its import closure, and a fingerprint that
+// lacks one is a gap (fingerprintGaps), so a later evidence script added here but not hashed cannot stamp.
+export const EVIDENCE_ENTRIES = ['s1b_noflag.mjs', 's1b_tables.mjs', 'run_s1b.mjs', 'ringhome.mjs', 'ringcount.mjs', 'ringseam.mjs', 'ringwork.mjs', 'ringcli.mjs', 's1bjudge.mjs', 's1bspecs.mjs', 's1b_unit.mjs', 'iso_unit.mjs', 's1bcost.mjs', 's1bbound.mjs', 's1bagree.mjs', 's1bcover.mjs', 's1b_coverage.mjs'];
+const ENTRIES = [...EVIDENCE_ENTRIES, 'ringworld.mjs', 'ringjudge.mjs', 'ringrun_jsnes.mjs', 'ringrun_mesen.mjs', 'run_oracle.mjs', 'run_identity.mjs', 'ringidentity.mjs', 'ringscene.mjs',
   'ringsabotage.mjs', 'run_matrix.mjs', 'ringprovindex.mjs', 'judge_unit.mjs', 'record_controls.mjs', 'prov_unit.mjs'];
 // Executed by the certificate but outside the import closure of the entries: the Lua template, the patch generator, every patch file (the three
 // production patches and each sabotage), the matrix shell wrapper's replacement, and the fixture-hash script + its recorded baseline.
@@ -37,7 +41,7 @@ function localImports(file) {
  * The scripts the matrix really executes that the fingerprint does not cover: [] for a sound fingerprint. `fp` is a harnessFingerprint() result,
  * `scripts` the repo-relative list (default: matrixScripts(), the argv[0] / `--test` file of every job). The unit control for the fingerprint.
  */
-export const fingerprintGaps = (fp, scripts = matrixScripts()) => scripts.filter((s) => !(s in fp));
+export const fingerprintGaps = (fp, scripts = matrixScripts()) => [...new Set([...scripts, ...EVIDENCE_ENTRIES.map((e) => path.join('test/lua/ring_gate', e))])].filter((s) => !(s in fp));
 
 /**
  * { relativePath: sha256 } of every harness/oracle file the gate imports (transitively, inside the repo) plus the Lua template. The seed is the
@@ -107,11 +111,13 @@ export function loadedFilesOfPid(pid, into = new Set()) {
 /**
  * The Mesen implementation. `loadedPaths` (optional) = the files a real run was seen to map (runMesen collects them from /proc/<pid>/maps):
  * each is hashed, so the NATIVE core that really executed is identified, not just the host. `loadedStamps` is the same for files that no longer exist. Also hashed: the sibling host, Mesen.dll, the sibling
- * MesenCore.so, the runtime config and deps. `coreLoadedFromSibling` says whether the executed core is the one beside the binary.
+ * MesenCore.so, the runtime config and deps (siblingFiles; `Mesen` there is the release's own host beside the executable, hashed separately from `binarySha256`, which is the resolved executable itself). `coreLoadedFromSibling` says whether the executed core is the one beside the binary.
  */
 export function mesenStamp(binary, loadedPaths = [], loadedStamps = []) {
   if (!path.isAbsolute(binary)) throw new Error(`mesenStamp: ${binary} is not an absolute path (resolve the executable first: ringrun_mesen.mjs resolveMesen)`);
   const dir = path.dirname(binary);
+  // the resolved executable ITSELF (what was spawned: `mesen-custom` is hashed as itself, never as the sibling `Mesen`), kept apart from the release metadata beside it
+  const executable = fileStamp(binary);
   const sibling = {};
   for (const f of ['Mesen', 'Mesen.dll', 'MesenCore.so', 'Mesen.runtimeconfig.json', 'Mesen.deps.json']) sibling[f] = fileStamp(path.join(dir, f));
   let runtimeConfig = null;
@@ -122,8 +128,8 @@ export function mesenStamp(binary, loadedPaths = [], loadedStamps = []) {
   const loaded = [...byKey.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const loadedCore = loaded.find((f) => /MesenCore\.so$/.test(f.path)) ?? null;
   return {
-    emulator: 'Mesen2 --testRunner', binary, binarySha256: sibling.Mesen?.sha256 ?? null, binaryBytes: sibling.Mesen?.bytes ?? null,
-    siblingFiles: sibling, runtimeConfig, host: hostStamp(),
+    emulator: 'Mesen2 --testRunner', binary, binarySha256: executable?.sha256 ?? null, binaryBytes: executable?.bytes ?? null,
+    siblingHostSha256: sibling.Mesen?.sha256 ?? null, siblingFiles: sibling, runtimeConfig, host: hostStamp(),
     loadedFiles: loaded, loadedCoreSha256: loadedCore?.sha256 ?? null,
     coreLoadedFromSibling: loadedCore && sibling['MesenCore.so'] ? loadedCore.sha256 === sibling['MesenCore.so'].sha256 : null
   };
