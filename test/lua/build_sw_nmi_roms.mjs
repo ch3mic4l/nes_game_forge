@@ -9,6 +9,12 @@
 //   node test/lua/build_sw_nmi_roms.mjs [outDir] [--parity=even|odd] [--break=chunk4|mixed3]
 //   Mesen --testRunner <outDir>/sw_nmi_deadline.lua <outDir>/sw_nmi.nes
 //
+//   node test/lua/build_sw_nmi_roms.mjs [outDir] --ring=<MMC1-V|MMC1-H|MMC3-V|MMC3-H|U512-V|U512-H> [--gt=action|rpg] [--placement=resident|banked]
+//        [--break=chunk4|mixed3] [--sabotage=<ring sabotage patch>] [--mutation=arm-len30|arm-wrong-axis|arm-start-past-wrap]
+//   builds the RING cell through the gate's patched tree (ring_gate/ringnmi.mjs) and writes <outDir>/sw_nmi.nes and the recorder <outDir>/sw_nmi_ring.lua
+//   (test/lua/sw_nmi_ring.lua.template; judged by ring_gate/ringnmi.mjs judgeNmi, run by ring_gate/run_s1c.mjs). With --ring absent nothing below differs from
+//   what this script has always written (ring_gate/s1c_noflag.mjs proves the ROM and the rendered Lua byte for byte).
+//
 // --parity=even (default) lands on screen (0,0) of the streamed map's own 3x2 grid; --parity=odd
 // lands on (1,1) -- both odd, exactly test/lua/build_sw_render_roms.mjs's own two landing
 // choices. Cycle timing does not obviously depend on which physical nametable a block's own
@@ -58,6 +64,24 @@ if (breakMode && !['chunk4', 'mixed3'].includes(breakMode)) {
   throw new Error(`unknown --break mode: ${breakMode}`);
 }
 const outDir = args.find((a) => !a.startsWith('--')) ?? '/tmp/nesforge-sw-nmi';
+
+const ringFlag = args.find((a) => a.startsWith('--ring='));
+if (ringFlag) {
+  const flag = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
+  const { CELLS } = await import('./ring_gate/ringworld.mjs');
+  const { buildNmiRing } = await import('./ring_gate/ringnmi.mjs');
+  const cell = CELLS.find((c) => c.id === ringFlag.slice('--ring='.length));
+  if (!cell) throw new Error(`unknown --ring cell ${ringFlag.slice('--ring='.length)} (expected ${CELLS.map((c) => c.id).join(', ')})`);
+  if (parityArg) throw new Error('--parity is a four-screen option: a ring world is one screen wide or tall');
+  const gtArg = flag('gt') ?? 'action', placement = flag('placement') ?? 'resident';
+  if (!['action', 'rpg'].includes(gtArg)) throw new Error(`unknown --gt ${gtArg}`);
+  if (!['resident', 'banked'].includes(placement)) throw new Error(`unknown --placement ${placement}`);
+  const b = await buildNmiRing({ cell, gt: gtArg, placement, sabotage: flag('sabotage') ?? null, mutation: flag('mutation') ?? null, breakMode, outDir });
+  console.log(`built -> ${b.romPath} (${b.built.rom.length} bytes)${breakMode ? ` BROKEN(${breakMode})` : ''}, lua -> ${b.luaPath}`);
+  console.log(`ring cell ${cell.id} ${gtArg} ${placement}: STREAM_RING=${b.built.prov.streamRing}, dialogue placement assembled ${b.built.prov.placement.assembled}, ${b.cases.length} cases`);
+  b.dispose();
+  process.exit(0);
+}
 
 const GRID_W = 3;
 const GRID_H = 2;

@@ -195,7 +195,8 @@ Supported: NROM, CNROM, GxROM, Color Dreams, UxROM, MMC1, MMC3, UNROM 512. Read
   New engine state goes there; a collision is silent and will present as an unrelated bug.
 - A streamed world's current screen has a third identity (`flat_screen` global id, `ord_screen`
   compacted table row, `cur_map`) alongside the ordinary one; `sw_resolve_screen` is the single
-  place a landing resolves it (`docs/reference-engine.md`).
+  place a landing resolves it (`docs/reference-engine.md`). The two-nametable ring's design, entry-gate method and measured acceptance table are
+  `docs/design-streamed-worlds-phase3b.md`.
 - `generate.js`'s `checkCapacity()` reports overflow in plain language *before* the assembler
   runs. Adding per-screen or per-actor data means updating the byte math there too.
 - **Nothing but `text.asm` may write to the nametable while rendering is on**; everything else

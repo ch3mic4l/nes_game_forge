@@ -1,0 +1,233 @@
+-- sw_split_ring.lua.template -- the RING recorder of plan 2.5 row 8 (MMC3 scanline split vs strip/mixed NMI work and the main thread's PRG switch).
+-- TEMPLATE: ring_gate/ringsplit.mjs substitutes the __PLACEHOLDER__ tokens (addresses resolved out of the build under test, the trial plan) and
+-- ring_gate/run_s1c.mjs --row=8 writes the result next to the ROM.
+--
+-- This script only RECORDS (plus the stimulus: walking, the split_mode poke, a mixed packet and the delay targeting). It decides nothing: every mapper
+-- register write ($8000/$8001/$C000/$C001/$E000/$E001) with the writing PC, scanline, dot and CPU clock; every NMI and IRQ entry with the interrupted PC and
+-- the engine's state; every switch_prg_bank entry/exit. ring_gate/ringsplit.mjs (Node) holds the independent model of what those had to be (a simulated
+-- MMC3 register file, the split program, the lock contract) and judges the lines.
+--
+-- Stimulus. The player walks (the ring's own axis, back and forth, so strips arm by the engine's own sw_stream_start_col/_row) with split_mode poked to
+-- SPL_BOX at NMI entry (the state a frame holds with a message box open; split_select would store it itself) on every frame but each UNARM-th, and a real
+-- 35-byte vram_buf packet re-queued on the mixed legs (the mixed NMI arm). The harness build (ringsplit.mjs) widens the windows inside switch_prg_bank
+-- (jsr hd_pre / hd_g0..hd_g4: RAM-counted delay loops, all zero unless this script pokes them): for each TRIAL the first switch_prg_bank of a frame is
+-- delayed so the next NMI (or the next split IRQ) is due inside the lock/sei window, at a swept offset P cycles after split_lock goes up, with a gap of
+-- GAP iterations (7 cycles each) after every mapper-register store. The delay is closed-loop (re-evaluated against the PPU position on every pass of the wait loop).
+-- Exit codes: 0 done; 2 never reached ST_GAMEPLAY; 3 not a streamed map; 4 a stale anchor; 99 timeout.
+local A = __ADDR__
+local C = __CONSTS__
+local PLAN = __PLAN__
+
+local function rd(a) return emu.read(a, emu.memType.nesMemory) end
+local function wr(a, v) emu.write(a, v, emu.memType.nesMemory) end
+local function state() return emu.getState() end
+
+local frame, stage, held = 0, "boot", {}
+local ev = {}
+local function put(s) ev[#ev + 1] = s end
+local function say(s) print(s) end
+local function fail(code, msg) say("ERROR " .. msg); emu.stop(code) end
+
+local gameplayFrame = nil
+local trialIdx, pending, pendingAge, live = 1, nil, 0, nil
+local done, skipped, consumed = 0, 0, 0
+local lastNmiClk, baseIrq = 0, nil
+local inRegion, regionLock, lastX = false, 0, -1000
+local callClk0 = 0
+local frameArmed, nmiThisFrame = false, false
+local settleAt = nil
+local tailLeft = nil
+
+local TAIL = 28
+local DOTS, FRAMEDOTS = 341, 262 * 341
+
+local function armedAt(f) return (f % PLAN.unarmEvery) ~= 0 end
+
+local function firstCount()
+  local mode = rd(A.split_mode)
+  if mode == 0 then return nil end
+  return rd(C.split_progs + rd(C.split_prog_start + mode - 1))
+end
+
+local function onNmi()
+  local st = state()
+  local clk = st["masterClock"]
+  local sp = st["cpu.sp"]
+  local ipc = rd(0x100 + ((sp + 2) & 0xFF)) + 256 * rd(0x100 + ((sp + 3) & 0xFF))
+  lastNmiClk = clk
+  if stage == "run" then
+    local forced = live ~= nil and live.kind == "nmi" and not live.landed
+    if armedAt(frame) or forced then wr(A.split_mode, C.SPL_BOX) end
+    frameArmed = rd(A.split_mode) ~= 0
+  end
+  put(string.format("N,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", clk, st["ppu.scanline"], st["ppu.cycle"], ipc, rd(A.split_lock), rd(A.split_mode), rd(A.st_active), rd(A.vram_ready), rd(A.vram_len), rd(A.chr_r1)))
+  if live and live.kind == "nmi" and not live.landed then live.landed = clk - 7 end
+  nmiThisFrame = true
+end
+
+local function onSplitArm() local st = state(); put(string.format("S,%d,%d", st["ppu.scanline"], st["ppu.cycle"])) end
+local function onUnlocked() local st = state(); put(string.format("U,%d,%d", st["ppu.scanline"], st["ppu.cycle"])) end
+
+local function onIrq()
+  local st = state()
+  local clk = st["masterClock"]
+  local sp = st["cpu.sp"]
+  local ipc = rd(0x100 + ((sp + 2) & 0xFF)) + 256 * rd(0x100 + ((sp + 3) & 0xFF))
+  put(string.format("I,%d,%d,%d,%d", clk, st["ppu.scanline"], st["ppu.cycle"], ipc))
+  if not inRegion and clk - lastX > 60 and lastNmiClk > 0 and not (live and live.kind == "irq") then
+    baseIrq = clk - lastNmiClk
+  end
+end
+
+local sel, shR = 0, {}
+local function mapperWrite(addr)
+  return function(_, value)
+    if addr == 0x8000 then sel = value & 7 elseif addr == 0x8001 then shR[sel] = value end
+    local st = state()
+    put(string.format("W,%04x,%d,%04x,%d,%d,%d", addr, value, st["cpu.pc"], st["ppu.scanline"], st["ppu.cycle"], st["masterClock"]))
+  end
+end
+
+local function onLockWrite(_, value)
+  local clk = state()["masterClock"]
+  put(string.format("K,%d,%d", value, clk))
+  if value == 1 then inRegion = true; regionLock = clk end
+end
+
+-- cycles from `now` to the event a trial is aimed at: the next NMI (scanline 241, dot 1) or the next split IRQ's assertion (the box row's scanline - 1, dot 262)
+local function distTo(kind)
+  local st = state()
+  local sl, cy = st["ppu.scanline"], st["ppu.cycle"]
+  local tgt
+  if kind == "nmi" then tgt = 241 * DOTS + 1
+  else
+    local L = firstCount()
+    if not L then return nil end
+    tgt = (L - 1) * DOTS + 262
+  end
+  return ((tgt - (sl * DOTS + cy)) % FRAMEDOTS) / 3, st["masterClock"]
+end
+
+local function onPsb()
+  local st = state()
+  local sl, cy, clk = st["ppu.scanline"], st["ppu.cycle"], st["masterClock"]
+  put(string.format("P,%d,%d,%d,%d", st["cpu.a"], sl, cy, clk))
+  callClk0 = clk; regionLock = 0
+  if stage ~= "run" or not pending or live then return end
+  -- only a call whose value cannot be mistaken for the CHR bank R1 holds: a write that strays into R1 must change it
+  local bank = (st["cpu.a"] * 2) & 255
+  if bank == rd(A.chr_r1) or bank + 1 == rd(A.chr_r1) or bank == C.FONT_R1 or bank + 1 == C.FONT_R1 then return end
+  local t = pending
+  if sl >= 241 or sl < 0 then return end
+  if t.kind == "irq" then
+    local L = firstCount()
+    if not frameArmed or not L or sl > L - 8 then return end
+  end
+  pending = nil
+  consumed = consumed + 1
+  wr(C.hd_pre_lo, 255); wr(C.hd_pre_hi, 7) -- far more than any frame needs; the check below ends the wait
+  for k = 1, 5 do wr(C.hd_g[k], PLAN.gap) end
+  live = { kind = t.kind, p = t.p, prev = 1e9 }
+  put(string.format("T,%s,%d,go", t.kind, t.p))
+end
+
+-- every pass of the delay loop's top: end the wait the moment the lock would land `p` cycles before the event
+local function onCheck()
+  if not live or live.exit then return end
+  local dist, clk = distTo(live.kind)
+  if not dist then live.exit = clk; wr(C.hd_pre_lo, 0); wr(C.hd_pre_hi, 0); return end
+  if dist - live.p - TAIL <= 0 or dist > live.prev + 3000 then
+    live.exit = clk
+    wr(C.hd_pre_lo, 0); wr(C.hd_pre_hi, 0)
+  end
+  live.prev = dist
+end
+
+local function onPsbEnd()
+  local st = state()
+  local clk = st["masterClock"]
+  put(string.format("X,%d,%d,%d", st["ppu.scanline"], st["ppu.cycle"], clk))
+  inRegion = false
+  lastX = clk
+  if live then
+    -- learn the tail (check -> lock) and report where the event landed against where it was asked to
+    local landed
+    if live.kind == "nmi" then landed = live.landed
+    elseif baseIrq and lastNmiClk > 0 then landed = lastNmiClk + baseIrq - 10 end
+    if regionLock > 0 and live.exit then TAIL = 0.7 * TAIL + 0.3 * (regionLock - live.exit) end
+    put(string.format("Y,%s,%d,%.1f,%d,%s", live.kind, live.p, TAIL, regionLock > 0 and (regionLock - callClk0) or -1, tostring(landed and regionLock > 0 and (landed - regionLock) or "none")))
+    wr(C.hd_pre_lo, 0); wr(C.hd_pre_hi, 0)
+    for k = 1, 5 do wr(C.hd_g[k], 0) end
+    live = nil
+    done = done + 1
+  end
+end
+
+local function queuePacket()
+  local P = PLAN.packet
+  wr(A.vram_buf + 0, P.hi); wr(A.vram_buf + 1, P.lo); wr(A.vram_buf + 2, P.count)
+  for i = 0, P.count - 1 do wr(A.vram_buf + 3 + i, (P.first + i) % 256) end
+  wr(A.vram_buf + 3 + P.count, 0)
+  wr(A.vram_len, 3 + P.count)
+  wr(A.vram_ready, 1)
+end
+
+local function onMainLoopReady()
+  if stage == "boot" then
+    if rd(A.game_state) ~= C.ST_GAMEPLAY then return end
+    if rd(A.map_is_streamed) == 0 then fail(3, "map_is_streamed is 0 at main_loop_ready after boot"); return end
+    stage = "settle"; settleAt = frame + 40; gameplayFrame = frame
+    put(string.format("G,%d", frame))
+    return
+  end
+  if stage == "settle" and frame >= settleAt then stage = "run"; tailLeft = nil end
+  if stage ~= "run" then return end
+  local leg = math.floor((frame - settleAt) / PLAN.leg)
+  held = {}
+  held[(leg % 2 == 0) and PLAN.btnA or PLAN.btnB] = true
+  if (leg % PLAN.mixedEvery) == 1 and rd(A.st_active) ~= 0 and rd(A.vram_ready) == 0 and rd(A.vram_len) == 0 then queuePacket() end
+  if not pending and trialIdx <= #PLAN.trials then
+    pending = PLAN.trials[trialIdx]; trialIdx = trialIdx + 1; pendingAge = 0
+  elseif pending then
+    pendingAge = pendingAge + 1
+    if pendingAge > 90 then put(string.format("T,%s,%d,stale", pending.kind, pending.p)); skipped = skipped + 1; consumed = consumed + 1; pending = nil end
+  end
+  if trialIdx > #PLAN.trials and not pending and not live and tailLeft == nil then tailLeft = PLAN.tail end
+end
+
+local function onFrame()
+  frame = frame + 1
+  if frame == 1 then
+    if rd(C.nmi) ~= 0x48 or rd(C.nmi_rti) ~= 0x40 then
+      fail(4, string.format("stale anchors: nmi=%04x holds %02x (want 48), nmi_rti=%04x holds %02x (want 40)", C.nmi, rd(C.nmi), C.nmi_rti, rd(C.nmi_rti))); return
+    end
+  end
+  if #ev > 0 then
+    put(string.format("Z,%d,%d,%d,%d,%d", frame, rd(A.st_active), rd(A.vram_len), rd(A.game_state), rd(A.split_mode)))
+    say("F " .. frame .. " " .. table.concat(ev, " "))
+    ev = {}
+  end
+  if stage == "boot" and frame > 400 then fail(2, "never reached ST_GAMEPLAY within 400 frames"); return end
+  if tailLeft ~= nil then
+    tailLeft = tailLeft - 1
+    if tailLeft <= 0 then
+      say(string.format("TRIALS planned=%d consumed=%d skipped=%d done=%d", #PLAN.trials, consumed, skipped, done))
+      say(string.format("DONE frames=%d", frame))
+      emu.stop(0); stage = "done"; return
+    end
+  end
+  if frame > PLAN.maxFrames then fail(99, "timed out in stage " .. stage .. " trial " .. trialIdx); return end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(function() emu.setInput(held, 0) end, emu.eventType.inputPolled)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, C.main_loop_ready)
+emu.addMemoryCallback(onNmi, emu.callbackType.exec, C.nmi)
+emu.addMemoryCallback(onSplitArm, emu.callbackType.exec, C.split_arm)
+emu.addMemoryCallback(onUnlocked, emu.callbackType.exec, C.split_arm_unlocked)
+emu.addMemoryCallback(onIrq, emu.callbackType.exec, C.irq)
+emu.addMemoryCallback(onPsb, emu.callbackType.exec, C.psb)
+emu.addMemoryCallback(onCheck, emu.callbackType.exec, C.hd_check)
+emu.addMemoryCallback(onPsbEnd, emu.callbackType.exec, C.psb_end)
+emu.addMemoryCallback(onLockWrite, emu.callbackType.write, A.split_lock)
+for _, a in ipairs({ 0x8000, 0x8001, 0xC000, 0xC001, 0xE000, 0xE001 }) do emu.addMemoryCallback(mapperWrite(a), emu.callbackType.write, a) end

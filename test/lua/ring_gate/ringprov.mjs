@@ -14,12 +14,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // EVIDENCE entry points: scripts that PRODUCE certificate evidence without being a stamped matrix job's argv (the builder-identity proof of the G-gate builders, the report tables,
 // the isolated-HOME spawner). Round 2, finding 7: round 1 left s1b_noflag.mjs and s1b_tables.mjs out of the fingerprint. Each is also hashed WITH its import closure, and a fingerprint that
 // lacks one is a gap (fingerprintGaps), so a later evidence script added here but not hashed cannot stamp.
-export const EVIDENCE_ENTRIES = ['s1b_noflag.mjs', 's1b_tables.mjs', 'run_s1b.mjs', 'ringhome.mjs', 'ringcount.mjs', 'ringseam.mjs', 'ringwork.mjs', 'ringcli.mjs', 's1bjudge.mjs', 's1bspecs.mjs', 's1b_unit.mjs', 'iso_unit.mjs', 's1bcost.mjs', 's1bbound.mjs', 's1bagree.mjs', 's1bcover.mjs', 's1b_coverage.mjs'];
+export const EVIDENCE_ENTRIES = ['s1b_noflag.mjs', 's1b_tables.mjs', 'run_s1b.mjs', 'ringhome.mjs', 'ringcount.mjs', 'ringseam.mjs', 'ringwork.mjs', 'ringcli.mjs', 's1bjudge.mjs', 's1bspecs.mjs', 's1b_unit.mjs', 'iso_unit.mjs', 's1bcost.mjs', 's1bbound.mjs', 's1bagree.mjs', 's1bcover.mjs', 's1b_coverage.mjs',
+  // S1c: the row 5/6/8 runner, the judges and recorders it imports, the controls table, the no-flag proof, the unit tests and the gate table
+  'run_s1c.mjs', 's1ccontrols.mjs', 'ringnmi.mjs', 'ringclose.mjs', 'ringsplit.mjs', 'ringsections.mjs', 's1c_noflag.mjs', 's1c_unit.mjs', 's1c_gate.mjs', 's1caudit.mjs', 'ringwcet.mjs'];
 const ENTRIES = [...EVIDENCE_ENTRIES, 'ringworld.mjs', 'ringjudge.mjs', 'ringrun_jsnes.mjs', 'ringrun_mesen.mjs', 'run_oracle.mjs', 'run_identity.mjs', 'ringidentity.mjs', 'ringscene.mjs',
   'ringsabotage.mjs', 'run_matrix.mjs', 'ringprovindex.mjs', 'judge_unit.mjs', 'record_controls.mjs', 'prov_unit.mjs'];
 // Executed by the certificate but outside the import closure of the entries: the Lua template, the patch generator, every patch file (the three
 // production patches and each sabotage), the matrix shell wrapper's replacement, and the fixture-hash script + its recorded baseline.
-const EXTRA = ['ring_oracle.lua.template', 'regen_patches.mjs'];
+// S1c: the three row 5/6/8 Lua templates (and the legacy deadline templates and builders the no-flag proof executes) are read from test/lua, outside the import closure
+const EXTRA = ['ring_oracle.lua.template', 'regen_patches.mjs', '../sw_nmi_ring.lua.template', '../sw_close_deadline.lua.template', '../sw_split_ring.lua.template', '../sw_nmi_deadline.lua.template',
+  '../build_sw_nmi_roms.mjs', '../build_sw_close_deadline_roms.mjs', '../run_sw_ring_gate.sh'];
 const EXTRA_ROOT = ['test/lua/ring_gate/fixture-hashes.mjs', 'test/lua/ring_gate/fixture-hashes-before.txt', 'test/lua/ring_gate/fixture-hashes-r4-before.txt'];
 const patchFiles = () => {
   const out = [];

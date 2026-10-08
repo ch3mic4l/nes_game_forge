@@ -3,11 +3,13 @@
 // second hand-kept list. A job: { name, argv, expect: { exit, log: RegExp }, group, stamps }. `stamps` = the job writes a provenance stamp (a --prov-dir
 // job); a raw job (the repro guards, the harness's own tests, the selection-error probes, the capacity table) writes none.
 import path from 'node:path';
+import { CONTROLS, CELL_IDS as S1C_CELLS, MMC3_CELLS, BUILDS, controlBuilds, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
 
 const O = 'test/lua/ring_gate/run_oracle.mjs';
 const I = 'test/lua/ring_gate/run_identity.mjs';
 const CAMP = 'test/lua/ring_gate/run_campaign.mjs';
 const S1B = 'test/lua/ring_gate/run_s1b.mjs';
+const S1C = 'test/lua/ring_gate/run_s1c.mjs';
 const PAD_CELLS = ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H'];
 const CELL_IDS = ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H'];
 const ALL_SABOTAGE = ['strip-len-30-vertical', 'wrap-col-30', 'wrap-row-32', 'dest-plus08-vertical', 'render-four-nts', 'compacted-cam-nt-horizontal', 'ring-forced-0', 'dlg-attr-offset-n32',
@@ -108,6 +110,30 @@ export function jobs(P, L) {
   for (const c of ['MMC1-V', 'MMC3-H', 'U512-V']) cf('mwm-range', c, 'counter-mwm-range');
   // round 2, finding 5: the seam sabotages -- a stale Move scroll and a strip read from the wrong source column -- must each fail a seam item on the distinguishable-terrain specs, on every cell
   for (const c of CELL_IDS) for (const sb of ['move-scroll-stale', 'strip-src-eor1']) add(`s1b-seam-${sb}-${c}`, S1B, [`--cell=${c}`, '--gt=action', '--specs=seam-walk,seam-move', '--emu=jsnes', `--sabotage=${sb}`, '--expect=seam-fail'], { exit: 0, log: new RegExp(`sabotage ${sb} \\(expect seam-fail\\): CAUGHT: a seam item failed`) }, 5);
+  // ---- S1c (run_s1c.mjs): rows 5 (NMI strip deadline), 6 (close frame), 8 (MMC3 split/lock) on every cell x reachable build, and every row-5/6/8 control (s1ccontrols.mjs) beside its matching positive.
+  // A positive's declared outcome = every item PASS (or N/A with a source proof). A control's = CAUGHT as declared (every declared item fails in a sound run) or PASS as declared. An action-banked
+  // build and a row-8 non-MMC3 cell are N/A with a source proof printed by the runner (a stamp-free job: the N/A is a source fact, not a measurement).
+  for (const row of [5, 6, 8]) for (const c of S1C_CELLS) {
+    for (const [gt, pl] of BUILDS) {
+      const lbl = positiveLabel(row, c, gt, pl);
+      if (row === 8 && !MMC3_CELLS.includes(c)) add(`${lbl}-na`, S1C, [`--row=8`, `--cell=${c}`, `--gt=${gt}`, `--placement=${pl}`], { exit: 0, log: /N\/A {2}row 8 applies to the MMC3 cells only/ }, 1, { stamp: false });
+      else add(lbl, S1C, [`--row=${row}`, `--cell=${c}`, `--gt=${gt}`, `--placement=${pl}`], { exit: 0, log: new RegExp(`^${c} ${gt} ${pl}: S1c row ${row} all pass \\(\\d+ items\\)$`, 'm') }, 1);
+    }
+    const la = positiveLabel(row, c, 'action', 'banked');
+    add(`${la}-na`, S1C, [`--row=${row}`, `--cell=${c}`, '--gt=action', '--placement=banked'], { exit: 0, log: /action banked {2}N\/A {2}row \d+: an action project cannot place the dialogue overlay/ }, 1, { stamp: false });
+  }
+  for (const [id, ctl] of Object.entries(CONTROLS)) for (const c of S1C_CELLS) {
+    if (ctl.row === 8 && !MMC3_CELLS.includes(c)) continue;
+    const ring = c.endsWith('-V') ? 1 : 2;
+    const d = declaredFor(id, ring);
+    for (const [gt, pl] of controlBuilds(id)) {
+      add(controlLabel(id, c, gt, pl), S1C, [`--row=${ctl.row}`, `--cell=${c}`, `--gt=${gt}`, `--placement=${pl}`, `--control=${id}`],
+        { exit: 0, log: new RegExp(`^control ${id} \\(${c} ${gt} ${pl}\\): ${d.outcome === 'caught' ? 'CAUGHT as declared' : 'PASS as declared'}`, 'm') }, 3);
+    }
+  }
+  // the no-flag proof: both deadline builders, flag absent, are byte-identical (ROM and rendered Lua) to the output recorded before the --ring flag existed; and the S1c unit tests
+  out.push({ name: 's1c-noflag', argv: ['test/lua/ring_gate/s1c_noflag.mjs', 'check', 'handoff-next/s1c-noflag-before.json'], expect: { exit: 0, log: /no-flag output byte-identical/ }, group: 3, raw: true, stamps: false });
+  out.push({ name: 's1c-unit', argv: ['--test', 'test/lua/ring_gate/s1c_unit.mjs'], expect: { exit: 0, log: /^# fail 0$/m }, group: 3, raw: true, stamps: false });
   // selection errors of the new runner stay errors
   add('selection-s1b-misspelled-cell', S1B, ['--cell=MMCl-V'], { exit: 2, log: /is not one of/ }, 3, { stamp: false });
   add('selection-s1b-undeclared-sabotage', S1B, ['--cell=MMC1-V', '--sabotage=no-such-patch'], { exit: 2, log: /not a declared sabotage/ }, 3, { stamp: false });
@@ -123,6 +149,8 @@ export function jobs(P, L) {
   out.push({ name: 's1b-noflag', argv: ['test/lua/ring_gate/s1b_noflag.mjs', 'check', 'handoff-next/s1b-noflag-before.json'], expect: { exit: 0, log: /no-flag output byte-identical/ }, group: 3, raw: true, stamps: false });
   out.push({ name: 's1b-tables', argv: ['test/lua/ring_gate/s1b_tables.mjs', L], expect: { exit: 0, log: /^## Verdicts per cell/m }, group: 6, raw: true, stamps: false });
   out.push({ name: 's1b-coverage', argv: ['test/lua/ring_gate/s1b_coverage.mjs', L], expect: { exit: 0, log: /^# S1b round 3: coverage, agreement, class estimate and seam evidence/m }, group: 6, raw: true, stamps: false });
+  // the acceptance table of plan 2.5, printed by the gate script from this very run's stamps and logs (group 7: after every other job has logged). It runs BEFORE the certificate is finalized (no INDEX.json exists yet), so it passes `--construct` explicitly and says so in its output; the finalized certificate is verified separately (`ringprovindex.mjs --verify`, `run_sw_ring_gate.sh`). exit 0 = no FAIL, no UNMEASURED, no unexpected job
+  out.push({ name: 's1c-gate', argv: ['test/lua/ring_gate/s1c_gate.mjs', `--prov=${P}`, `--logs=${L}`, '--construct'], expect: { exit: 0, log: /^GATE PASS \(construct mode, UNFINALIZED: not a verified certificate\): no FAIL and no UNMEASURED cell/m }, group: 7, raw: true, stamps: false });
   // deliberate selection / usage errors: each must STAY an error (exit 2), never become "all pass"
   add('selection-misspelled-cell', O, ['--cell=MMCl-V', '--emu=jsnes'], { exit: 2, log: /names nothing valid/ }, 3, { stamp: false });
   add('selection-unknown-argument', O, ['--bogus=1'], { exit: 2, log: /unknown argument/ }, 3, { stamp: false });

@@ -49,7 +49,16 @@ local BOX_ENDWAIT         = 6
 local FLASH_ARM_VALUE     = 7
 local BOUND_CELL          = 0
 
+--@legacy
 local EXPECTED_VRAM_LEN = 87
+--@endlegacy
+--@ring
+-- Ring builds (build_sw_close_deadline_roms.mjs --ring=<cell>): the queue is validated by STRUCTURE -- the headers in main_loop's call order, the close row's
+-- packet count for this ring, the live nametables -- never by one fixed vram_len. STRUCT is { ring = 1|2, parts = 1|2 (the close row's packets), palFx,
+-- fixedLen = nil | N (a declared HARNESS mutation: the retired fixed-length assertion), expectParts = nil | n (a declared harness mutation of `parts`) }.
+local STRUCT = __STRUCT__
+__RAM_OVERRIDES__
+--@endring
 
 local VBLANK_FIRST_SCANLINE = 241
 local VBLANK_LAST_SCANLINE  = 260
@@ -77,8 +86,14 @@ local lastTail = nil          -- the previous ordinary frame's scroll tail
 local armedFrame = nil
 
 local function log(message) emu.log(string.format("[%5d] %s", frame, message)) end
+--@legacy
 local function fail(code, message) log("FAIL: " .. message) emu.stop(code) end
 local function pass(message) log("ok   " .. message) end
+--@endlegacy
+--@ring
+local function fail(code, message) log("FAIL: " .. message) print(string.format("FAIL %d %s", code, message)) emu.stop(code) end
+local function pass(message) log("ok   " .. message) print("OK " .. message) end
+--@endring
 local function read(address) return emu.read(address, emu.memType.nesMemory) end
 local function write(address, value) emu.write(address, value, emu.memType.nesMemory) end
 local function onInput() emu.setInput(held, 0) end
@@ -118,9 +133,97 @@ end
 
 local function hiOk(hi) return hi >= 0x20 and hi <= 0x2F end
 
+--@ring
+local function hexOf(addr, n)
+  local t = {}
+  for i = 0, n - 1 do t[#t + 1] = string.format("%02x", read(addr + i)) end
+  return table.concat(t)
+end
+local function hiLive(hi)
+  if STRUCT.ring == 1 then return hi >= 0x20 and hi <= 0x27 end
+  return (hi >= 0x20 and hi <= 0x23) or (hi >= 0x28 and hi <= 0x2B)
+end
+local queued = {} -- { hi, lo, cnt, at, bytes }
+-- Walks the queue as packets and checks each header in main_loop's call order: Flip, Flip, Flash, arrow hide, close row (1 or 2 packets), terminator.
+-- Returns nil when sound, else a message that names the header it found wanting.
+local function checkStructure()
+  local vlen = read(VRAM_LEN)
+  print(string.format("QUEUE len=%d hex=%s", vlen, hexOf(VRAM_BUF, math.min(vlen + 1, 120))))
+  if STRUCT.fixedLen and vlen ~= STRUCT.fixedLen then
+    return string.format("vram_len is %d, not %d (the retired fixed-length assertion)", vlen, STRUCT.fixedLen)
+  end
+  queued = {}
+  local i = 0
+  while i < vlen do
+    local hi, lo, cnt = read(VRAM_BUF + i), read(VRAM_BUF + i + 1), read(VRAM_BUF + i + 2)
+    if hi == 0 then return string.format("the terminator sits at offset %d, before vram_len %d", i, vlen) end
+    local bytes = {}
+    for k = 0, cnt - 1 do bytes[#bytes + 1] = read(VRAM_BUF + i + 3 + k) end
+    queued[#queued + 1] = { hi = hi, lo = lo, cnt = cnt, at = i, bytes = bytes }
+    i = i + 3 + cnt
+  end
+  if i ~= vlen then return string.format("the packets end at %d, vram_len is %d", i, vlen) end
+  if read(VRAM_BUF + vlen) ~= 0 then return string.format("vram_buf[%d] is not the terminator", vlen) end
+  local parts = STRUCT.expectParts or STRUCT.parts
+  local want = 4 + parts
+  if #queued ~= want then
+    local names = { "flip top", "flip bottom", "Flash", "arrow hide", "close row" }
+    return string.format("%d packets queued, %d expected (flip, flip, Flash, arrow hide, close row in %d); the third is [$%02x%02x x%d] where the Flash packet (the 32-byte palette write at $3F00) belongs", #queued, want, parts, queued[3] and queued[3].hi or 0, queued[3] and queued[3].lo or 0, queued[3] and queued[3].cnt or 0) .. (#names == 5 and "" or "")
+  end
+  local f0, f1, fl, ar = queued[1], queued[2], queued[3], queued[4]
+  if not (f0.cnt == 2 and hiLive(f0.hi) and f1.cnt == 2 and hiLive(f1.hi)) then return "the Flip's two packets (queued first) are not 2-byte bodies in a live nametable" end
+  if not (fl.hi == 0x3F and fl.lo == 0 and fl.cnt == 32) then return string.format("the Flash packet is [$%02x%02x x%d], not the 32-byte palette write at $3F00", fl.hi, fl.lo, fl.cnt) end
+  if not (hiLive(ar.hi) and ar.cnt == 1) then return "the arrow hide is not a 1-byte write in a live nametable" end
+  local c = queued[5]
+  if not hiLive(c.hi) then return string.format("the close row's first packet is at $%02x%02x, outside the live nametables", c.hi, c.lo) end
+  if parts == 1 then
+    if not (c.cnt == 32 and (c.lo & 0x1F) == 0) then return string.format("the close row is [$%02x%02x x%d], not one whole 32-tile row from the left edge", c.hi, c.lo, c.cnt) end
+  else
+    local d = queued[6]
+    if not (c.cnt >= 1 and c.cnt <= 31 and (c.lo & 0x1F) + c.cnt == 32) then return string.format("the close row's first part [$%02x%02x x%d] does not run to the nametable's right edge", c.hi, c.lo, c.cnt) end
+    if not (hiLive(d.hi) and d.cnt >= 1 and c.cnt + d.cnt == 32) then return "the close row's two parts do not total 32 tiles in live nametables" end
+    if not ((d.lo & 0x1F) == 0 and (d.lo >> 5) == (c.lo >> 5) and math.abs(d.hi - c.hi) == 4) then return string.format("the second part [$%02x%02x] is not the same row's left edge on the other live nametable (first part [$%02x%02x])", d.hi, d.lo, c.hi, c.lo) end
+  end
+  if #queued ~= want then return "internal: packet count" end
+  return nil
+end
+-- The NMI's writes, in order, must be exactly what the queue holds: per packet $2006 hi, $2006 lo, then its bytes at $2007; then (a build with palette effects)
+-- the two zero $2006 writes; then $2000, $2005, $2005 and nothing else.
+local function publicationProblem()
+  local k = 1
+  local function take(kind, value, what)
+    local w = nmiWrites[k]
+    if not w then return string.format("the NMI ended before %s (write %d)", what, k) end
+    if w.kind ~= kind or w.value ~= value then return string.format("write %d is $%s=%02x, %s wants $%s=%02x", k, w.kind, w.value, what, kind, value) end
+    k = k + 1
+    return nil
+  end
+  for pi, pk in ipairs(queued) do
+    local why = take("2006", pk.hi, string.format("packet %d's address high byte", pi)) or take("2006", pk.lo, string.format("packet %d's address low byte", pi))
+    if why then return why end
+    for bi, b in ipairs(pk.bytes) do
+      why = take("2007", b, string.format("packet %d byte %d", pi, bi))
+      if why then return why end
+    end
+  end
+  if STRUCT.palFx then
+    local why = take("2006", 0, "the palette-space address reset") or take("2006", 0, "the palette-space address reset")
+    if why then return why end
+  end
+  local tail = { "2000", "2005", "2005" }
+  for _, kind in ipairs(tail) do
+    local w = nmiWrites[k]
+    if not w or w.kind ~= kind then return string.format("write %d is %s, the scroll restore wants $%s", k, w and ("$" .. w.kind) or "absent", kind) end
+    k = k + 1
+  end
+  if nmiWrites[k] then return string.format("%d writes follow the scroll restore", #nmiWrites - k + 1) end
+  return nil
+end
+--@endring
 local function onMainLoopReady()
   if not armed or checkedWorkload then return end
   checkedWorkload = true
+--@legacy
   local vramLen = read(VRAM_LEN)
   if vramLen ~= EXPECTED_VRAM_LEN then
     fail(EXIT_WORKLOAD_SHORT, string.format("main_loop_ready: vram_len is %d, not %d -- the five-producer frame was not queued (flip, Flash, arrow hide, split close row)", vramLen, EXPECTED_VRAM_LEN))
@@ -151,6 +254,15 @@ local function onMainLoopReady()
   expectedBodyBytes = f0c + f1c + flc + ac + cc + dc
   pass(string.format("workload confirmed: vram_len=%d; flip [$%02x%02x x%d,$%02x%02x x%d], Flash [$%02x%02x x%d], arrow [$%02x%02x x%d], close [$%02x%02x x%d + $%02x%02x x%d]; %d body bytes to publish",
     vramLen, f0h, f0l, f0c, f1h, f1l, f1c, flh, fll, flc, ah, al, ac, ch, cl, cc, dh, dl, dc, expectedBodyBytes))
+--@endlegacy
+--@ring
+  local why = checkStructure()
+  if why then fail(EXIT_WORKLOAD_SHORT, "main_loop_ready: " .. why) return end
+  local vramLen = read(VRAM_LEN)
+  expectedBodyBytes = 0
+  for _, k in ipairs(queued) do expectedBodyBytes = expectedBodyBytes + k.cnt end
+  pass(string.format("workload confirmed (%s ring): vram_len=%d, %d packets in main_loop's call order (flip, flip, Flash, arrow hide, close row in %d), %d body bytes to publish", STRUCT.ring == 1 and "vertical" or "horizontal", vramLen, #queued, STRUCT.parts, expectedBodyBytes))
+--@endring
 end
 
 local function onNmiRti()
@@ -171,6 +283,9 @@ local function onNmiRti()
   local scanline, cycle = state["ppu.scanline"], state["ppu.cycle"]
   local vramLen, vramReady = read(VRAM_LEN), read(VRAM_READY)
   log(string.format("nmi_rti: scanline=%d cycle=%d (+%d rti dots) vram_len=%d vram_ready=%d writes=%d", scanline, cycle, RTI_REMAINING_DOTS, vramLen, vramReady, #nmiWrites))
+--@ring
+  print(string.format("RTI scanline=%d cycle=%d vram_len=%d vram_ready=%d writes=%d", scanline, cycle, vramLen, vramReady, #nmiWrites))
+--@endring
   if vramLen ~= 0 or vramReady ~= 0 then
     fail(EXIT_DRAIN, string.format("after the drain vram_len=%d vram_ready=%d, both should be 0", vramLen, vramReady))
     return
@@ -185,6 +300,11 @@ local function onNmiRti()
     return
   end
   pass(string.format("all %d body bytes reached $2007 inside this NMI", bodyWrites))
+--@ring
+  local publication = publicationProblem()
+  if publication then fail(EXIT_DRAIN, "publication: " .. publication) return end
+  pass(string.format("publication: the NMI wrote exactly the %d queued packets' addresses and bytes, in order, then the scroll restore", #queued))
+--@endring
   -- 3. the scroll reset follows the last body write, ends the NMI, and matches the ordinary frame's
   if not tail then
     fail(EXIT_SCROLL, "the NMI did not end with $2000, $2005, $2005")
@@ -220,6 +340,9 @@ local function onNmiRti()
     return
   end
   pass(string.format("the %s 88-byte close frame finished at scanline %d, cycle %d (last scroll write on scanline %d) -- inside vblank (%d-%d)", PLACEMENT, scanline, cycle, tail.scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+--@ring
+  print(string.format("FINISH scanline=%d cycle=%d lastscroll=%d", scanline, cycle, tail.scanline))
+--@endring
   log("all phases passed")
   emu.stop(0)
 end

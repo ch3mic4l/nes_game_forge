@@ -55,7 +55,7 @@ export function openIsolatedHome({ settings = USER_SETTINGS(), requireSettings =
 }
 
 /** Problems with a retained invocation chain against the invocations the run MEANT to start (`expected` = [{ spec, purpose }]): empty = sound. */
-export function auditChain(chain, expected) {
+export function auditChain(chain, expected, { statusOk = [0] } = {}) {
   const bad = [];
   if (!Array.isArray(chain) || chain.length === 0) return ['no Mesen invocation is retained'];
   const key = (r) => `${r.spec}/${r.purpose}`;
@@ -66,7 +66,7 @@ export function auditChain(chain, expected) {
   for (const r of chain) {
     const id = `invocation ${r.n} (${key(r)})`;
     if (!r.pid) bad.push(`${id} has no pid`);
-    if (r.status !== 0) bad.push(`${id} exited with status ${r.status}${r.signal ? ` (signal ${r.signal})` : ''}`);
+    if (!statusOk.includes(r.status)) bad.push(`${id} exited with status ${r.status}${r.signal ? ` (signal ${r.signal})` : ''}`);
     if (r.isolated !== true) bad.push(`${id} was not confirmed to run under the private HOME (the kernel reported ${r.homeSeen ?? 'nothing'})`);
     if (!r.settingsSha256) bad.push(`${id} has no settings hash`);
     if (!r.exe) bad.push(`${id} does not record the executable it ran`);

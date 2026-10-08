@@ -1,0 +1,210 @@
+-- sw_nmi_ring.lua.template -- the RING recorder of plan 2.5 row 5 (NMI deadline): what the streamed NMI really does with a strip, on Mesen's
+-- cycle-accurate core. TEMPLATE: ring_gate/ringnmi.mjs substitutes the __PLACEHOLDER__ tokens (addresses resolved out of the build under test, the case
+-- list) and test/lua/build_sw_nmi_roms.mjs --ring=<cell> writes the result next to the ROM.
+--
+-- This script only RECORDS. It decides nothing about geometry: at the instruction before every NMI that has strip or queue work (`nmi` entry) it snapshots
+-- the strip registers, sbuf, attr_shadow and the vram_buf queue; it records every $2000/$2005/$2006/$2007 write until `nmi_rti` and the PPU position there;
+-- and it prints one NMI line per interrupt. Round 3: each line also carries split_lock at NMI entry and every write the NMI made to the mapper window
+-- ($8000-$FFFF, in order, address:value), so a worst-family judge can tell an ARMED split_arm (select R1, write it, then $C000/$C001/$E001) from its split_lock
+-- early return (no mapper write at all) or its disarmed branch ($E000), on every interrupt rather than on the first. ring_gate/ringnmi.mjs (Node) holds the independent model of what those writes had to be -- the ring's block
+-- advancement, the wrap, the live nametables, the attribute read-modify-write -- and the vblank deadline arithmetic, and judges the lines. A recorder
+-- that judged would be the thing it checks.
+--
+-- Three kinds of case, run in order, each starting from an idle engine in ST_GAMEPLAY at MAIN_LOOP_READY (the same anchor sw_nmi_deadline.lua.template
+-- uses: the very next NMI is the one the poke primed):
+--   strip  a strip armed by RAM poke with the case's axis / length / st_fnt / start offset (the poke is what sw_stream_start_col/_row would have written;
+--          Mesen's Lua cannot inject a CPU call, the deviation sw_nmi_deadline.lua.template documents). Every following NMI drains it, chunk by chunk.
+--   mixed  the same strip, plus a real 35-byte vram_buf packet re-queued before every NMI until the strip ends: each of those NMIs takes the mixed arm
+--          (vram_drain, then sw_nmi_stream_reduced).
+--   real   no poke: the player walks (the case's button held) and the ENGINE'S OWN sw_stream_start_col/_row arm every strip; the recording is of
+--          what it armed (length, axis, st_fnt, start offset) and what the NMI then drew.
+-- Exit codes: 0 done; 2 never reached ST_GAMEPLAY; 3 not a streamed map; 4 a stale anchor; 7 a case produced no completed strip (workload short);
+-- 99 timeout. Everything else is in the printed lines.
+local A = __ADDR__
+local MAIN_LOOP_READY = __MAIN_LOOP_READY__
+local NMI_ENTRY = __NMI_ENTRY__
+local NMI_RTI = __NMI_RTI__
+local ST_GAMEPLAY = __ST_GAMEPLAY__
+local CASES = __CASES__
+local PACKET = __PACKET__ -- the default queued packet { hi, lo, count, first }; a case may carry its own `packets` list ({ hi, lo, vals } each)
+local SPL_BOX = __SPL_BOX__ -- the split mode a case with tail = "armed" forces at NMI entry (split_arm's armed path); only an MMC3 build has a split to arm
+
+local function rd(a) return emu.read(a, emu.memType.nesMemory) end
+local function wr(a, v) emu.write(a, v, emu.memType.nesMemory) end
+local function hex(a, n)
+  local t = {}
+  for i = 0, n - 1 do t[#t + 1] = string.format("%02x", rd(a + i)) end
+  return table.concat(t)
+end
+
+local frame = 0
+local caseIdx = 0      -- 0 = none yet
+local case = nil
+local stage = "boot"   -- boot -> settle -> run -> done
+local settled = 0
+local held = {}
+local inNmi = false
+local pre = nil
+local writes = {}
+local mwrites = {}     -- writes to the mapper window ($8000-$FFFF) made during the current NMI, address:value
+local completed = 0    -- strips this case saw drained to the end
+local caseFrames = 0
+
+local function say(s) print(s) end
+local function fail(code, msg) say("ERROR " .. msg); emu.stop(code) end
+
+local function startCase()
+  caseIdx = caseIdx + 1
+  case = CASES[caseIdx]
+  completed = 0
+  caseFrames = 0
+  if not case then
+    say(string.format("DONE frames=%d cases=%d", frame, #CASES))
+    emu.stop(0)
+    stage = "done"
+    return
+  end
+  say(string.format("CASE %d %s %s", caseIdx, case.name, case.mode))
+  stage = "run"
+end
+
+local function armStrip()
+  wr(A.st_ftile, case.ftile)
+  wr(A.st_fnt, case.fnt)
+  wr(A.st_vary, case.vary)
+  wr(A.st_len, case.len)
+  wr(A.st_cur, 0)
+  for i = 0, 31 do wr(A.sbuf + i, case.ids[i + 1] or 0) end
+  wr(A.st_active, case.active) -- last: the state that gates the drawer
+end
+
+local function queuePacket()
+  local packets = case.packets
+  if not packets then
+    packets = { { hi = PACKET.hi, lo = PACKET.lo, vals = {} } }
+    for i = 0, PACKET.count - 1 do packets[1].vals[#packets[1].vals + 1] = (PACKET.first + i) % 256 end
+  end
+  local at = 0
+  for _, p in ipairs(packets) do
+    wr(A.vram_buf + at, p.hi)
+    wr(A.vram_buf + at + 1, p.lo)
+    wr(A.vram_buf + at + 2, #p.vals)
+    for i, v in ipairs(p.vals) do wr(A.vram_buf + at + 2 + i, v) end
+    at = at + 3 + #p.vals
+  end
+  wr(A.vram_buf + at, 0)
+  wr(A.vram_len, at) -- the engine's own vram_len: headers plus data of every packet
+  wr(A.vram_ready, 1)
+end
+
+local function onMainLoopReady()
+  if stage == "boot" then
+    if rd(A.game_state) ~= ST_GAMEPLAY then return end
+    if rd(A.map_is_streamed) == 0 then fail(3, "map_is_streamed is 0 at main_loop_ready after boot"); return end
+    stage = "settle"
+    settled = 0
+    return
+  end
+  local idle = rd(A.st_active) == 0 and rd(A.vram_len) == 0 and rd(A.vram_ready) == 0
+  if stage == "settle" then
+    if idle then settled = settled + 1 else settled = 0 end
+    if settled >= 30 then startCase() end
+    return
+  end
+  if stage ~= "run" then return end
+  caseFrames = caseFrames + 1
+  if caseFrames > case.maxFrames then
+    say(string.format("SHORT case=%d completed=%d frames=%d", caseIdx, completed, caseFrames))
+    fail(7, string.format("case %s: %d completed strips in %d frames (workload short)", case.name, completed, caseFrames))
+    return
+  end
+  if case.mode == "real" then
+    held[case.btn] = true
+    return
+  end
+  if case.armedOnce == nil and idle then
+    armStrip()
+    case.armedOnce = true
+    if case.mode == "mixed" then queuePacket() end
+    return
+  end
+  if case.mode == "mixed" and rd(A.st_active) ~= 0 and rd(A.vram_ready) == 0 and rd(A.vram_len) == 0 then queuePacket() end
+end
+
+local function onNmiEntry()
+  inNmi = true
+  writes = {}
+  mwrites = {}
+  if stage ~= "run" then pre = nil; return end
+  local st = emu.getState()
+  local active = rd(A.st_active)
+  -- the NMI tail: a case with tail = "armed" makes split_arm take its armed path (five register writes instead of three); the value the NMI really sees is recorded
+  if case and case.tail == "armed" and active ~= 0 then wr(A.split_mode, SPL_BOX) end
+  pre = {
+    active = active, cur = rd(A.st_cur), len = rd(A.st_len), vary = rd(A.st_vary), fnt = rd(A.st_fnt), ftile = rd(A.st_ftile),
+    ready = rd(A.vram_ready), vlen = rd(A.vram_len), sm = rd(A.split_mode), lock = rd(A.split_lock), sl = st["ppu.scanline"], cy = st["ppu.cycle"],
+    sbuf = hex(A.sbuf, 32), shadow = (active ~= 0) and hex(A.attr_shadow, 256) or "", vbuf = hex(A.vram_buf, 64)
+  }
+end
+
+local function onNmiRti()
+  if not inNmi then return end
+  inNmi = false
+  if stage ~= "run" or not pre then return end
+  if pre.active == 0 and pre.ready == 0 then return end -- nothing for this interrupt to do: not a strip/queue NMI
+  local st = emu.getState()
+  local postActive = rd(A.st_active)
+  say(string.format("NMI case=%d name=%s f=%d pre=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d sl0=%d cy0=%d post=%d,%d,%d,%d,%d sl=%d cy=%d sbuf=%s shadow=%s postshadow=%s vbuf=%s mw=%s w=%s",
+    caseIdx, case.name, frame, pre.active, pre.cur, pre.len, pre.vary, pre.fnt, pre.ftile, pre.ready, pre.vlen, pre.sm, pre.lock, pre.sl, pre.cy,
+    postActive, rd(A.st_cur), rd(A.st_vary), rd(A.vram_len), rd(A.vram_ready), st["ppu.scanline"], st["ppu.cycle"],
+    pre.sbuf, pre.shadow ~= "" and pre.shadow or "-", pre.shadow ~= "" and hex(A.attr_shadow, 256) or "-", pre.vbuf, #mwrites > 0 and table.concat(mwrites, ",") or "-", #writes > 0 and table.concat(writes, ",") or "-"))
+  if pre.active ~= 0 and postActive == 0 then
+    completed = completed + 1
+    local want = case.mode == "real" and case.strips or 1
+    if completed >= want then
+      held[case.btn or "none"] = false
+      stage = "settle"
+      settled = 0
+    end
+  end
+end
+
+local function recorder(tag)
+  return function(_, value)
+    if not inNmi then return end
+    writes[#writes + 1] = string.format("%s%02x", tag, value)
+  end
+end
+
+local function mapperRecorder(address, value)
+  if not inNmi then return end
+  mwrites[#mwrites + 1] = string.format("%04x:%02x", address, value)
+end
+
+local function onFrame()
+  frame = frame + 1
+  if frame == 1 then
+    local nmiByte, rtiByte = rd(NMI_ENTRY), rd(NMI_RTI)
+    if rtiByte ~= 0x40 or nmiByte ~= 0x48 then
+      fail(4, string.format("stale anchors: nmi=%04x holds %02x (want 48 pha), nmi_rti=%04x holds %02x (want 40 rti)", NMI_ENTRY, nmiByte, NMI_RTI, rtiByte))
+      return
+    end
+  end
+  if stage == "boot" and frame > 300 then fail(2, "never reached ST_GAMEPLAY within 300 frames"); return end
+  if frame > 60000 then fail(99, "timed out in stage " .. stage); return end
+end
+
+local function onInput()
+  emu.setInput(held, 0)
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiEntry, emu.callbackType.exec, NMI_ENTRY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)
+emu.addMemoryCallback(recorder("C"), emu.callbackType.write, 0x2000)
+emu.addMemoryCallback(recorder("S"), emu.callbackType.write, 0x2005)
+emu.addMemoryCallback(recorder("A"), emu.callbackType.write, 0x2006)
+emu.addMemoryCallback(recorder("D"), emu.callbackType.write, 0x2007)
+emu.addMemoryCallback(mapperRecorder, emu.callbackType.write, 0x8000, 0xFFFF)

@@ -71,7 +71,7 @@ export function matrixReport(list, rows, unexpected, P, L) {
     lines.push(`matrix: ${rows.length} jobs, ${unexpected.length} unexpected; provenance audit SKIPPED: all ${rows.length} selected jobs are stamp-free (raw), so there is no stamp to audit (a selection with any stamping job audits)`);
     return { code: unexpected.length ? 1 : 0, lines, audit: null };
   }
-  const audit = auditProvenance(P, L);
+  const audit = auditProvenance(P, L, { construct: true });
   fs.writeFileSync(path.join(P, 'INDEX.json'), JSON.stringify(audit.index, null, 1));
   for (const p of audit.problems.slice(0, 40)) lines.push(`PROVENANCE PROBLEM ${p}`);
   lines.push(`matrix: ${rows.length} jobs, ${unexpected.length} unexpected; provenance: ${audit.index.counts.stamps} stamps, ${audit.problems.length} problems`);
