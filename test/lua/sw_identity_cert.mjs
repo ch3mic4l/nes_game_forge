@@ -8,8 +8,9 @@
 // an exact fingerprint match. It is NOT a re-measurement, and it says nothing about a workload the sweep did not run (a streamed player Move, which
 // S3a changes, is not one of the swept workloads -- that is WHY every swept ROM is expected identical) or any later change: a differing ROM needs a re-sweep.
 //
-//   node test/lua/sw_identity_cert.mjs [--dir=handoff-next/s1-a1/sweep] [--files=A.out,B.out,C.out,F.out,R.out]
+//   node test/lua/sw_identity_cert.mjs [--dir=handoff-next/p3b-fixes2/resweep] [--files=out-A.jsonl,out-B.jsonl,out-C.jsonl,out-F.jsonl,out-R.jsonl,out-P.jsonl]
 //        [--curve=test/fixtures/streambound-curve.json] [--workers=N (1..12, default 12)] [--mesen=<path>]
+//        [--transfer=test/fixtures/harness-transfer/<name>.json]   REQUIRED when the live harness is not the curve's recorded one (the harness-transfer certificate)
 //        [--out=test/fixtures/identity-cert/<name>.json]      written only after full coverage, never over an existing file
 //        [--report=<file.json>]                               a JSON account of the run, certifying or not
 //        [--limit=K | --shard=I/M]                            a PARTIAL run: never a certificate (exit 3 when clean)
@@ -26,7 +27,9 @@
 //  3 accounts for each job once (makeLedger of sw_rebuild_check.mjs): one valid answer from its assigned worker; duplicate/unknown/missing
 //           answers, a dead worker, a build error and a malformed reply fail; expected == answered == matched == directCount > 0; a partial run
 //           is never success; a bad numeric option or an empty workset fails.
-//  4 pins   the measurement bindings: harness and Mesen equal the recorded ones, the execution flags, and each job's effective RENDERED Lua is
+//  4 pins   the measurement bindings: the RECORDED harness and Mesen are preserved in the certificate; a live harness that is not the recorded one needs a
+//           valid harness-transfer certificate (test/lua/sw_harness_transfer.mjs, named by `transfer`); the helper files the build imports are pinned and
+//           enforced (`helpers`); the execution flags, and each job's effective RENDERED Lua is
 //           re-derived and must reproduce the record's own cacheKey (the key hashes project, ROM, the rendered script with its symbol addresses,
 //           the source state and the execution flags): a renamed or rebound symbol that moved an address the instrumentation reads fails it.
 //  5 pins   the sources before, at every build (the build's own provenance) and after the run; any drift or mismatch is non-zero; the certificate
@@ -40,14 +43,18 @@ import crypto from 'node:crypto';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { REPO } from './sw_manifest_scene.mjs';
-import { runManifest, SCENARIOS, MESEN_DEFAULT } from './run_sw_manifest.mjs';
-import { ANIM_PRESETS, validateRows, jobProvenanceProblems, isBad } from './sw_bound_sweep.mjs';
-import { makeMutate } from './sw_sweep_mutate.mjs';
+import { MESEN_DEFAULT } from './run_sw_manifest.mjs';
+import { validateRows, jobProvenanceProblems, isBad } from './sw_bound_sweep.mjs';
 import { processProvenance, UNIFORM_FIELDS, measurementKey, EXEC_FLAGS, harnessHash, generatorHash } from './sw_provenance.mjs';
 import { makeLedger, compareHashes } from './sw_rebuild_check.mjs';
 import { engineFingerprint } from '../lib/enginefingerprint.js';
+import { helperPins, harnessFileShas, TRANSFER_DIR_REL, checkTransfers } from './sw_transfer_lib.mjs';
 
-export const CERTIFIER_VERSION = 1;
+export const CERTIFIER_VERSION = 2; // v2: the harness-transfer pointer, the enforced helper pins, the shared rebuild worker (v1 certificates are refused)
+export const CERT_VERSION = 2;
+export const EVIDENCE_DIR_REL = 'handoff-next/p3b-fixes2/resweep'; // the resweep whose four source hashes equal the curve's (phase 3b fix round 2)
+export const EVIDENCE_FILES = ['A', 'B', 'C', 'F', 'R', 'P'].map((s) => `out-${s}.jsonl`);
+export const WORKER_FILE = fileURLToPath(new URL('./sw_transfer_worker.mjs', import.meta.url));
 export const CERT_KIND = 'rom-identity-certificate';
 export const STAGES = ['A', 'B', 'C', 'F', 'R', 'P']; // P: the bounded probe stage (S3a.5); a curve recorded since then counts its jobs
 export const MAX_WORKERS = 12;
@@ -154,10 +161,10 @@ export function classifyAnswer(rec, m) {
 export function runPool(todo, { workers, worker, env, current, progress = () => {} }) {
   const ledger = makeLedger(todo.map((r) => r.id));
   const byId = new Map(todo.map((r) => [r.id, r]));
-  const mismatches = []; const errors = []; const drift = []; const luaOf = new Map(); const symOf = new Map();
+  const mismatches = []; const errors = []; const drift = []; const luaOf = new Map(); const symOf = new Map(); const hashOf = new Map(); let cnevHits = 0;
   const queue = todo.slice(); let done = 0; let live = 0;
   return new Promise((resolve) => {
-    const out = () => ({ result: ledger.result(), mismatches, errors, drift, luaOf, symOf });
+    const out = () => ({ result: ledger.result(), mismatches, errors, drift, luaOf, symOf, hashOf, get cnevHits() { return cnevHits; } });
     const finish = () => { if (--live === 0) resolve(out()); };
     for (let i = 0; i < Math.min(workers, todo.length); i++) {
       live++;
@@ -174,6 +181,7 @@ export function runPool(todo, { workers, worker, env, current, progress = () => 
         else {
           if (c.kind === 'mismatched') mismatches.push({ id: m.id, stage: rec.stage, differs: c.differs, recorded: { project: rec.prov.project, rom: rec.prov.rom }, rebuilt: { project: m.prov.project, rom: m.prov.rom, romFile: m.romFile } });
           luaOf.set(m.id, m.lua); if (typeof m.sym === 'string') symOf.set(m.id, m.sym);
+          hashOf.set(m.id, { project: m.prov.project, rom: m.prov.rom, romFile: m.romFile }); cnevHits += m.cnev ? 1 : 0;
           const moved = UNIFORM_FIELDS.filter((f) => m.prov[f] !== current[f]); // the build's own source state, at THIS build
           if (moved.length) drift.push({ id: m.id, moved });
         }
@@ -213,12 +221,12 @@ export function verdictOf({ directCount, partial, result, drift = 0, sourceProbl
 /** The seal: the digest of every field but `selfDigest`, key order fixed by the writer (a later edit of any field breaks it). */
 export const sealOf = (cert) => { const { selfDigest, ...rest } = cert; return sha(JSON.stringify(rest)); };
 
-export function buildCertificate({ workset, curve, curveFile, curveDigest, stageInfo, current, recordedProv, before, after, result, luaOf, symOf, workers, date = new Date().toISOString().slice(0, 10) }) {
+export function buildCertificate({ workset, curve, curveFile, curveDigest, stageInfo, current, recordedProv, before, after, result, luaOf, symOf, workers, transfer = null, helpers = null, date = new Date().toISOString().slice(0, 10) }) {
   const luaDigest = sortedDigest([...luaOf].map(([id, l]) => `${id}|${l}`));
   const symDigest = sortedDigest([...symOf].map(([id, l]) => `${id}|${l}`));
   const cert = {
     kind: CERT_KIND,
-    version: 1,
+    version: CERT_VERSION,
     certifier: { name: 'test/lua/sw_identity_cert.mjs', version: CERTIFIER_VERSION, sha256: sha256File(SELF) },
     scope: SCOPE,
     date,
@@ -229,7 +237,10 @@ export function buildCertificate({ workset, curve, curveFile, curveDigest, stage
       old: { engine: recordedProv.engine, generator: recordedProv.generator },
       current: { engine: current.engine, generator: current.generator }
     },
-    harness: recordedProv.harness,
+    harness: recordedProv.harness, // the RECORDED harness, preserved; the live one is `harnessCurrent`, and a difference needs `transfer`
+    harnessCurrent: before.harness,
+    ...(transfer ? { transfer } : {}),
+    helpers: helpers ?? helperPins(REPO),
     mesen: recordedProv.mesen,
     execFlags: EXEC_FLAGS,
     counts: { expected: result.expected, answered: result.answered, matched: result.matched, mismatched: result.mismatched, errored: result.errored, directCount: workset.direct.length, reuseCount: workset.reuses.length, confirms: workset.confirms.length, reusesResolved: workset.reuses.length, keysReproduced: luaOf.size },
@@ -247,11 +258,11 @@ export function buildCertificate({ workset, curve, curveFile, curveDigest, stage
  * The problems that stop `cert` from certifying the checked-in curve for the sources in `live` ({engine, generator, harness}); [] = valid.
  * `curveBytes` are the bytes of the checked-in curve file. Pure: a unit test drives it with made-up certificates and sources.
  */
-export function validateCertificate(cert, { curve, curveBytes, live }) {
+export function validateCertificate(cert, { curve, curveBytes, live, transfers = [] }) {
   const p = [];
   const need = (ok, msg) => { if (!ok) p.push(msg); };
   if (!cert || typeof cert !== 'object') return ['not an object'];
-  need(cert.kind === CERT_KIND && cert.version === 1, 'not a version-1 rom-identity certificate');
+  need(cert.kind === CERT_KIND && cert.version === CERT_VERSION, `not a version-${CERT_VERSION} rom-identity certificate`);
   need(cert.certifier?.version === CERTIFIER_VERSION, `produced by certifier version ${cert.certifier?.version}, this is ${CERTIFIER_VERSION}`);
   need(cert.selfDigest === sealOf(cert), 'the seal does not match the contents (the certificate was edited)');
   need(cert.scope === SCOPE, 'the scope is not this certifier\'s scope');
@@ -270,14 +281,28 @@ export function validateCertificate(cert, { curve, curveBytes, live }) {
   need(cert.fingerprints?.old?.engine === curve.provenance.engine && cert.fingerprints.old.engine === curve.engine?.sha256, 'the OLD engine fingerprint is not the curve\'s');
   need(cert.fingerprints?.old?.generator === curve.provenance.generator, 'the OLD generator fingerprint is not the curve\'s');
   need(cert.harness === curve.provenance.harness && cert.mesen === curve.provenance.mesen, 'harness or Mesen differs from the curve\'s recorded ones');
+  // the harness the certificate was taken on is the LIVE one; when that is not the recorded one a valid harness-transfer certificate must carry it
+  need(live.harness !== undefined && cert.harnessCurrent === live.harness, 'the live harness is not the certified one');
+  if (cert.harnessCurrent !== cert.harness) {
+    const t = cert.transfer; const hit = (transfers ?? []).find((x) => x.file === t?.file);
+    need(!!t && !!hit && hit.selfDigest === t.selfDigest, 'the harness moved and the transfer certificate this one names is missing or is not the pinned one (transfer digest mismatch)');
+    if (hit) {
+      need(hit.problems.length === 0, `the transfer certificate is not valid: ${hit.problems.slice(0, 3).join('; ')}`);
+      need(hit.newHarness === cert.harnessCurrent, 'the transfer certificate is not for this live harness');
+      need(STAGES.every((s) => hit.stages?.[s]?.sha256 === cert.stages?.[s]?.sha256), 'the transfer certificate was proven against other stage files (transfer curve/stage mismatch)');
+    }
+  } else need(!cert.transfer, 'a transfer pointer on a certificate whose harness never moved');
+  need(live.helpers !== undefined && JSON.stringify(cert.helpers) === JSON.stringify(live.helpers), 'a helper file differs from the certified one');
   // the CURRENT sources it was taken on must be the live ones
   need(cert.fingerprints?.current?.engine === live.engine, 'the certificate\'s current engine fingerprint is not the live engine');
   need(cert.fingerprints?.current?.generator === live.generator, 'the certificate\'s current generator fingerprint is not the live generator');
-  if (live.harness !== undefined) need(cert.harness === live.harness, 'the live harness is not the certified one');
   need(JSON.stringify(cert.execFlags) === JSON.stringify(EXEC_FLAGS), 'the execution flags are not the live ones');
   const b = cert.sources?.before; const a = cert.sources?.after;
   need(b && a && UNIFORM_FIELDS.every((f) => b[f] === a[f]), 'the sources moved during the run');
   need(b?.engine === cert.fingerprints?.current?.engine && b?.generator === cert.fingerprints?.current?.generator, 'the run\'s sources are not the certificate\'s current fingerprints');
+  // review R1: the run's own harness and Mesen are the ones the certificate claims (the before/after equality above then covers 'after')
+  need(b?.harness === cert.harnessCurrent, 'the run\'s harness is not the certificate\'s claimed current harness');
+  need(b?.mesen === cert.mesen, 'the run\'s Mesen is not the certificate\'s recorded Mesen');
   need(cert.bindings && HEX64.test(cert.bindings.luaDigest ?? '') && cert.bindings.distinctScripts > 0, 'no measurement-binding evidence');
   for (const s of STAGES) need(HEX64.test(cert.stages?.[s]?.sha256 ?? '') && cert.stages[s].lines > 0, `stage ${s} digest missing`);
   return p;
@@ -298,61 +323,34 @@ export function checkCertificates(dir, ctx) {
  * ([{file, problems}] from checkCertificates) is valid for the live fingerprints. The exact-match branch checks BOTH: review 2 finding 2 found a
  * consumer that returned on an equal engine alone, accepting the original engine with an arbitrarily changed generator.
  */
-export function curveEvidenceVerdict({ curve, live, verdicts }) {
+export function curveEvidenceVerdict({ curve, live, verdicts, transfers = [] }) {
   const engine = live.engine === curve.engine?.sha256 && live.engine === curve.provenance?.engine;
   const generator = live.generator === curve.provenance?.generator;
-  if (engine && generator) return { ok: true, via: 'exact', why: [] };
+  // review F2: the exact branch used to look at engine and generator alone, so a moved harness on unchanged sources rode through unproven. It needs the harness too.
+  const harness = live.harness !== undefined && live.harness === curve.provenance?.harness;
+  if (engine && generator && harness) return { ok: true, via: 'exact', why: [] };
+  const validTransfer = transfers.find((t) => t.problems.length === 0 && t.newHarness === live.harness);
+  // route A: the sources are the recorded ones and only the harness moved: a valid harness-transfer certificate for this live harness carries it
+  if (engine && generator && !harness && validTransfer) return { ok: true, via: `harness transfer ${validTransfer.file}`, why: [] };
+  // route B (and engine/generator changes with an unmoved harness): a valid identity certificate; one for a moved harness is only valid with its transfer pointer
   const valid = verdicts.find((v) => v.problems.length === 0);
   if (valid) return { ok: true, via: `certificate ${valid.file}`, why: [] };
   const why = [];
   if (!engine) why.push('the live engine is not the recorded one');
   if (!generator) why.push('the live generator is not the recorded one');
+  if (!harness) why.push(validTransfer ? 'the live harness is not the recorded one (a transfer certificate exists, but no identity certificate carries the changed sources)' : 'the live harness is not the recorded one and no valid harness-transfer certificate covers it');
   return { ok: false, via: null, why };
 }
 
 /** The live sources a certificate is read against (what the consumer test needs; no Mesen). */
-export const liveSources = (root = REPO) => ({ engine: engineFingerprint(root).sha256, generator: generatorHash(root), harness: harnessHash(REPO) });
+export const liveSources = (root = REPO) => ({ engine: engineFingerprint(root).sha256, generator: generatorHash(root), harness: harnessHash(REPO), harnessFiles: harnessFileShas(REPO), helpers: helperPins(REPO) });
+/** The transfer certificates under TRANSFER_DIR_REL, validated for the live sources (what `transfers` is in validateCertificate / curveEvidenceVerdict). */
+export const liveTransfers = (ctx, root = REPO) => checkTransfers(path.join(root, TRANSFER_DIR_REL), ctx);
 
-// ---- the worker: one rebuild at a time, no Mesen ---------------------------------------------------------------------------------
-async function rebuildOne(rec, { mesen, base, sabotage, index, count }) {
-  const ph = structuredClone(SCENARIOS[rec.scenario ?? 'walk']);
-  for (const p of ph) if (p.trace) p.trace = false;
-  if (rec.idle) ph.splice(1, 0, { name: 'idle', frames: rec.idle });
-  const cfg = rec.cfg ? structuredClone(rec.cfg) : null;
-  const dir = await fs.promises.mkdtemp(path.join(base, 'cert-'));
-  try {
-    // the sweep's own arguments (sw_bound_sweep.mjs runJob), with a kept output folder so the effective rendered script can be read back; if these
-    // arguments ever drifted from the original recipe the record's cacheKey would not reproduce (classifyAnswer), so the check is self-validating
-    const r = await runManifest({
-      gt: rec.gt, sizes: rec.sizes, wide: !!rec.wide, scenario: rec.scenario ?? 'walk', phases: ph,
-      flashAt: rec.y !== null && rec.y !== undefined ? [rec.flashX ?? 242, rec.y] : (cfg ? [242, 234] : null),
-      anim: ANIM_PRESETS[rec.anim ?? 'P0'], root: rec.root, ...(rec.gridH ? { gridH: rec.gridH } : {}), mutate: cfg ? makeMutate(cfg) : null,
-      expect: null, cache: null, prepareOnly: true, jobId: rec.id, waitInflight: true, mesen, outDir: dir
-    });
-    const romPath = path.join(dir, 'scene.nes');
-    if (sabotage === 'flip-rom-byte' && index === 0 && count === 1) { const b = fs.readFileSync(romPath); b[b.length >> 1] ^= 1; fs.writeFileSync(romPath, b); }
-    const luaText = fs.readFileSync(path.join(dir, 'manifest.lua'), 'utf8');
-    let lua = sha(luaText);
-    if (sabotage === 'drift-binding' && index === 0 && count === 1) lua = sha(luaText + '\n-- a rebound symbol');
-    const symLine = /^local SYM = .*$/m.exec(luaText)?.[0] ?? '';
-    return { id: rec.id, prov: r.prov, lua, romFile: sha(fs.readFileSync(romPath)), sym: sha(symLine) };
-  } finally { await fs.promises.rm(dir, { recursive: true, force: true }); }
-}
-
-if (IS_MAIN && process.argv.includes('--worker')) {
-  const arg = (n, d) => { const a = process.argv.find((s) => s.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : d; };
-  const mesen = arg('mesen', MESEN_DEFAULT); const index = Number(arg('index', '0'));
-  const sabotage = process.env.CERT_SABOTAGE || null; const base = process.env.TMPDIR || os.tmpdir(); let count = 0;
-  process.on('message', async (rec) => {
-    if (rec === 'exit') process.exit(0);
-    count++;
-    if (sabotage === 'kill-worker' && index === 0 && count === 1) process.kill(process.pid, 'SIGKILL');
-    try { process.send(await rebuildOne(rec, { mesen, base, sabotage, index, count })); } catch (e) { process.send({ id: rec.id, error: String(e?.message ?? e).slice(0, 400) }); }
-  });
-  process.send({ ready: true });
-} else if (IS_MAIN) {
-  await main();
-}
+// ---- the worker -------------------------------------------------------------------------------------------------------------------
+// One rebuild at a time, no Mesen: test/lua/sw_transfer_worker.mjs, shared with the harness-transfer certifier (a record is rebuilt through the sweep's own
+// `manifestArgs`, never a hand-copied recipe: review F1 found the hand-copied one had dropped the R contact endpoint).
+if (IS_MAIN) await main();
 
 // ---- the CLI -------------------------------------------------------------------------------------------------------------------
 function pinFiles(dir, files, curvePath) {
@@ -370,15 +368,16 @@ async function main() {
   if (verifyPath) {
     const cert = JSON.parse(fs.readFileSync(path.resolve(verifyPath), 'utf8'));
     const curveBytes = fs.readFileSync(curvePath);
-    const problems = validateCertificate(cert, { curve: JSON.parse(curveBytes), curveBytes, live: liveSources() });
+    const live = liveSources(); const curve = JSON.parse(curveBytes);
+    const problems = validateCertificate(cert, { curve, curveBytes, live, transfers: liveTransfers({ curve, curveBytes, live }) });
     for (const m of problems) console.error(`INVALID: ${m}`);
     say(problems.length ? 'certificate INVALID for the live sources' : 'certificate valid for the live sources');
     process.exit(problems.length ? 1 : 0);
   }
   let options;
   try { options = parseOptions(process.argv.slice(2)); } catch (e) { console.error(`usage error: ${e.message}`); process.exit(2); }
-  const dir = path.resolve(REPO, arg('dir', 'handoff-next/s1-a1/sweep'));
-  const fileNames = arg('files', STAGES.map((s) => `${s}.out`).join(',')).split(',');
+  const dir = path.resolve(REPO, arg('dir', EVIDENCE_DIR_REL));
+  const fileNames = arg('files', EVIDENCE_FILES.join(',')).split(',');
   if (fileNames.length !== STAGES.length) { console.error(`usage error: --files must name the ${STAGES.length} stage files in order ${STAGES.join(',')}`); process.exit(2); }
   const files = fileNames.map((f) => path.join(dir, f));
   const mesen = arg('mesen', MESEN_DEFAULT);
@@ -401,13 +400,32 @@ async function main() {
   if (workset.problems.length) fail(1, ...workset.problems.slice(0, 40).map((m) => `REFUSED: ${m}`));
   const recordedProv = workset.all.find((r) => !isBad(r)).prov;
   const before = processProvenance(REPO, mesen, { freshMesen: true });
+  const buildHelpers = helperPins(REPO);
   say(`records: ${workset.all.length} ids = ${workset.direct.length} direct (incl. ${workset.confirms.length} confirmation re-runs) + ${workset.reuses.length} reuses; stages ${Object.entries(workset.perStage).map(([s, n]) => `${s}:${n}`).join(' ')}`);
   say('sources (recorded | current):');
   const refused = [];
   for (const f of UNIFORM_FIELDS) {
     const same = recordedProv[f] === before[f];
-    say(`  ${f.padEnd(9)} ${recordedProv[f].slice(0, 16)} | ${before[f].slice(0, 16)}  ${same ? 'equal' : f === 'engine' || f === 'generator' ? 'differs (being certified)' : 'DIFFERS (REFUSED)'}`);
-    if (!same && f !== 'engine' && f !== 'generator') refused.push(`${f} differs: recorded ${recordedProv[f].slice(0, 12)}, now ${before[f].slice(0, 12)}`);
+    const transferable = f === 'harness';
+    say(`  ${f.padEnd(9)} ${recordedProv[f].slice(0, 16)} | ${before[f].slice(0, 16)}  ${same ? 'equal' : f === 'engine' || f === 'generator' ? 'differs (being certified)' : transferable ? 'differs (needs a harness-transfer certificate)' : 'DIFFERS (REFUSED)'}`);
+    if (!same && f !== 'engine' && f !== 'generator' && !transferable) refused.push(`${f} differs: recorded ${recordedProv[f].slice(0, 12)}, now ${before[f].slice(0, 12)}`);
+  }
+  // the harness moved: only a valid harness-transfer certificate for this very live harness (and these helper files) allows going on; the certificate names it
+  let transferPointer = null;
+  if (recordedProv.harness !== before.harness) {
+    const tPath = arg('transfer', null);
+    if (!tPath) refused.push(`harness differs: recorded ${recordedProv.harness.slice(0, 12)}, now ${before.harness.slice(0, 12)}; pass --transfer=${TRANSFER_DIR_REL}/<harness-transfer certificate> (node test/lua/sw_harness_transfer.mjs)`);
+    else {
+      const abs = path.resolve(REPO, tPath);
+      if (path.dirname(abs) !== path.join(REPO, TRANSFER_DIR_REL)) refused.push(`--transfer must name a file directly under ${TRANSFER_DIR_REL}`);
+      else {
+        const live0 = liveSources(); const checked = liveTransfers({ curve, curveBytes: fs.readFileSync(curvePath), live: live0 }).find((t) => t.file === path.basename(abs));
+        if (!checked) refused.push(`transfer certificate ${tPath} not found`);
+        else if (checked.problems.length) refused.push(`transfer certificate ${path.basename(abs)} is not valid for the live sources: ${checked.problems.slice(0, 4).join('; ')}`);
+        else if (checked.newHarness !== before.harness) refused.push('the transfer certificate is not for the live harness');
+        else transferPointer = { file: path.basename(abs), selfDigest: checked.selfDigest };
+      }
+    }
   }
   if (refused.length) fail(1, ...refused.map((m) => `REFUSED: ${m}`));
 
@@ -421,13 +439,14 @@ async function main() {
   for (const s of ['SIGINT', 'SIGTERM']) process.on(s, () => { cleanup(); process.exit(130); });
   say(`rebuilding ${todo.length} of ${workset.direct.length} direct records on ${Math.min(options.workers, todo.length || 1)} workers${partial ? ' (PARTIAL)' : ''}${sabotage ? ` [CERT_SABOTAGE=${sabotage}]` : ''}`);
   const { result, mismatches, errors, drift, luaOf, symOf } = await runPool(todo, {
-    workers: options.workers, worker: { file: SELF, args: ['--worker', `--mesen=${mesen}`] }, env: { ...process.env, TMPDIR: base }, current: before,
+    workers: options.workers, worker: { file: WORKER_FILE, args: [`--harness-root=${REPO}`, `--expect-harness=${before.harness}`, '--mode=prepare', '--side=current', `--mesen=${mesen}`] }, env: { ...process.env, TMPDIR: base }, current: before,
     progress: (done, mm, ee) => { if (done % 500 === 0) console.error(`  ${done}/${todo.length} ${((Date.now() - t0) / 1000).toFixed(0)}s, ${mm} mismatches, ${ee} errors`); }
   });
 
   // 3. pin again after the run: the sources, the stage files, the curve
   const after = processProvenance(REPO, mesen, { freshMesen: true });
   const sourceProblems = [];
+  if (JSON.stringify(helperPins(REPO)) !== JSON.stringify(buildHelpers)) sourceProblems.push('a helper file changed during the run');
   for (const f of UNIFORM_FIELDS) if (before[f] !== after[f]) sourceProblems.push(`source ${f} changed during the run`);
   try { const again = pinFiles(dir, fileNames, curvePath); if (again.curveDigest !== pinned.curveDigest) sourceProblems.push('the curve changed during the run'); for (const s of STAGES) if (again.stageInfo[s].sha256 !== pinned.stageInfo[s].sha256) sourceProblems.push(`stage file ${s} changed during the run`); } catch (e) { sourceProblems.push(`cannot re-read the pinned files: ${e.message}`); }
 
@@ -449,8 +468,9 @@ async function main() {
   Object.assign(report, { exit: verdict.exit, why: verdict.why, direct: workset.direct.length, reuses: workset.reuses.length, confirms: workset.confirms.length, expected: result.expected, answered: result.answered, matched: result.matched, mismatched: mismatches.length, errors: errors.length, problems: result.problems, wallSeconds, before, after, mismatches: mismatches.slice(0, 100) });
 
   if (verdict.exit === 0 && outPath) {
-    const cert = buildCertificate({ workset, curve, curveFile: CURVE_REL, curveDigest: pinned.curveDigest, stageInfo: pinned.stageInfo, current: before, recordedProv, before, after, result, luaOf, symOf, workers: options.workers });
-    const own = validateCertificate(cert, { curve, curveBytes: fs.readFileSync(curvePath), live: liveSources() });
+    const cert = buildCertificate({ workset, curve, curveFile: CURVE_REL, curveDigest: pinned.curveDigest, stageInfo: pinned.stageInfo, current: before, recordedProv, before, after, result, luaOf, symOf, workers: options.workers, transfer: transferPointer, helpers: buildHelpers });
+    const live1 = liveSources(); const curveBytes1 = fs.readFileSync(curvePath);
+    const own = validateCertificate(cert, { curve, curveBytes: curveBytes1, live: live1, transfers: liveTransfers({ curve, curveBytes: curveBytes1, live: live1 }) });
     if (own.length) { console.error(`REFUSED: the certificate just built does not validate: ${own.join('; ')}`); report.exit = 1; if (reportPath) fs.writeFileSync(reportPath, JSON.stringify(report, null, 1) + '\n'); process.exit(1); }
     fs.mkdirSync(path.dirname(path.resolve(REPO, outPath)), { recursive: true });
     fs.writeFileSync(path.resolve(REPO, outPath), JSON.stringify(cert, null, 1) + '\n', { flag: 'wx' });

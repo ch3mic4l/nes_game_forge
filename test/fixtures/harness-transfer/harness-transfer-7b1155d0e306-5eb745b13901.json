@@ -1,0 +1,1433 @@
+{
+ "kind": "harness-transfer-certificate",
+ "version": 1,
+ "tool": {
+  "name": "test/lua/sw_harness_transfer.mjs",
+  "version": 1,
+  "sha256": {
+   "cli": "418248f762d7f759cdf1cf5ccefbc02e7920572442f74919186e098de3b89811",
+   "lib": "7295efdddab2a0599e0be6aab3aa556feb36a2d718050a934b08c5577085ed1f",
+   "worker": "8e9306b2fb6fc451753432283e4f6a5ce08afd6443c01c79cd8d82a5ae4e1bbc"
+  }
+ },
+ "scope": "harness transfer: every recorded Mesen-run job re-rendered by the archived old harness and by the current harness at the recorded engine and generator, project/ROM/key/symbol bindings equal job by job, and a pinned coverage pilot measured equal through Mesen",
+ "date": "2026-10-08",
+ "partial": false,
+ "curve": {
+  "file": "test/fixtures/streambound-curve.json",
+  "sha256": "f5ade981862b2a3c2f32d746d1966ba09790799733dca8e4e2e2404a67609b09",
+  "jobs": 12590,
+  "reused": 832,
+  "confirms": 2,
+  "provenance": {
+   "engine": "079a137d2018f9e4e49e797462e730f7b6285eecc5eed5d135ef9f23e502f9bc",
+   "harness": "7b1155d0e306bb7eccbc1e443340a3fc265317054680a7cdc078e3a98097fa1c",
+   "generator": "5018210749519c9e0d7caf3067726f7d70371417ff961cd95df5f13d19374308",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "stages": {
+  "A": {
+   "file": "handoff-next/p3b-fixes2/resweep/out-A.jsonl",
+   "sha256": "e8643e48a574507f373eaee297a1e07bee800df001bbc68db50bb631c12ee928",
+   "lines": 658
+  },
+  "B": {
+   "file": "handoff-next/p3b-fixes2/resweep/out-B.jsonl",
+   "sha256": "0744fb53b346c2d1cd215eb2a066341b3d930db0f6cb5fb4f0265110785473d8",
+   "lines": 5120
+  },
+  "C": {
+   "file": "handoff-next/p3b-fixes2/resweep/out-C.jsonl",
+   "sha256": "fb38a62fbc20789123ad082df78105053b8f5575bb0e29cfe24c744bb0a9c19d",
+   "lines": 5312
+  },
+  "F": {
+   "file": "handoff-next/p3b-fixes2/resweep/out-F.jsonl",
+   "sha256": "282953cd996f76ddbcc1c9a37f590ad33c0e671f7475a25ae7d6ca2fc7fa6a66",
+   "lines": 1000
+  },
+  "R": {
+   "file": "handoff-next/p3b-fixes2/resweep/out-R.jsonl",
+   "sha256": "5081b899f93b4de4875d4fb2b4490620c3257b9a99c81ddee8f4c2f77f86bd67",
+   "lines": 500
+  },
+  "P": {
+   "file": "handoff-next/p3b-fixes2/resweep/out-P.jsonl",
+   "sha256": "ce2c0fcc3589203cc2c99d210295f4395bcbb2d60dfea1eae2450b7b190c10bd",
+   "lines": 98
+  }
+ },
+ "workset": {
+  "directCount": 11760,
+  "reuseCount": 832,
+  "confirms": 2,
+  "perStage": {
+   "A": 658,
+   "B": 5024,
+   "C": 5312,
+   "F": 1000,
+   "R": 500,
+   "P": 98
+  },
+  "directDigest": "58c56d96a2902eccab0145f98ba55e0c86e274d734513f8ae6ac75622e9b0f4f",
+  "reuseDigest": "5f9854d6d3557d3e8e7e47bd78110be2693392f7ce735f523a79917449a34524"
+ },
+ "oldHarness": "7b1155d0e306bb7eccbc1e443340a3fc265317054680a7cdc078e3a98097fa1c",
+ "newHarness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+ "archive": {
+  "dir": "test/fixtures/harness-transfer/archive-7b1155d0e306",
+  "hash": "7b1155d0e306bb7eccbc1e443340a3fc265317054680a7cdc078e3a98097fa1c",
+  "files": [
+   {
+    "name": "sw_manifest.lua.template",
+    "sha256": "02eefdd26af3020f741d6e4d2fdb1ce8b3bd7ff154d44a77220ed1964d7921b2"
+   },
+   {
+    "name": "run_sw_manifest.mjs",
+    "sha256": "e0ab29823196d3336e95962b6b0d23b47034397f48a74c279bab9c650e7b4287"
+   },
+   {
+    "name": "sw_manifest_scene.mjs",
+    "sha256": "adf04f5ac4ee26ec3a9698d13ab10578520e0481c023e8c98428f30630a479a5"
+   },
+   {
+    "name": "sw_sweep_mutate.mjs",
+    "sha256": "3564536c38a15c99ac549456bd7c46e57b4d20b24febab811e024a073c687fc3"
+   },
+   {
+    "name": "sw_bound_sweep.mjs",
+    "sha256": "c932e1676290965f1348a9894b7eee62827366eb28e5b302d32fa9d105844039"
+   },
+   {
+    "name": "sw_provenance.mjs",
+    "sha256": "99812edb69a8d56a32c6b1e9943c2bcbed0922eb248a9a1dda6b0488fff86a77"
+   }
+  ],
+  "oldTree": {
+   "head": "5138c1f0c33107016a90423da17dcbb33d8697ca"
+  }
+ },
+ "files": [
+  {
+   "name": "sw_manifest.lua.template",
+   "oldSha": "02eefdd26af3020f741d6e4d2fdb1ce8b3bd7ff154d44a77220ed1964d7921b2",
+   "newSha": "02eefdd26af3020f741d6e4d2fdb1ce8b3bd7ff154d44a77220ed1964d7921b2",
+   "status": "unchanged"
+  },
+  {
+   "name": "run_sw_manifest.mjs",
+   "oldSha": "e0ab29823196d3336e95962b6b0d23b47034397f48a74c279bab9c650e7b4287",
+   "newSha": "46d0cf00736c418197acd1ef931e763eeae29d4d2032a6e040a0a83bfe2a6fd8",
+   "status": "changed"
+  },
+  {
+   "name": "sw_manifest_scene.mjs",
+   "oldSha": "adf04f5ac4ee26ec3a9698d13ab10578520e0481c023e8c98428f30630a479a5",
+   "newSha": "57bcfd684886a9f4384202e6c9e563d8c770697bb4463a027b4e2d751e1aa84b",
+   "status": "changed"
+  },
+  {
+   "name": "sw_sweep_mutate.mjs",
+   "oldSha": "3564536c38a15c99ac549456bd7c46e57b4d20b24febab811e024a073c687fc3",
+   "newSha": "3564536c38a15c99ac549456bd7c46e57b4d20b24febab811e024a073c687fc3",
+   "status": "unchanged"
+  },
+  {
+   "name": "sw_bound_sweep.mjs",
+   "oldSha": "c932e1676290965f1348a9894b7eee62827366eb28e5b302d32fa9d105844039",
+   "newSha": "c932e1676290965f1348a9894b7eee62827366eb28e5b302d32fa9d105844039",
+   "status": "unchanged"
+  },
+  {
+   "name": "sw_provenance.mjs",
+   "oldSha": "99812edb69a8d56a32c6b1e9943c2bcbed0922eb248a9a1dda6b0488fff86a77",
+   "newSha": "99812edb69a8d56a32c6b1e9943c2bcbed0922eb248a9a1dda6b0488fff86a77",
+   "status": "unchanged"
+  }
+ ],
+ "declaredInert": [
+  "run_sw_manifest.mjs",
+  "sw_manifest_scene.mjs"
+ ],
+ "helpers": {
+  "old": {
+   "main/paths.js": "0ba6cf88e1f3a3ff9d6175e7be644c8c9f6a3403992eabdfb4896a64dc4d25c3",
+   "main/project-io.js": "27fd08ba00d787ff1946579e6010bbe7ecbf9ea7443b89f79bbdcd62b3d3d927",
+   "main/savequeue.js": "9371793b08151266337d9d8297f594f71b993826d2d8c6153e30648c9d38a796",
+   "test/lib/enginefingerprint.js": "ac78d2e32f6cacf71050512e56ad5e773f4eab73a04edf81d3eb69dcb864dbfe",
+   "test/lib/equates.js": "b53ca0c352147b82e4c2b9c9cda5677feb43905f305d962e2d09701ace4c45dc"
+  },
+  "new": {
+   "main/paths.js": "0ba6cf88e1f3a3ff9d6175e7be644c8c9f6a3403992eabdfb4896a64dc4d25c3",
+   "main/project-io.js": "27fd08ba00d787ff1946579e6010bbe7ecbf9ea7443b89f79bbdcd62b3d3d927",
+   "main/savequeue.js": "9371793b08151266337d9d8297f594f71b993826d2d8c6153e30648c9d38a796",
+   "test/lib/enginefingerprint.js": "ac78d2e32f6cacf71050512e56ad5e773f4eab73a04edf81d3eb69dcb864dbfe",
+   "test/lib/equates.js": "b53ca0c352147b82e4c2b9c9cda5677feb43905f305d962e2d09701ace4c45dc"
+  }
+ },
+ "recorded": {
+  "engine": "079a137d2018f9e4e49e797462e730f7b6285eecc5eed5d135ef9f23e502f9bc",
+  "generator": "5018210749519c9e0d7caf3067726f7d70371417ff961cd95df5f13d19374308",
+  "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+ },
+ "execFlags": {
+  "args": [
+   "--testRunner",
+   "--enableStdout"
+  ],
+  "killMs": 600000
+ },
+ "sides": {
+  "old": {
+   "harness": "7b1155d0e306bb7eccbc1e443340a3fc265317054680a7cdc078e3a98097fa1c",
+   "counts": {
+    "expected": 11760,
+    "answered": 11760,
+    "matched": 11760,
+    "mismatched": 0,
+    "errored": 0,
+    "keysReproduced": 11760,
+    "reusesResolved": 832
+   },
+   "directDigest": "58c56d96a2902eccab0145f98ba55e0c86e274d734513f8ae6ac75622e9b0f4f",
+   "reuseDigest": "5f9854d6d3557d3e8e7e47bd78110be2693392f7ce735f523a79917449a34524",
+   "luaDigest": "35d8386add17bbe1590e6254f1571f4f513442e29e2297ef335d78d98bc63381",
+   "symDigest": "bcb8dec0b5d0a07de0c17028f130c7756cebe36d0e536c4aa02ab6fb825efea8",
+   "scriptsScanned": 11760,
+   "symLines": 11760,
+   "cnevHits": 0,
+   "sources": {
+    "before": {
+     "engine": "079a137d2018f9e4e49e797462e730f7b6285eecc5eed5d135ef9f23e502f9bc",
+     "harness": "7b1155d0e306bb7eccbc1e443340a3fc265317054680a7cdc078e3a98097fa1c",
+     "generator": "5018210749519c9e0d7caf3067726f7d70371417ff961cd95df5f13d19374308",
+     "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+     "helpersDigest": "f480362934c98ff0fea96e5b9c0beeff5cf61394fc02f44670de079823c7c76f"
+    },
+    "after": {
+     "engine": "079a137d2018f9e4e49e797462e730f7b6285eecc5eed5d135ef9f23e502f9bc",
+     "harness": "7b1155d0e306bb7eccbc1e443340a3fc265317054680a7cdc078e3a98097fa1c",
+     "generator": "5018210749519c9e0d7caf3067726f7d70371417ff961cd95df5f13d19374308",
+     "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+     "helpersDigest": "f480362934c98ff0fea96e5b9c0beeff5cf61394fc02f44670de079823c7c76f"
+    }
+   }
+  },
+  "new": {
+   "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+   "counts": {
+    "expected": 11760,
+    "answered": 11760,
+    "matched": 11760,
+    "mismatched": 0,
+    "errored": 0,
+    "keysReproduced": 11760,
+    "reusesResolved": 832
+   },
+   "directDigest": "58c56d96a2902eccab0145f98ba55e0c86e274d734513f8ae6ac75622e9b0f4f",
+   "reuseDigest": "5f9854d6d3557d3e8e7e47bd78110be2693392f7ce735f523a79917449a34524",
+   "luaDigest": "35d8386add17bbe1590e6254f1571f4f513442e29e2297ef335d78d98bc63381",
+   "symDigest": "bcb8dec0b5d0a07de0c17028f130c7756cebe36d0e536c4aa02ab6fb825efea8",
+   "scriptsScanned": 11760,
+   "symLines": 11760,
+   "cnevHits": 0,
+   "sources": {
+    "before": {
+     "engine": "079a137d2018f9e4e49e797462e730f7b6285eecc5eed5d135ef9f23e502f9bc",
+     "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+     "generator": "5018210749519c9e0d7caf3067726f7d70371417ff961cd95df5f13d19374308",
+     "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+     "helpersDigest": "f480362934c98ff0fea96e5b9c0beeff5cf61394fc02f44670de079823c7c76f"
+    },
+    "after": {
+     "engine": "079a137d2018f9e4e49e797462e730f7b6285eecc5eed5d135ef9f23e502f9bc",
+     "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+     "generator": "5018210749519c9e0d7caf3067726f7d70371417ff961cd95df5f13d19374308",
+     "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+     "helpersDigest": "f480362934c98ff0fea96e5b9c0beeff5cf61394fc02f44670de079823c7c76f"
+    }
+   }
+  }
+ },
+ "pairs": {
+  "compared": 11760,
+  "equalProject": 11760,
+  "equalRom": 11760,
+  "equalRomFile": 11760,
+  "equalLua": 11760,
+  "equalSym": 11760,
+  "digest": "7c1eca5ce5f0c092ecacda8609df4cfbb662c62618b4cb3e399857c03c8f8e87"
+ },
+ "pilot": {
+  "manifest": [
+   {
+    "id": "action-wide-P8-n15-k0-part-y234-bound-s0.0.0.6.5.3.1.0",
+    "tags": [
+     "stage:C",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P8",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:C/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "rpg-tight-P7-n16-k7-front-y234-s9.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:R",
+     "gt:rpg",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P7",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:R/flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:true"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n16-k8-even-free-s2.2.2.2.2.2.2.2",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:false",
+     "gridH:default",
+     "anim:P6",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:B/flash+geom+k+pos",
+     "flashX:242",
+     "shape:even",
+     "k:8",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:true",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P2-n15-k7-named-y234-bound-r3turn-s2.2.2.2.2.2.2.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P2",
+     "cfg:bound+flash+geom+k+pos+turn",
+     "stagecfg:A/bound+flash+geom+k+pos+turn",
+     "flashX:242",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P4-n16-k4-back-y209-bound-s1.1.1.1.1.1.1.9",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P4",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:F/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:back",
+     "k:4",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n56-k7-even-y212-flashx241-fx241-s7.7.7.7.7.7.7.7#confirm",
+    "tags": [
+     "stage:P",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:P/flash+geom+k+pos",
+     "flashX:241",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:true",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P1-n15-k0-scatter-free-bound-s2.2.2.2.2.1.2.2",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:false",
+     "gridH:60",
+     "anim:P1",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:B/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:scatter",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n15-k5-front-y216-bound-s8.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P6",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:A/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:5",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n16-k3-front-y216-s9.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P6",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:A/flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:3",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P3-n17-k7-even-y212-s3.2.2.2.2.2.2.2",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P3",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:F/flash+geom+k+pos",
+     "flashX:242",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P2-n16-k7-named-y234-r3reset-s3.2.2.2.2.2.2.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P2",
+     "cfg:flash+geom+k+pos+turn",
+     "stagecfg:A/flash+geom+k+pos+turn",
+     "flashX:242",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P2-n16-k0-part-y225-s0.5.2.2.2.2.2.1",
+    "tags": [
+     "stage:C",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P2",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:C/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P5-n16-k0-back-y194-s1.1.1.1.1.1.1.9",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P5",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:B/flash+geom+k+pos",
+     "flashX:242",
+     "shape:back",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "rpg-tight-P0-n16-k0-part-y234-s1.0.0.0.0.6.6.3",
+    "tags": [
+     "stage:R",
+     "gt:rpg",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P0",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:R/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:true"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n60-k7-even-y212-bound-flashx241-fx241-s8.8.8.8.7.7.7.7",
+    "tags": [
+     "stage:P",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P8",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:P/bound+flash+geom+k+pos",
+     "flashX:241",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n15-k1-even-y212-bound-s2.2.2.2.2.2.2.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P6",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:A/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:even",
+     "k:1",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P2-n16-k7-named-y234-bound-r3reset-s3.2.2.2.2.2.2.1",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P2",
+     "cfg:bound+flash+geom+k+pos+turn",
+     "stagecfg:F/bound+flash+geom+k+pos+turn",
+     "flashX:242",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P2-n17-k7-named-y234-r3turn-s4.2.2.2.2.2.2.1",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P2",
+     "cfg:flash+geom+k+pos+turn",
+     "stagecfg:F/flash+geom+k+pos+turn",
+     "flashX:242",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n16-k7-named-y218-pos191_200-s2.2.2.2.2.2.2.2",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P6",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:A/flash+geom+k+pos",
+     "flashX:242",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P1-n15-k0-front-y216-bound-s8.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:60",
+     "anim:P1",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:B/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P1-n15-k0-part-y225-bound-s1.1.0.0.0.11.1.1",
+    "tags": [
+     "stage:C",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:60",
+     "anim:P1",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:C/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n17-k4-even-y218-s3.2.2.2.2.2.2.2",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P6",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:F/flash+geom+k+pos",
+     "flashX:242",
+     "shape:even",
+     "k:4",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:true",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n26-k7-even-y212-flashx241-fx241-s4.4.3.3.3.3.3.3",
+    "tags": [
+     "stage:P",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:P/flash+geom+k+pos",
+     "flashX:241",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "rpg-tight-P8-n16-k0-part-y234-s2.2.2.1.1.1.5.2",
+    "tags": [
+     "stage:R",
+     "gt:rpg",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:R/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:true"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n16-k7-front-y237-s9.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P6",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:A/flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P2-n15-k4-front-y225-bound-s8.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:60",
+     "anim:P2",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:B/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:4",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P6-n16-k0-part-y225-s2.1.1.0.0.6.3.3",
+    "tags": [
+     "stage:C",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P6",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:C/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P6-n16-k7-front-y216-bound-s9.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P6",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:F/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n18-k7-even-y212-flashx241-fx241-s3.3.2.2.2.2.2.2",
+    "tags": [
+     "stage:P",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:P/flash+geom+k+pos",
+     "flashX:241",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "rpg-wide-P7-n16-k0-part-y234-s1.0.0.9.2.2.1.1",
+    "tags": [
+     "stage:R",
+     "gt:rpg",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P7",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:R/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:true"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n15-k7-named-y216-bound-flashx241-fx241-s2.2.2.2.2.2.2.1",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P8",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:A/bound+flash+geom+k+pos",
+     "flashX:241",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n15-k4-front-y210-bound-s8.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P8",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:B/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:4",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P2-n16-k0-part-y225-s0.0.0.0.10.5.1.0",
+    "tags": [
+     "stage:C",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:default",
+     "anim:P2",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:C/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n17-k7-even-y202-s3.2.2.2.2.2.2.2",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:F/flash+geom+k+pos",
+     "flashX:242",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:true",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n38-k7-even-y212-flashx241-fx241-s5.5.5.5.5.5.4.4",
+    "tags": [
+     "stage:P",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:P/flash+geom+k+pos",
+     "flashX:241",
+     "shape:even",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "rpg-wide-P7-n16-k0-part-y234-s0.0.0.6.4.2.2.2",
+    "tags": [
+     "stage:R",
+     "gt:rpg",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P7",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:R/flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:true"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n16-k7-named-y234-flashx241-fx241-s2.2.2.2.2.2.2.2",
+    "tags": [
+     "stage:A",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:default",
+     "anim:P8",
+     "cfg:flash+geom+k+pos",
+     "stagecfg:A/flash+geom+k+pos",
+     "flashX:241",
+     "shape:named",
+     "k:7",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P7-n15-k4-back-y209-bound-s1.1.1.1.1.1.1.8",
+    "tags": [
+     "stage:B",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P7",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:B/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:back",
+     "k:4",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-tight-P8-n15-k0-part-y234-bound-s5.2.1.0.0.0.0.7",
+    "tags": [
+     "stage:C",
+     "gt:action",
+     "scenario:walk",
+     "wide:false",
+     "y:true",
+     "gridH:60",
+     "anim:P8",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:C/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:part",
+     "k:0",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   },
+   {
+    "id": "action-wide-P8-n16-k4-front-y234-bound-s9.1.1.1.1.1.1.1",
+    "tags": [
+     "stage:F",
+     "gt:action",
+     "scenario:walk",
+     "wide:true",
+     "y:true",
+     "gridH:60",
+     "anim:P8",
+     "cfg:bound+flash+geom+k+pos",
+     "stagecfg:F/bound+flash+geom+k+pos",
+     "flashX:242",
+     "shape:front",
+     "k:4",
+     "idle:false",
+     "confirm:false",
+     "reuseSource:false",
+     "contactEndpoint:false"
+    ]
+   }
+  ],
+  "manifestDigest": "46c787eb95d9b3c5f2b4d78f0c98e2aed993649ce298c2eb0a945a07569f4ac8",
+  "results": [
+   {
+    "id": "action-wide-P8-n15-k0-part-y234-bound-s0.0.0.6.5.3.1.0",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "48d2f6557971d81f57bc062a851d05d9b8ba7af20b676a5230937f166743644e",
+    "newDigest": "48d2f6557971d81f57bc062a851d05d9b8ba7af20b676a5230937f166743644e",
+    "matchesRecorded": true
+   },
+   {
+    "id": "rpg-tight-P7-n16-k7-front-y234-s9.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "e901cf34c780bb499004eb6527c9fd7a203d158e5194fc3f713d50e36db1600d",
+    "newDigest": "e901cf34c780bb499004eb6527c9fd7a203d158e5194fc3f713d50e36db1600d",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n16-k8-even-free-s2.2.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "b8f2a1e0dee987482bf8e1bec446aa336bfe0d4a730fa30a9e6a6e7a28b3e608",
+    "newDigest": "b8f2a1e0dee987482bf8e1bec446aa336bfe0d4a730fa30a9e6a6e7a28b3e608",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P2-n15-k7-named-y234-bound-r3turn-s2.2.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "184e3befef8e1030a70fe6a7581a3b55f3a7bcc7574dcbc1b9e077e9c28a4b7a",
+    "newDigest": "184e3befef8e1030a70fe6a7581a3b55f3a7bcc7574dcbc1b9e077e9c28a4b7a",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P4-n16-k4-back-y209-bound-s1.1.1.1.1.1.1.9",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "603fcf0e8a24bde179c14de726968f5aea485305f3ef30198261cc0ccb9494d2",
+    "newDigest": "603fcf0e8a24bde179c14de726968f5aea485305f3ef30198261cc0ccb9494d2",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n56-k7-even-y212-flashx241-fx241-s7.7.7.7.7.7.7.7#confirm",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "024405de58347172bb6b2561010e2ca4e8a5189182ea0279f6eddb24b2a53e36",
+    "newDigest": "024405de58347172bb6b2561010e2ca4e8a5189182ea0279f6eddb24b2a53e36",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P1-n15-k0-scatter-free-bound-s2.2.2.2.2.1.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "494fbe72da8a13148d80ede332bb6cf3b841df91b9a23bf6e40dc82dea7c3814",
+    "newDigest": "494fbe72da8a13148d80ede332bb6cf3b841df91b9a23bf6e40dc82dea7c3814",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n15-k5-front-y216-bound-s8.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "1d3b6102721e998b37a0b55556a42c57ea961ca42074339072a4f70b2ac291fc",
+    "newDigest": "1d3b6102721e998b37a0b55556a42c57ea961ca42074339072a4f70b2ac291fc",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n16-k3-front-y216-s9.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "439fe09843bcdf2bd178d0c8b3b0d6fa2074e032976fe71cc18e03d67e737e99",
+    "newDigest": "439fe09843bcdf2bd178d0c8b3b0d6fa2074e032976fe71cc18e03d67e737e99",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P3-n17-k7-even-y212-s3.2.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "dc9051fd976afe3a4da4c0d034d2656e4c428efc05a7325470abdf26006c6f16",
+    "newDigest": "dc9051fd976afe3a4da4c0d034d2656e4c428efc05a7325470abdf26006c6f16",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P2-n16-k7-named-y234-r3reset-s3.2.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "635490bfd8b8404816fa2f63813ffd3901c09724cb2f52ca4512a06da29bfe08",
+    "newDigest": "635490bfd8b8404816fa2f63813ffd3901c09724cb2f52ca4512a06da29bfe08",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P2-n16-k0-part-y225-s0.5.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "ffa8d0cb4269dfab0a7350e0fcbd054a2d5d65c15b4705338bc5f3963f9270e7",
+    "newDigest": "ffa8d0cb4269dfab0a7350e0fcbd054a2d5d65c15b4705338bc5f3963f9270e7",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P5-n16-k0-back-y194-s1.1.1.1.1.1.1.9",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "85dd680ee899f5fdf334bcab0dc9a1b7acbdd37890890ef0a6f39a234fa4ed1f",
+    "newDigest": "85dd680ee899f5fdf334bcab0dc9a1b7acbdd37890890ef0a6f39a234fa4ed1f",
+    "matchesRecorded": true
+   },
+   {
+    "id": "rpg-tight-P0-n16-k0-part-y234-s1.0.0.0.0.6.6.3",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "da130795574676946f0392cea105b1fd6a8f2212b0ae7cfa1381b4da7afb289d",
+    "newDigest": "da130795574676946f0392cea105b1fd6a8f2212b0ae7cfa1381b4da7afb289d",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n60-k7-even-y212-bound-flashx241-fx241-s8.8.8.8.7.7.7.7",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "1ab39b643663b264646982647d54b63d2c2ebeb7116afcaa4e5c76055e549fa7",
+    "newDigest": "1ab39b643663b264646982647d54b63d2c2ebeb7116afcaa4e5c76055e549fa7",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n15-k1-even-y212-bound-s2.2.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "f2d77a335c11a5d4b75ca2cfe40ef2d513b2fb6f4585218be05fc57cf2276109",
+    "newDigest": "f2d77a335c11a5d4b75ca2cfe40ef2d513b2fb6f4585218be05fc57cf2276109",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P2-n16-k7-named-y234-bound-r3reset-s3.2.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "6485d907422d84e9b14cb6955de2d76a3eb89a584685ac90cd8e1d2ed20eeec7",
+    "newDigest": "6485d907422d84e9b14cb6955de2d76a3eb89a584685ac90cd8e1d2ed20eeec7",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P2-n17-k7-named-y234-r3turn-s4.2.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "486d87aed35ed31ab64dc905978dd10d255fafdd7712e82a8ac6ad6422f88a7a",
+    "newDigest": "486d87aed35ed31ab64dc905978dd10d255fafdd7712e82a8ac6ad6422f88a7a",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n16-k7-named-y218-pos191_200-s2.2.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "5a5464b37328d367422fcc6c389712aaf44673fa02d0f309a4574dc40c068788",
+    "newDigest": "5a5464b37328d367422fcc6c389712aaf44673fa02d0f309a4574dc40c068788",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P1-n15-k0-front-y216-bound-s8.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "7e4e20ac39a12a49132c54a1b4271a275c8c6f97f00e8a5ce33657886afc51ce",
+    "newDigest": "7e4e20ac39a12a49132c54a1b4271a275c8c6f97f00e8a5ce33657886afc51ce",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P1-n15-k0-part-y225-bound-s1.1.0.0.0.11.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "5caf32f06987a2f852e49b8c4ff91e0d0bfc82ca0188da7bbaa059efa738acbf",
+    "newDigest": "5caf32f06987a2f852e49b8c4ff91e0d0bfc82ca0188da7bbaa059efa738acbf",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n17-k4-even-y218-s3.2.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "ae95abadb1850ab797f068c23ba8bda203351c3afbe73f3d74577bbbf867e75c",
+    "newDigest": "ae95abadb1850ab797f068c23ba8bda203351c3afbe73f3d74577bbbf867e75c",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n26-k7-even-y212-flashx241-fx241-s4.4.3.3.3.3.3.3",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "92a4fa1a7bdbeaa4a38012463e0dedabb42953b3dd0bda8e9cb50b6faf975a60",
+    "newDigest": "92a4fa1a7bdbeaa4a38012463e0dedabb42953b3dd0bda8e9cb50b6faf975a60",
+    "matchesRecorded": true
+   },
+   {
+    "id": "rpg-tight-P8-n16-k0-part-y234-s2.2.2.1.1.1.5.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "ec4ee77ca48dd3a4641083eaf378530385ce71213e6c344f3e880bff5051f0c8",
+    "newDigest": "ec4ee77ca48dd3a4641083eaf378530385ce71213e6c344f3e880bff5051f0c8",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n16-k7-front-y237-s9.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "329154db3483f1491ab6e49de35aa20178e0df2012f45d28f71a98e4f66bf265",
+    "newDigest": "329154db3483f1491ab6e49de35aa20178e0df2012f45d28f71a98e4f66bf265",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P2-n15-k4-front-y225-bound-s8.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "8e8766266b055b163402b6adafa4b797e45008387838831c3bcf2edb47322353",
+    "newDigest": "8e8766266b055b163402b6adafa4b797e45008387838831c3bcf2edb47322353",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P6-n16-k0-part-y225-s2.1.1.0.0.6.3.3",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "f5516a6ece9209637fcf4b972ae5eb8c4694652b3d6ead370375311e6fd0e0bc",
+    "newDigest": "f5516a6ece9209637fcf4b972ae5eb8c4694652b3d6ead370375311e6fd0e0bc",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P6-n16-k7-front-y216-bound-s9.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "9cf0f0841afcbcbb073c6a5e80848d210296a53721c9086abc04a2b8fa4ad3a0",
+    "newDigest": "9cf0f0841afcbcbb073c6a5e80848d210296a53721c9086abc04a2b8fa4ad3a0",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n18-k7-even-y212-flashx241-fx241-s3.3.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "8b69369c0e5d6c103d6e4840ce2e6dc06223921f317345c188a94315aabec36d",
+    "newDigest": "8b69369c0e5d6c103d6e4840ce2e6dc06223921f317345c188a94315aabec36d",
+    "matchesRecorded": true
+   },
+   {
+    "id": "rpg-wide-P7-n16-k0-part-y234-s1.0.0.9.2.2.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "a99d55dd956a9f9fdff713b4b676a4c26acd436e78bfbc85c9b5f15f87896805",
+    "newDigest": "a99d55dd956a9f9fdff713b4b676a4c26acd436e78bfbc85c9b5f15f87896805",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n15-k7-named-y216-bound-flashx241-fx241-s2.2.2.2.2.2.2.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "dbf78dcfbb2ee8cf7520419a887bf703260cc93a032b2303720957ecb71d9a55",
+    "newDigest": "dbf78dcfbb2ee8cf7520419a887bf703260cc93a032b2303720957ecb71d9a55",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n15-k4-front-y210-bound-s8.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "1c0954b8ce2252dbeefe9558d0e1d068e3faa07b1741b70db3533289ef199921",
+    "newDigest": "1c0954b8ce2252dbeefe9558d0e1d068e3faa07b1741b70db3533289ef199921",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P2-n16-k0-part-y225-s0.0.0.0.10.5.1.0",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "f77a9e8f8c3c08c40dd80261129c47dcdd5c381b430d463ecb3b1633d0d8706d",
+    "newDigest": "f77a9e8f8c3c08c40dd80261129c47dcdd5c381b430d463ecb3b1633d0d8706d",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n17-k7-even-y202-s3.2.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "a984a887b45ca658eb6ca5a066ccb37d73ee10b9649193a20b8a65a4a1c8cc1e",
+    "newDigest": "a984a887b45ca658eb6ca5a066ccb37d73ee10b9649193a20b8a65a4a1c8cc1e",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n38-k7-even-y212-flashx241-fx241-s5.5.5.5.5.5.4.4",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "4c1f09e48c56202768f0aed5f9ce7d586095cb1531fa9f5296975cea9ae4aeb3",
+    "newDigest": "4c1f09e48c56202768f0aed5f9ce7d586095cb1531fa9f5296975cea9ae4aeb3",
+    "matchesRecorded": true
+   },
+   {
+    "id": "rpg-wide-P7-n16-k0-part-y234-s0.0.0.6.4.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "6d63c28547feb3291ab3b0b883fa4efd55829533596a9594e59e39e51f2cd2ef",
+    "newDigest": "6d63c28547feb3291ab3b0b883fa4efd55829533596a9594e59e39e51f2cd2ef",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n16-k7-named-y234-flashx241-fx241-s2.2.2.2.2.2.2.2",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "a121c6d3b7839ede389297a3306ffece46b5252cc5c408c1618d413bf940fc51",
+    "newDigest": "a121c6d3b7839ede389297a3306ffece46b5252cc5c408c1618d413bf940fc51",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P7-n15-k4-back-y209-bound-s1.1.1.1.1.1.1.8",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "b5e5bb320749ad7cb2b6122ce3da58f8f922b9ff288607d1ddb4a1264cf8e6df",
+    "newDigest": "b5e5bb320749ad7cb2b6122ce3da58f8f922b9ff288607d1ddb4a1264cf8e6df",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-tight-P8-n15-k0-part-y234-bound-s5.2.1.0.0.0.0.7",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "62be7aefbe5fb4b7a1ddba718985fc4d9f06fac0230ae896222d4dab4a3d0136",
+    "newDigest": "62be7aefbe5fb4b7a1ddba718985fc4d9f06fac0230ae896222d4dab4a3d0136",
+    "matchesRecorded": true
+   },
+   {
+    "id": "action-wide-P8-n16-k4-front-y234-bound-s9.1.1.1.1.1.1.1",
+    "complete": true,
+    "noExtraKeys": true,
+    "oldDigest": "9304f1ec7d03dcbe30371a710f67d072e91e716e6d519c7f91b90018167198d6",
+    "newDigest": "9304f1ec7d03dcbe30371a710f67d072e91e716e6d519c7f91b90018167198d6",
+    "matchesRecorded": true
+   }
+  ],
+  "matchesRecorded": 40
+ },
+ "workers": 12,
+ "wallSeconds": 225,
+ "selfDigest": "b78d60041b9de0b4f94b2bed447e5f0805be42f6baccc0898890e7cbb6abf5bc"
+}

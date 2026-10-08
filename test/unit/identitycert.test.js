@@ -11,12 +11,16 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOptions, buildWorkset, classifyAnswer, runPool, verdictOf, buildCertificate, validateCertificate, sealOf, curveEvidenceVerdict, STAGES, SCOPE, CERTIFIER_VERSION } from '../lua/sw_identity_cert.mjs';
 import { measurementKey, EXEC_FLAGS, UNIFORM_FIELDS } from '../lua/sw_provenance.mjs';
+import { helperPins } from '../lua/sw_transfer_lib.mjs';
+import { REPO } from '../lua/sw_manifest_scene.mjs';
 import { makeLedger } from '../lua/sw_rebuild_check.mjs';
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../lua/sw_identity_cert.mjs');
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const OLD = { engine: sha('old engine'), harness: sha('harness'), generator: sha('old generator'), mesen: sha('mesen') };
 const CURRENT = { ...OLD, engine: sha('new engine'), generator: sha('new generator') };
+const HELPERS = helperPins(REPO); // the live helper files, as sw_identity_cert.mjs liveSources() reads them
+const MOVED = sha('a later harness'); // a live harness that is not the recorded one: it needs a harness-transfer certificate
 
 /** A made-up sweep: `direct` Mesen-run records (the last `confirms` are confirmation re-runs), `reuses` reuse records; every one carries the key a faithful rebuild reproduces. */
 function mock({ direct = 7, reuses = 2, confirms = 1 } = {}) {
@@ -177,12 +181,13 @@ test('a CERT_SABOTAGE run is never a certification, even when every rebuild matc
 });
 
 // ---- the certificate -------------------------------------------------------------------------------------------------------------
-async function certify(m = mock()) {
+async function certify(m = mock(), { harness = OLD.harness, transfer = null, transfers = [] } = {}) {
   const ws = workset(m);
   const { pool } = await run(ws.direct, 'ok', { current: currentOf(m) });
   const curveBytes = Buffer.from(JSON.stringify(m.curve));
-  const cert = buildCertificate({ workset: ws, curve: m.curve, curveFile: 'test/fixtures/streambound-curve.json', curveDigest: sha(curveBytes), stageInfo: ws.stageInfo, current: CURRENT, recordedProv: OLD, before: CURRENT, after: CURRENT, result: pool.result, luaOf: pool.luaOf, symOf: pool.symOf, workers: 3 });
-  const ctx = { curve: m.curve, curveBytes, live: { engine: CURRENT.engine, generator: CURRENT.generator, harness: OLD.harness } };
+  const now = { ...CURRENT, harness };
+  const cert = buildCertificate({ workset: ws, curve: m.curve, curveFile: 'test/fixtures/streambound-curve.json', curveDigest: sha(curveBytes), stageInfo: ws.stageInfo, current: now, recordedProv: OLD, before: now, after: now, result: pool.result, luaOf: pool.luaOf, symOf: pool.symOf, workers: 3, transfer, helpers: HELPERS });
+  const ctx = { curve: m.curve, curveBytes, live: { engine: CURRENT.engine, generator: CURRENT.generator, harness, helpers: HELPERS }, transfers };
   return { cert, ctx, ws, m, reseal: (c) => ({ ...c, selfDigest: sealOf(c) }) };
 }
 
@@ -273,23 +278,97 @@ test('the CLI: a malformed option exits 2, a partial run with --out exits 2, an 
 test('curveEvidenceVerdict: exact only when BOTH recorded fingerprints are the live ones; otherwise a valid certificate or nothing', () => {
   const curve = { jobs: 1, reused: 0, confirms: 0, provenance: { ...OLD }, engine: { sha256: OLD.engine } };
   const none = [];
-  assert.deepEqual(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: OLD.generator }, verdicts: none }), { ok: true, via: 'exact', why: [] });
+  assert.deepEqual(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: OLD.generator, harness: OLD.harness }, verdicts: none }), { ok: true, via: 'exact', why: [] });
   // the defect: the original engine with an arbitrarily changed generator was accepted without a certificate
-  const changedGenerator = curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: sha('an edited generator') }, verdicts: none });
+  const changedGenerator = curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: sha('an edited generator'), harness: OLD.harness }, verdicts: none });
   assert.equal(changedGenerator.ok, false);
   assert.deepEqual(changedGenerator.why, ['the live generator is not the recorded one']);
-  const changedEngine = curveEvidenceVerdict({ curve, live: { engine: sha('an edited engine'), generator: OLD.generator }, verdicts: none });
+  const changedEngine = curveEvidenceVerdict({ curve, live: { engine: sha('an edited engine'), generator: OLD.generator, harness: OLD.harness }, verdicts: none });
   assert.equal(changedEngine.ok, false);
   assert.deepEqual(changedEngine.why, ['the live engine is not the recorded one']);
-  assert.equal(curveEvidenceVerdict({ curve, live: { engine: sha('e'), generator: sha('g') }, verdicts: none }).why.length, 2);
+  assert.equal(curveEvidenceVerdict({ curve, live: { engine: sha('e'), generator: sha('g'), harness: OLD.harness }, verdicts: none }).why.length, 2);
   // a certificate carrying the live fingerprints rescues either change; one with problems rescues nothing
   const good = [{ file: 'good.json', problems: [] }];
   const bad = [{ file: 'bad.json', problems: ['the seal does not match the contents (the certificate was edited)'] }];
-  assert.equal(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: sha('g') }, verdicts: good }).via, 'certificate good.json');
-  assert.equal(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: sha('g') }, verdicts: bad }).ok, false);
+  assert.equal(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: sha('g'), harness: OLD.harness }, verdicts: good }).via, 'certificate good.json');
+  assert.equal(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: sha('g'), harness: OLD.harness }, verdicts: bad }).ok, false);
   // a curve whose own two engine fields disagree is not an exact match for either
   const split = { ...curve, engine: { sha256: sha('another engine') } };
-  assert.equal(curveEvidenceVerdict({ curve: split, live: { engine: OLD.engine, generator: OLD.generator }, verdicts: none }).ok, false);
+  assert.equal(curveEvidenceVerdict({ curve: split, live: { engine: OLD.engine, generator: OLD.generator, harness: OLD.harness }, verdicts: none }).ok, false);
+});
+
+// ---- review F2: a moved harness is never "exact", and the transfer route carries it only with a valid transfer certificate -------------------------------------
+test('F2: equal engine and generator with a MOVED harness is not exact: it needs a valid harness-transfer certificate for this very live harness (route A)', () => {
+  const curve = { jobs: 1, reused: 0, confirms: 0, provenance: { ...OLD }, engine: { sha256: OLD.engine } };
+  const live = { engine: OLD.engine, generator: OLD.generator, harness: MOVED };
+  const none = curveEvidenceVerdict({ curve, live, verdicts: [], transfers: [] });
+  assert.equal(none.ok, false); assert.match(none.why.join(';'), /no valid harness-transfer certificate/);
+  // the pure function the review called: the curve's own engine/generator, an all-zero harness, no certificates
+  assert.equal(curveEvidenceVerdict({ curve, live: { ...live, harness: '0'.repeat(64) }, verdicts: [] }).ok, false);
+  assert.equal(curveEvidenceVerdict({ curve, live: { engine: OLD.engine, generator: OLD.generator }, verdicts: [] }).ok, false, 'an absent harness fails closed');
+  const valid = { file: 't.json', selfDigest: sha('t'), newHarness: MOVED, problems: [] };
+  assert.deepEqual(curveEvidenceVerdict({ curve, live, verdicts: [], transfers: [valid] }), { ok: true, via: 'harness transfer t.json', why: [] });
+  assert.equal(curveEvidenceVerdict({ curve, live, verdicts: [], transfers: [{ ...valid, problems: ['the seal does not match'] }] }).ok, false, 'an invalid transfer rescues nothing');
+  assert.equal(curveEvidenceVerdict({ curve, live, verdicts: [], transfers: [{ ...valid, newHarness: sha('an older live harness') }] }).ok, false, 'a stale transfer (for another live harness)');
+  // a transfer does not carry a changed engine or generator: that needs the identity certificate
+  const e = curveEvidenceVerdict({ curve, live: { ...live, engine: sha('later') }, verdicts: [], transfers: [valid] });
+  assert.equal(e.ok, false); assert.match(e.why.join(';'), /live engine/);
+  assert.equal(curveEvidenceVerdict({ curve, live: { ...live, engine: sha('later') }, verdicts: [{ file: 'c.json', problems: [] }], transfers: [valid] }).via, 'certificate c.json');
+  // an unmoved harness keeps the exact route
+  assert.equal(curveEvidenceVerdict({ curve, live: { ...live, harness: OLD.harness }, verdicts: [] }).via, 'exact');
+});
+
+test('F2/F4: an identity certificate for a moved harness is valid only with its transfer pointer; pointer swaps, stale transfers and any helper-file change invalidate it (route B)', async () => {
+  const stages = Object.fromEntries(STAGES.map((s) => [s, { file: `${s}.out`, sha256: sha(s), lines: 3 }]));
+  const transfer = { file: 't.json', selfDigest: sha('transfer t') };
+  const good = { file: 't.json', selfDigest: transfer.selfDigest, newHarness: MOVED, stages, problems: [] };
+  const { cert, ctx, reseal } = await certify(mock(), { harness: MOVED, transfer, transfers: [good] });
+  assert.equal(cert.harness, OLD.harness, 'the recorded harness is preserved'); assert.equal(cert.harnessCurrent, MOVED);
+  assert.deepEqual(validateCertificate(cert, ctx), []);
+  const bad = (c, x, re) => assert.ok(validateCertificate(c, x).some((p) => re.test(p)), String(re));
+  bad(cert, { ...ctx, transfers: [] }, /transfer certificate this one names is missing/);
+  bad(cert, { ...ctx, transfers: [{ ...good, selfDigest: sha('another transfer') }] }, /transfer digest mismatch/);
+  bad(cert, { ...ctx, transfers: [{ ...good, problems: ['the seal does not match'] }] }, /transfer certificate is not valid/);
+  bad(cert, { ...ctx, transfers: [{ ...good, newHarness: sha('older') }] }, /not for this live harness/);
+  bad(cert, { ...ctx, transfers: [{ ...good, stages: { ...stages, A: { ...stages.A, sha256: sha('other file') } } }] }, /other stage files/);
+  bad(reseal({ ...cert, transfer: undefined }), ctx, /transfer certificate this one names is missing/);
+  bad(cert, { ...ctx, live: { ...ctx.live, harness: sha('yet another harness') } }, /live harness is not the certified one/);
+  // F4: one helper file edited, engine/generator/harness equal: the existing certificate is no longer valid
+  const edited = { ...ctx.live.helpers, 'main/project-io.js': sha('an edited project-io') };
+  bad(cert, { ...ctx, live: { ...ctx.live, helpers: edited } }, /helper file differs/);
+  bad(cert, { ...ctx, live: { ...ctx.live, helpers: undefined } }, /helper file differs/);
+  // a certificate whose harness never moved carries no pointer
+  const plain = await certify();
+  assert.deepEqual(validateCertificate(plain.cert, plain.ctx), []);
+  bad(plain.reseal({ ...plain.cert, transfer }), plain.ctx, /pointer on a certificate whose harness never moved/);
+  bad({ ...plain.cert, version: 1, selfDigest: undefined }, plain.ctx, /version-2/);
+});
+
+// ---- review R1: the run's own provenance must be the harness and Mesen the certificate claims ----------------------------------------------------------------
+test('R1: a resealed certificate whose run was taken under another harness or another Mesen than it claims is refused by the validator and by the consumer (both identity routes)', async () => {
+  const stages = Object.fromEntries(STAGES.map((s) => [s, { file: `${s}.out`, sha256: sha(s), lines: 3 }]));
+  const transfer = { file: 't.json', selfDigest: sha('transfer t') };
+  const good = { file: 't.json', selfDigest: transfer.selfDigest, newHarness: MOVED, stages, problems: [] };
+  const verdictOf = ({ cert, ctx }) => curveEvidenceVerdict({ curve: ctx.curve, live: ctx.live, transfers: ctx.transfers, verdicts: [{ file: 'c.json', problems: validateCertificate(cert, ctx) }] });
+  const relabel = (c, over) => ({ ...c, sources: { before: { ...c.sources.before, ...over }, after: { ...c.sources.after, ...over } } });
+  const routes = {
+    'moved harness (transfer route)': await certify(mock(), { harness: MOVED, transfer, transfers: [good] }),
+    'unmoved harness': await certify()
+  };
+  for (const [name, r] of Object.entries(routes)) {
+    const { cert, ctx, reseal } = r;
+    assert.deepEqual(validateCertificate(cert, ctx), [], `${name}: the unchanged positive validates`);
+    assert.equal(verdictOf(r).ok, true, `${name}: the unchanged positive is accepted by the consumer`);
+    // the run harness relabelled to the RECORDED one (H0) while harnessCurrent names the live one; for the unmoved route it is relabelled to another harness
+    const otherHarness = name.startsWith('moved') ? OLD.harness : MOVED;
+    const h = reseal(relabel(cert, { harness: otherHarness }));
+    assert.ok(validateCertificate(h, ctx).some((p) => /run's harness is not the certificate's claimed current harness/.test(p)), `${name}: relabelled run harness refused by validateCertificate`);
+    assert.equal(verdictOf({ cert: h, ctx }).ok, false, `${name}: relabelled run harness refused by curveEvidenceVerdict`);
+    // the run Mesen changed (both sides, so the before/after equality alone cannot see it)
+    const m = reseal(relabel(cert, { mesen: sha('another mesen') }));
+    assert.ok(validateCertificate(m, ctx).some((p) => /run's Mesen is not the certificate's recorded Mesen/.test(p)), `${name}: changed run Mesen refused by validateCertificate`);
+    assert.equal(verdictOf({ cert: m, ctx }).ok, false, `${name}: changed run Mesen refused by curveEvidenceVerdict`);
+  }
 });
 
 test('the probe stage P (S3a.5) is a stage the certifier requires: a record set without it is refused, and the stage list is the sweep\'s own', () => {

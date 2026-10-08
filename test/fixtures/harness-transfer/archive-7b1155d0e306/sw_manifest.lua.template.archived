@@ -1,0 +1,275 @@
+-- Streamed-world frame-gate manifest (plan v5 §5.1-§5.4), measured full-system in Mesen.
+-- Instantiated by test/lua/run_sw_manifest.mjs, which fills in the three double-underscore tokens below:
+-- the symbol table (name -> address/value), the scripted run, and the actor index whose resting icon is the
+-- largest admitted one.
+--
+-- THE GATE, and what one figure means.
+--   A frame interval is [NMI entry k, NMI entry k+1): NMI entry = the `nmi` exec clock minus the 7-cycle
+--   interrupt sequence. The mainline body that the NMI at entry k releases runs from `main_loop_body_start`
+--   until the mainline next reaches its `wait_vblank_loop` poll -- the busy clear, split select, the
+--   vram_ready publication, the freeze-dispatch and the camrelease poll are all inside it, because the poll
+--   is the only idle time the loop has.
+--   G_k = (clock when the mainline reaches the poll) - (NMI entry k). That is the whole of the frame's
+--   non-idle work: the mainline body, the releasing NMI (its `nmi`..`nmi_rti` span + 7 entry + 6 RTI = +13),
+--   and any NMI that lands inside the body. The frame fits iff G_k <= 29,780 (NTSC frame): the next NMI then
+--   finds the mainline idle. An NMI that lands INSIDE the body is normally an overrun: wait_vblank clears the
+--   flag the NMI set, the next frame is skipped, and G_k > 29,780 records the whole slowed frame (two intervals).
+--   The gate is the inequality itself, tested directly on every body: G_k <= 29,780 (`gateFail` counts the
+--   bodies with G_k > 29,780). "No NMI landed in the body" (`overruns`, innerN > 0) is a diagnostic: it is the
+--   mechanism of a missed frame, not the definition of one.
+--   The gate figure of a row is max G_k over its frames. The independent-maxima sum (max mainline body +
+--   max single interrupt, +13 included) is printed as a conservative diagnostic only.
+--   Not used: the older spot harness's pairing of the body with the *previous* NMI (`prevNmi`).
+local SYM = __SYM__
+local MARKS = __MARKS__ -- code symbols whose every exec is recorded (offset from the body's releasing NMI entry) in a phase that sets `marks`
+local PHASES = __PHASES__
+local ICON = __ICON__
+local FRAME = 29780
+
+local function rd(a) return emu.read(a, emu.memType.nesMemory) end
+local function wr(a, v) emu.write(a, v, emu.memType.nesMemory) end
+local function clock() return emu.getState()["masterClock"] end
+
+local pi, pframes, frame, held = 1, 0, 0, {}
+local inBody, T0, relIntr, relVlen, relStAdv, relSt = false, 0, 0, 0, 0, 0
+local innerIntr, innerN, bodyPhase, bodySt, bodyFl, bodyGs = 0, 0, nil, 0, 0, 0
+local lastEntry, lastDur, lastVlen, lastStAdv, lastSt, nmiClock, nmiStCur0 = 0, 0, 0, 0, 0, 0, 0
+local rdyClock, rdyVlen, rdySt, rdyStCur, rdyOam, rdyOvr, rdyFl = 0, 0, 0, 0, 0, false, 0
+local savedOrigin = nil
+local camCalls, guardCalls, padded = 0, 0, 0
+local stats = {}
+local function phaseStats(name)
+  local s = stats[name]
+  if not s then
+    s = { name = name, n = 0, maxG = 0, maxMain = 0, maxIntr = 0, maxRel = 0, overruns = 0, gateFail = 0, maxOam = 0, classes = {}, top = nil, ordered = {} }
+    stats[name] = s
+  end
+  return s
+end
+
+local function cur() return PHASES[pi] end
+
+local function onInput() emu.setInput(held, 0) end
+
+local bodyMarks = {}
+local function mark(name) if inBody then bodyMarks[#bodyMarks + 1] = name .. "@" .. (clock() - T0) end end
+
+local function onNmi()
+  nmiClock = clock()
+  mark("NMI")
+  lastEntry = nmiClock - 7
+  lastVlen = rd(SYM.vram_len)
+  lastSt = rd(SYM.st_active)
+  nmiStCur0 = rd(SYM.st_cur)
+  if inBody then innerN = innerN + 1 end
+end
+
+local function onRti()
+  mark("RTI")
+  local d = clock() - nmiClock + 13
+  lastDur = d
+  lastStAdv = (rd(SYM.st_cur) ~= nmiStCur0) and 1 or 0
+  if inBody then innerIntr = innerIntr + d end
+  local ph = cur()
+  if ph and ph.collect then
+    local s = phaseStats(ph.name)
+    if d > s.maxIntr then s.maxIntr = d end
+  end
+end
+
+local function applyPokes(ph)
+  local mode = ph.mode
+  if mode == "menu" then
+    wr(SYM.game_state, SYM.ST_MENU); wr(SYM.inv_count, 8); wr(SYM.inv_sel, 0)
+    for i = 0, 7 do wr(SYM.inv_items + i, ICON) end
+  elseif mode == "dialog" then
+    wr(SYM.game_state, SYM.ST_DIALOG); wr(SYM.box_state, 0); wr(SYM.talk_ent, 0)
+  elseif mode == "flash" then
+    if rd(SYM.flash_left) == 0 and (pframes % ph.period) == 0 then wr(SYM.flash_left, SYM.FLASH_ARM_VALUE) end
+  elseif mode == "m9f" then
+    -- SYNTHETIC (labelled as such in the report): a frozen (dialogue) frame for 4 of every 12 frames; the
+    -- queue is padded at main_loop_ready below.
+    if (pframes % 12) < 4 then wr(SYM.game_state, SYM.ST_DIALOG); wr(SYM.box_state, 0); wr(SYM.talk_ent, 0)
+    elseif rd(SYM.game_state) == SYM.ST_DIALOG then wr(SYM.game_state, 0) end
+  elseif mode == "flashany" then
+    -- SYNTHETIC: arm Flash on a fixed frame phase whether or not a strip is in flight, so a Flash-on
+    -- publication can land on a column or row ARM body (flashstress cannot: it waits for a busy strip).
+    if rd(SYM.flash_left) == 0 and (pframes % ph.period) == (ph.offset or 0) then wr(SYM.flash_left, SYM.FLASH_ARM_VALUE) end
+  elseif mode == "flashstress" then
+    -- Forced repeated Flash: arm again every `period` frames, but only while a strip is in flight.
+    if rd(SYM.flash_left) == 0 and (pframes % ph.period) == (ph.offset or 0) and rd(SYM.st_active) ~= 0 then wr(SYM.flash_left, SYM.FLASH_ARM_VALUE) end
+  end
+end
+
+local function onBody()
+  inBody = true
+  T0 = lastEntry
+  relIntr, relVlen, relStAdv, relSt = lastDur, lastVlen, lastStAdv, lastSt
+  innerIntr, innerN = 0, 0
+  local ph = cur()
+  bodyPhase = ph
+  if ph then applyPokes(ph) end
+  bodySt = rd(SYM.st_active)
+  bodyFl = rd(SYM.flash_left)
+  bodyGs = rd(SYM.game_state)
+  rdyClock = 0
+  camCalls = 0
+  padded = 0
+  bodyMarks = {}
+end
+
+local advance
+local function onReady()
+  if not inBody then return end
+  if bodyPhase and bodyPhase.mode == "m9f" and rd(SYM.game_state) == SYM.ST_DIALOG and rd(SYM.st_active) ~= 0 and rd(SYM.vram_len) == 0 then
+    -- three packets to $2FC0 (an unused attribute run): 35 + 35 + 11 = 81 bytes, the plan's worst case
+    local n = 0
+    local function put(v) wr(SYM.vram_buf + n, v); n = n + 1 end
+    for _, cnt in ipairs({ 32, 32, 8 }) do put(0x2F); put(0xC0); put(cnt); for _ = 1, cnt do put(0) end end
+    put(0)
+    wr(SYM.vram_len, 81)
+    padded = 1
+  end
+  local wf = cur() and cur().waitFor
+  if wf == "gameplay" and rd(SYM.game_state) == SYM.ST_GAMEPLAY then advance() end
+  rdyClock = clock()
+  rdyVlen = rd(SYM.vram_len)
+  rdySt = rd(SYM.st_active)
+  rdyStCur = rd(SYM.st_cur)
+  rdyOam = rd(SYM.oam_idx)
+  rdyFl = rd(SYM.flash_left)
+  if savedOrigin then
+    wr(SYM.sw_cam_origin_x_lo, savedOrigin[1]); wr(SYM.sw_cam_origin_x_hi, savedOrigin[2])
+    wr(SYM.sw_cam_origin_y_lo, savedOrigin[3]); wr(SYM.sw_cam_origin_y_hi, savedOrigin[4])
+    savedOrigin = nil
+  end
+end
+
+-- M3: at the draw, four actors are moved far to the right of the camera origin (the cull class), four stay
+-- in view, one straddles. The origin is restored at main_loop_ready, so nothing but the draw sees it.
+local function onDraw()
+  local ph = bodyPhase
+  if not (inBody and ph and ph.mode == "m3") then return end
+  savedOrigin = { rd(SYM.sw_cam_origin_x_lo), rd(SYM.sw_cam_origin_x_hi), rd(SYM.sw_cam_origin_y_lo), rd(SYM.sw_cam_origin_y_hi) }
+  local ox = rd(SYM.sw_col) * 256 - 60
+  if ox < 0 then ox = ox + 65536 end
+  wr(SYM.sw_cam_origin_x_lo, ox % 256); wr(SYM.sw_cam_origin_x_hi, math.floor(ox / 256))
+  local oy = rd(SYM.sw_row) * 240
+  wr(SYM.sw_cam_origin_y_lo, oy % 256); wr(SYM.sw_cam_origin_y_hi, math.floor(oy / 256))
+  for i = 0, 7 do
+    wr(SYM.ent_active + i, 1)
+    if i < 4 then wr(SYM.ent_x + i, (i == 0) and 190 or 20 + i * 12); wr(SYM.ent_y + i, 30 + i * 30)
+    else wr(SYM.ent_x + i, 255); wr(SYM.ent_y + i, 30 + (i - 4) * 30) end
+  end
+end
+
+local function bucket(v) if v == 0 then return "q0" elseif v <= 35 then return "q1" else return "q2" end end
+
+local function onCam() if inBody then camCalls = camCalls + 1 end end
+local function onGuard()
+  guardCalls = guardCalls + 1
+  local ph = cur()
+  if ph and ph.collect then local s = phaseStats(ph.name); s.guards = (s.guards or 0) + 1 end
+end
+
+local function onIdle()
+  if not inBody then return end
+  inBody = false
+  local S = clock()
+  local ph = bodyPhase
+  if not ph or not ph.collect then return end
+  local G = S - T0
+  local main = G - relIntr - innerIntr
+  local s = phaseStats(ph.name)
+  s.n = s.n + 1
+  if main > s.maxMain then s.maxMain = main end
+  if relIntr > s.maxRel then s.maxRel = relIntr end
+  if innerN > 0 then s.overruns = s.overruns + 1 end
+  if G > FRAME then s.gateFail = s.gateFail + 1 end
+  if relVlen > 35 and relSt ~= 0 then s.bigN = (s.bigN or 0) + 1; if relStAdv ~= 0 then s.bigAdv = (s.bigAdv or 0) + 1 end end
+  if rdyOam > s.maxOam then s.maxOam = rdyOam end
+  local key = string.format("st%d.%s.fl%d%s", (bodySt ~= 0 or rdySt ~= 0) and 1 or 0, bucket(relVlen), bodyFl ~= 0 and 1 or 0, (bodyGs ~= 0) and ".frz" or "")
+  local c = s.classes[key]
+  if not c then c = { n = 0, maxG = 0, overruns = 0, gateFail = 0 }; s.classes[key] = c end
+  c.n = c.n + 1
+  if innerN > 0 then c.overruns = c.overruns + 1 end
+  if G > FRAME then c.gateFail = c.gateFail + 1 end
+  local rec = {
+    G = G, main = main, rel = relIntr, inner = innerIntr, innerN = innerN, relVlen = relVlen, relStAdv = relStAdv,
+    relSt = relSt, bodySt = bodySt, rdySt = rdySt, rdyStCur = rdyStCur, rdyVlen = rdyVlen, fl = bodyFl, gs = bodyGs,
+    tail = (rdyClock > 0) and (S - rdyClock) or -1, cam = camCalls, pad = padded, oam = rdyOam, frame = frame, key = key,
+    col = rd(SYM.sw_col), row = rd(SYM.sw_row), ents = 0
+  }
+  for i = 0, 7 do if rd(SYM.ent_active + i) ~= 0 then rec.ents = rec.ents + 1 end end
+  if G > c.maxG then c.maxG = G; c.top = rec end
+  if G > s.maxG then s.maxG = G; s.top = rec end
+  if ph.marks then
+    print(string.format("MK %s f=%d G=%d main=%d rel=%d inner=%d fl=%d %s", ph.name, frame, G, main, relIntr, innerIntr, bodyFl, table.concat(bodyMarks, " ")))
+  end
+  if ph.trace then
+    print(string.format("TR %s f=%d G=%d main=%d rel=%d inner=%d q=%d stadv=%d st=%d/%d stcur=%d pub=%d fl=%d col=%d row=%d px=%d py=%d cam=%d guard=%d rfl=%d wr=%d cy=%d wc=%d cx=%d", ph.name, frame, G, main, relIntr, innerIntr, relVlen, relStAdv, bodySt, rdySt, rdyStCur, rdyVlen, bodyFl, rd(SYM.sw_col), rd(SYM.sw_row), rd(SYM.player_x), rd(SYM.player_y), camCalls, guardCalls, rdyFl, rd(SYM.win_row_screen) * 15 + rd(SYM.win_row_local), rd(SYM.sw_cam_origin_y_hi) * 256 + rd(SYM.sw_cam_origin_y_lo), rd(SYM.win_col_screen) * 16 + rd(SYM.win_col_local), rd(SYM.sw_cam_origin_x_hi) * 256 + rd(SYM.sw_cam_origin_x_lo)))
+  end
+end
+
+local function fmtRec(r)
+  return string.format("G=%d main=%d rel=%d inner=%d innerN=%d relQ=%d relStAdv=%d relSt=%d bodySt=%d rdySt=%d rdyStCur=%d pub=%d fl=%d gs=%d tail=%d cam=%d pad=%d oam=%d frame=%d col=%d row=%d ents=%d",
+    r.G, r.main, r.rel, r.inner, r.innerN, r.relVlen, r.relStAdv, r.relSt, r.bodySt, r.rdySt, r.rdyStCur, r.rdyVlen, r.fl, r.gs, r.tail, r.cam, r.pad, r.oam, r.frame, r.col, r.row, r.ents)
+end
+
+local function finish()
+  for _, ph in ipairs(PHASES) do
+    local s = stats[ph.name]
+    if s then
+      print(string.format("PHASE %s n=%d maxG=%d maxMain=%d maxIntr=%d maxRel=%d overruns=%d gateFail=%d maxOam=%d maxPlusMax=%d guards=%d bigN=%d bigAdv=%d", s.name, s.n, s.maxG, s.maxMain, s.maxIntr, s.maxRel, s.overruns, s.gateFail, s.maxOam, s.maxMain + s.maxIntr, s.guards or 0, s.bigN or 0, s.bigAdv or 0))
+      if s.top then print("BIND " .. s.name .. " " .. fmtRec(s.top)) end
+      for key, c in pairs(s.classes) do
+        print(string.format("CLASS %s %s n=%d maxG=%d overruns=%d gateFail=%d %s", s.name, key, c.n, c.maxG, c.overruns, c.gateFail, c.top and fmtRec(c.top) or ""))
+      end
+    end
+  end
+  print("DONE frames=" .. frame)
+  emu.stop(0)
+end
+
+advance = function()
+  local ph = cur()
+  if ph and ph.mode ~= nil and ph.restore then
+    wr(SYM.game_state, 0); wr(SYM.box_state, 0)
+  end
+  pi = pi + 1; pframes = 0
+  ph = cur()
+  if not ph then finish(); return end
+  held = ph.held or {}
+end
+
+local function onFrame()
+  frame = frame + 1
+  local ph = cur()
+  if not ph then return end
+  pframes = pframes + 1
+  if ph.waitFor == "gameplay" then
+    -- advanced from onReady: the first body that completes in gameplay (a body never runs while the
+    -- game is still on its title/landing redraw)
+  elseif ph.waitFor == "naming" then
+    if rd(SYM.box_state) == SYM.BOX_NAMEENTRY and rd(SYM.box_row) >= SYM.BOX_TEXT_ROWS then advance() end
+  elseif pframes >= ph.frames then
+    advance()
+  end
+  if frame > 6000 then print("TIMEOUT phase=" .. tostring(cur() and cur().name)); emu.stop(9) end
+end
+
+held = (PHASES[1] and PHASES[1].held) or {}
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onBody, emu.callbackType.exec, SYM.main_loop_body_start)
+emu.addMemoryCallback(onReady, emu.callbackType.exec, SYM.main_loop_ready)
+emu.addMemoryCallback(onNmi, emu.callbackType.exec, SYM.nmi)
+emu.addMemoryCallback(onRti, emu.callbackType.exec, SYM.nmi_rti)
+__IDLE_REG__
+emu.addMemoryCallback(onDraw, emu.callbackType.exec, SYM.draw_entities)
+emu.addMemoryCallback(onCam, emu.callbackType.exec, SYM.sw_frame_camera_window)
+emu.addMemoryCallback(onGuard, emu.callbackType.exec, SYM.sw_position_jump_guard)
+for _, name in ipairs(MARKS) do
+  local addr = SYM[name]
+  emu.addMemoryCallback(function() mark(name) end, emu.callbackType.exec, addr)
+end
