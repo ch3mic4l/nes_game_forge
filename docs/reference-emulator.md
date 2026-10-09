@@ -63,3 +63,11 @@ screen *object* (the shape `flatScreens` returns), so two builds compare by iden
 an index a reorder/duplicate/delete/resize would change. Like `gif.js`/`gifdecode.js` above, it
 lives beside the tests that use it — never exported from or imported by `main/build/` — so a change
 to the wire format must keep this decoder in step, not the other way around.
+
+### Rules moved from CLAUDE.md, The emulator
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+The run loop paces itself by
+wall-clock time, never one-frame-per-rAF. Capture's `onFrame` copies and queues, nothing more, and
+any change to `renderer/emulator/gif.js` must keep the smoke test's `ImageDecoder` check.

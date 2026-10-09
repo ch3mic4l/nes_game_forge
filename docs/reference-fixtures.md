@@ -54,3 +54,45 @@ load's own redraw. Without the guard the page re-runs a frame later and hands ou
 the engine behaving as specified, but making the restored bag impossible to assert exactly, since a
 load that came back empty and one that came back correctly both read as "something in the bag" once
 the re-run has refilled it.
+
+## In-game naming in tests
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+**In-game naming means `sample`/`sample-rpg` now boot into a grid, so roughly thirty ROM-booting
+unit test files have to get past it before their own assertions can run.** `test/lib/naming.js`
+exports the shared grid primitives (`finishNamingIfOpen`, `typeNameAndFinish`, `clearName`, …),
+each operating on an already-booted `nes` instance with raw `nes.frame()` calls; each ROM-booting
+suite wraps them in its own local boot helper (`rpg.test.js`'s own `bootPastNaming`, for one).
+`test/unit/testoverrides.test.js` deliberately does **not** use this module — its own
+`bootPast`/`gridTap` drive the grid through `Emulator`'s `runFrame()`/`setButton` instead, since
+raw `nes.frame()` bypasses the `Emulator`'s own PC-intercept table, and that file's ROM-driving
+tests depend on it holding every frame, naming frames included, not only ones turning
+invincibility on. `npm run smoke` drives every naming grid it meets the same frame-paced way, `pressFramePaced` anchored to
+`Emulator.frames` rather than `wait(ms)` — a throttled window starves a wall-clock hold. Mesen's
+`save_sram.lua` gained its own naming phases for `sample-rpg-mmc1`; see
+`docs/design-rpg-save-fixture.md`.
+
+## Commands
+
+Warning, added after the move and not part of the moved text: every `npm run sample:*` line below overwrites a checked-in fixture, and a fixture is hand-edited JSON once written, so none is ever regenerated in place. To prepare a ROM, use only the `build:sample*` lines.
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+```sh
+npm run sample:rpg        # (re)write the RPG demo to ./sample-rpg
+npm run build:sample:rpg  # assemble sample-rpg/build/game.nes
+npm run sample:mmc1       # (re)write the MMC1 fixture to ./sample-mmc1
+npm run build:sample:mmc1 # assemble sample-mmc1/build/game.nes
+npm run sample:mmc3       # (re)write the MMC3 fixture to ./sample-mmc3
+npm run build:sample:mmc3 # assemble sample-mmc3/build/game.nes
+npm run sample:u512       # (re)write the UNROM 512 fixture to ./sample-u512
+npm run build:sample:u512 # assemble sample-u512/build/game.nes
+
+Mesen --testRunner test/lua/engine_smoke.lua sample/build/game.nes   # exit 0 = pass
+test/lua/run_sram_check.sh [mesen-path]                             # battery save, both boards
+test/lua/run_sram_check.sh [mesen-path] --break=mmc3-a001            # ...and its negative control
+test/lua/run_flash_check.sh [mesen-path]                            # flash save, UNROM 512
+test/lua/run_flash_check.sh [mesen-path] --break=u512-no-erase       # ...and its negative controls
+node test/lua/run_sw_cadence.mjs [--break=eor|beq|ungate|starve]      # streamed mover parity gate cadence, 3 scenes; --break = negative control
+```

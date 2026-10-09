@@ -19,28 +19,16 @@ current feature status table.
 npm start                 # run the app
 npm test                  # unit + headless integration tests
 npm run smoke             # boot the real Electron window and drive the whole workflow
-npm run sample            # (re)write the demo project to ./sample
+npm run sample            # (re)write the demo project to ./sample -- OVERWRITES the checked-in fixture: never run it over one
 npm run build:sample      # assemble sample/build/game.nes headlessly
-npm run sample:rpg        # (re)write the RPG demo to ./sample-rpg
-npm run build:sample:rpg  # assemble sample-rpg/build/game.nes
-npm run sample:mmc1       # (re)write the MMC1 fixture to ./sample-mmc1
-npm run build:sample:mmc1 # assemble sample-mmc1/build/game.nes
-npm run sample:mmc3       # (re)write the MMC3 fixture to ./sample-mmc3
-npm run build:sample:mmc3 # assemble sample-mmc3/build/game.nes
-npm run sample:u512       # (re)write the UNROM 512 fixture to ./sample-u512
-npm run build:sample:u512 # assemble sample-u512/build/game.nes
+npm run [build:]sample:<rpg|mmc1|mmc3|u512>   # the same pair as above, for ./sample-<name> -- the sample: half OVERWRITES a checked-in fixture; build: is the safe half
 
 node --test test/unit/music.test.js                          # one test file
 node --test --test-name-pattern "door warps" test/unit/*.test.js   # one test
 node main/build/cli.js <projectDir>                          # build any project headlessly
-
-Mesen --testRunner test/lua/engine_smoke.lua sample/build/game.nes   # exit 0 = pass
-test/lua/run_sram_check.sh [mesen-path]                             # battery save, both boards
-test/lua/run_sram_check.sh [mesen-path] --break=mmc3-a001            # ...and its negative control
-test/lua/run_flash_check.sh [mesen-path]                            # flash save, UNROM 512
-test/lua/run_flash_check.sh [mesen-path] --break=u512-no-erase       # ...and its negative controls
-node test/lua/run_sw_cadence.mjs [--break=eor|beq|ungate|starve]      # streamed mover parity gate cadence, 3 scenes; --break = negative control
 ```
+
+The Mesen/Lua check commands and the per-fixture `npm run` scripts: `docs/reference-fixtures.md`, "Commands".
 
 
 **Keep tool turns few.** Every turn re-reads the whole conversation, so a session's cost is turns
@@ -49,8 +37,9 @@ related greps into one command, read one generous range rather than walking a fi
 windows, and apply several edits to a file in one pass where that is practical. Read only the
 `docs/reference-*.md` file the task touches, not all of them.
 
-Several tests **skip** unless `sample/build/game.nes` exists — run `npm run sample && npm run
-build:sample` first, and `npm run sample:rpg && npm run build:sample:rpg` for `rpg.test.js`.
+Several tests **skip** unless `sample/build/game.nes` exists — run `npm run build:sample` first, and
+`npm run build:sample:rpg` for `rpg.test.js`. Prepare these ROMs with the `build:` scripts only, never the
+`npm run sample*` generators, which overwrite the checked-in fixtures.
 A skipped test is not a passing test; check the skip count.
 
 `test/unit/docs.test.js` checks CLAUDE.md itself: every `docs/*.md` pointer it names must
@@ -74,12 +63,7 @@ script over a checked-in fixture is data loss, not a refresh. Why there are six,
 in-game naming, why the saver pages are switch-guarded and how the SRAM and flash checks differ:
 `docs/reference-fixtures.md`.
 
-`FORGE_SHOT=out.png` (optionally with `FORGE_SHOT_FORGE=map`) makes `npm run smoke` write a
-screenshot, which is the practical way to see the UI without a human at the keyboard.
-
-`npm start` passes `--no-sandbox` because Ubuntu 24.04's AppArmor policy blocks unprivileged user
-namespaces. `npm run start:sandboxed` works after a one-time `chown root` of
-`node_modules/electron/dist/chrome-sandbox` (see README).
+Screenshots from `npm run smoke` (`FORGE_SHOT`, `FORGE_SHOT_FORGE`): `docs/reference-electron-layout.md`, "Smoke screenshots".
 
 Requires `nesasm` v3.1 on `PATH`. Mesen is optional (used by "Open in Mesen" and the Lua tests).
 
@@ -98,13 +82,7 @@ project JSON
   → build/game.nes + game.fns
 ```
 
-`main/build/cli.js` runs exactly this without Electron, which is what the package's own
-`build:sample`/`build:sample:rpg`/etc. scripts use it for — not the tests, which call `buildProject`
-directly (below).
-
-`main/build/buildgate.js` allows exactly one in-flight `build:run` IPC call per project directory,
-refusing a second rather than queuing it; unit and Lua tests import `buildProject` directly and
-bypass it (`docs/reference-electron-layout.md`, "The build gate").
+`main/build/cli.js` runs exactly this without Electron. The build gate, and how tests bypass it: `docs/reference-electron-layout.md`, "The build gate".
 
 ### The single-writer rule
 
@@ -141,15 +119,6 @@ renderer, and `node:test` alike.
 
 ### Electron layout
 
-- **Main** (`main/`) owns all filesystem access, the build pipeline, and settings.
-- **Renderer** (`renderer/`) is sandboxed with `contextIsolation` — it has no `fs`. Everything it
-  can reach is enumerated in `main/preload.cjs`.
-- The app is served over a custom `forge://` scheme registered in `main/main.js`, **not**
-  `file://`, because ES modules cannot be fetched from an opaque `file://` origin.
-- Every `ipcMain.handle` (`main/ipc.js`) is wrapped through one `guardedHandle` refusing a call
-  whose `event.senderFrame` isn't this app's own `forge://app/` origin. Saves queue one chain per
-  canonicalized directory (`main/savequeue.js`/`main/paths.js`), so concurrent saves serialize
-  rather than interleave, each file landing via a sibling temp file and atomic rename.
 - **Unsaved changes are guarded in main, never by `beforeunload`** — vetoing `beforeunload` from
   the renderer cancels the close with no dialog and silently kills the title-bar X.
 - **A pixel canvas is sized from its stage, never from a constant**: `fitZoom()` and
@@ -162,9 +131,7 @@ onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for
 exist, and `isForgeAvailable(entry, project)` the single predicate for whether one applies to the
 open project. `renderer/store.js` is the single project state: `commit()` for a discrete edit,
 `beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry. Undo is whole-project
-`structuredClone` snapshots. Every map/screen restructuring operation is a commit-free core in
-`shared/project.js`, called by both `renderer/forges/map/map.js` (wrapped in one
-`store.commit()`) and the unit tests. The rest — the selection race, navigation contexts, the
+`structuredClone` snapshots. The rest — the selection race, navigation contexts, the
 Monster Forge's catalog predicate and level field, map organization — is in
 `docs/reference-electron-layout.md`.
 
@@ -193,33 +160,14 @@ Supported: NROM, CNROM, GxROM, Color Dreams, UxROM, MMC1, MMC3, UNROM 512. Read
   to mapper or mirroring, because `store.commit()` never runs `normalizeProject`.
 - `engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays.
   New engine state goes there; a collision is silent and will present as an unrelated bug.
-- A streamed world's current screen has a third identity (`flat_screen` global id, `ord_screen`
-  compacted table row, `cur_map`) alongside the ordinary one; `sw_resolve_screen` is the single
-  place a landing resolves it (`docs/reference-engine.md`). The two-nametable ring's design, entry-gate method and measured acceptance table are
-  `docs/design-streamed-worlds-phase3b.md`.
-- `generate.js`'s `checkCapacity()` reports overflow in plain language *before* the assembler
-  runs. Adding per-screen or per-actor data means updating the byte math there too.
+- MMC3's scanline IRQ gives the font its own CHR bank (`engine/split.asm`): interrupt-time code
+  only ever selects MMC3 register 1, mapper-register pairs run only under forced blank or
+  `switch_prg_bank`'s own critical section, and the split follows state, not events.
 - **Nothing but `text.asm` may write to the nametable while rendering is on**; everything else
   queues packets in `vram_buf`. A packet that is opened must be pushed to at least once (a count of
   zero drains as 256), and NMI rewrites `$2000` after draining. `flip_tick`, `flash_tick` and one
   frozen-world tick are the three producers that can share a frame (worst case 88 of 256 bytes) —
   a fourth independent producer must re-open that accounting.
-- MMC3's scanline IRQ gives the font its own CHR bank (`engine/split.asm`): interrupt-time code
-  only ever selects MMC3 register 1, mapper-register pairs run only under forced blank or
-  `switch_prg_bank`'s own critical section, and the split follows state, not events.
-- The camera is gated on `project.cartridge.camera`; `cameraAxes(mapper, cartridge)` is the single
-  writer for which axis slides. Camera off, every fixture is byte-identical.
-- `Heal`/`Damage` — commands, metatiles and items alike — mean whichever health model
-  `BATTLE_ENABLED` selected. A killing hit must `jmp player_died` from the routine that was itself
-  reached by `jmp`; a callee reached by `jsr` answers with `rts` and lets its caller decide.
-- The entity pass hands X back across a battle and **the first contact wins**: `battle_begin` uses Y, and
-  `update_entities_loop` ends the pass once `game_state` has left `ST_GAMEPLAY` (RPG only, inside
-  `.if BATTLE_ENABLED`; `docs/reference-engine.md`, "The entity pass and a battle").
-- `init_session` is the single definition of "new game"; `do_action` (`input.asm`) the single
-  place that decides what an action means in the current state.
-
-Also there: UNROM 512's CHR-RAM and flash save, four-screen mirroring, `headerPatch()`, the
-mappers deliberately left out, the nesasm bank table, `box_close`, validate-as-you-draw.
 
 ### The event system
 
@@ -227,10 +175,6 @@ mappers deliberately left out, the nesasm bank table, `box_close`, validate-as-y
 `main/build/textcompile.js`, `shared/eventrules.js`, triggers, items, saves or the renumber
 helpers. In brief:
 
-- What makes an event run is a byte of the entity record: `EVENT_TRIGGERS` (`shared/project.js`)
-  in wire order, `TRIG_*` in `engine/constants.asm`. `availableTriggers` is the single writer for
-  which triggers are real for a placement and `effectiveTrigger(entity, actor, project)` what
-  everything then asks; the stored choice is deliberately never rewritten.
 - Touch and enter events only arm `pending_ent`; `main_loop` is the single place it becomes a
   conversation. **A frame that draws a screen or decides a warp belongs to that transition, not to
   the player** — `settle_owed`, `screen_fresh` and the `dispatch_input` stop are that one rule.
@@ -238,21 +182,11 @@ helpers. In brief:
   tail (`route`). A command that holds commands is a `nests: true` entry. Anything asking a
   question of a whole event walks `allCommands` ("what is mentioned") or `liveCommands` ("what
   compiles") in `shared/eventrules.js`, never a page's own top-level list.
-- `NO_ACTOR == NO_ITEM == $FF`, and `LIMITS.metasprites`/`LIMITS.animations` cap an id space at
-  its sentinel's own value. A recognised command whose operand names nothing stops the event
-  rather than being dropped (`NO_COMMON_EVENT_SLOT`, `NO_MEMBER`).
 - Deleting an actor, item, spell, party member or animation goes through its
   `renumber*Deletion` helper in `shared/project.js`.
 - `SAVE_LAYOUT_VERSION` is 3; a bump invalidates every prior save. `saveCompatToken` invalidates
   saves only for a project that reorders, deletes or resizes maps.
-- An item's effect is `{kind, amount}` with `ITEM_EFFECT_KINDS` order as the wire format;
-  `use_item_apply` is reached by `jsr` and must never itself `jmp player_died`.
-- `{name}` in a `Say` or plain dialogue — never a choice label — compiles to `TXT_NAME`.
 - `switch_test`/`switch_set`/`switch_clear` preserve X and Y.
-
-Also there: `Move`'s three rules, questions and branches on the wire, `OP_CALL` and
-`CALL_STACK_DEPTH`, `resolveEntityByte`, the player's modular parts, battle animation references, and a streamed
-`Move`'s talker identity across a seam (`TALKER_ENABLED`, Rule R; `talkeraudit.test.js` pins every `talk_ent` reader and writer).
 
 ### The starter library
 
@@ -260,10 +194,8 @@ Also there: `Move`'s three rules, questions and branches on the wire, `OP_CALL` 
 `LIBRARY_ENTRIES` (`shared/library/index.js`). `planLibraryImport` is pure; `applyPlannedProject =
 Object.assign` is the one apply, called inside one `store.commit` with no `await` between plan and
 apply, so a refused plan never reaches `commit`. `suggestedPaletteSlot` is the single writer for
-both the picker's suggestion and the headless default — the two can never disagree. A reserved
-palette slot is always selectable; only writing fresh colours is refused. The Forges must pass
-`options.tilesetId`, else a core defaults to tileset 0. `renderer/widgets/librarypicker.js` is the
-one picker shared by all three Forges. See `docs/design-starter-library.md`.
+both the picker's suggestion and the headless default — the two can never disagree. The Forges must pass
+`options.tilesetId`, else a core defaults to tileset 0. See `docs/design-starter-library.md`. Also see `docs/reference-starters.md`.
 
 ### Starter projects
 
@@ -272,17 +204,7 @@ one picker shared by all three Forges. See `docs/design-starter-library.md`.
 `starterId`, resolved before `fs.mkdir` so an unknown id creates nothing. The two blank entries are
 pinned byte-identical to `createProject`.
 
-Every content starter is `planLibraryImport` in a fixed order, then the shared player figure and
-Doorway from `shared/starters/figures.js`, then hand-authored content; tile indices are probed at
-build time, never assumed, because a starter pointing at the player's reserved tiles trips a
-`validateProject` warning. `writePlayerFigure` returns 24 explicit `null`s, never `BLANK_TILE`
-strings, or the placeholder is never substituted.
-
-The `hideSwitch`-at-spawn trap, as a one-sentence rule: a one-shot interact page needs a switch
-guard and a fallback page, `hideSwitch` alone repeats until the screen reloads.
-
-`acorn` is an exact-pinned, test-only devDependency, imported by `test/lib/sourcescan.js` and
-`test/unit/project.test.js`, never by anything under `main/`, `renderer/` or `shared/`.
+Content-starter construction, the `hideSwitch`-at-spawn trap and the `acorn` test-only devDependency: `docs/reference-starters.md`.
 
 See `docs/design-starter-projects.md`.
 
@@ -298,25 +220,15 @@ a conditional feature. In brief:
   byte-for-byte as if it did not exist.
 - A term that varies by mapper is measured per mapper (`*_BY_MAPPER`); a term stays flat until
   real variance is measured; a term is measured on every game type and condition it is charged to.
-- Each allowance is **equality-asserted** against nesasm's real usage by
-  `test/unit/kernelbytes.test.js`, and the combined reservation must leave a margin between
-  `KERNEL_SLACK` (20) and twice that. If the engine grows, re-measure; never pad.
-- `kernelShortfallAdvice` prices a removal by full counterfactual kernel-lo occupancy, never by
-  summing allowance constants, and a mapper offered as a fix must still hold every tileset, every
-  screen and the project's mirroring choice.
 
 ### The Code Forge
 
 The user's own 6502 lives in `project.code` (`overrides` of engine files, new `files`), on disk
 as raw `.asm` under `code/engine/` and `code/user/`. `docs/reference-code-forge.md` has the full
-text. In brief: `engineFileNames()` in `generate.js` is the single writer of what a stock file is;
-overrides are copied in at their own name and line numbers, and `build/` is `rm -rf`'d every build;
-`assets/usercode.inc` is always emitted, so a project with no code assembles byte-identically.
-Hand-written code is **deliberately outside `checkCapacity`'s byte math** — the assembler is the
+text. Hand-written code is **deliberately outside `checkCapacity`'s byte math** — the assembler is the
 capacity check. nesasm v3.1 reports errors across three lines and **exits 0 anyway**
 (`parseNesasmErrors`, `main/build/nesasm.js`), and crashes outright on a label of 31 or more
-characters. The editor is hand-rolled (no runtime dependencies, no bundler); `placeInPane`/
-`focusPane` end every pane reassignment and `ensureTab` is the single load-or-reuse path.
+characters.
 
 ### The battle system
 
@@ -326,38 +238,17 @@ PRG *and* CHR switching (`rpgCapable()`, `shared/cartridge.js`). Read
 `engine/nameentry.asm` or `main/build/battletables.js`. In brief:
 
 - **`call_battle` in `engine/banks.asm` is the only cross-bank call there may be**, and it ends
-  `jmp set_screen_ptr` — the restore *is* the return (`banked.test.js`). It has 22 entry points
-  (`BE_*`, `engine/constants.asm`); the 13 `BE_DLG_*` from `BE_DLG_FIRST` up are the streamed
-  dialogue overlay's, and skip its strip cancel. `BE_JOIN`'s operand is guarded against `NO_MEMBER`
-  and a stale index.
-- In-game naming (`engine/nameentry.asm`) is one source assembled in exactly one of two
-  placements — banked on an RPG, kernel on an action project — behind five `name_*` shims in
-  `engine/ui.asm`.
-- The banked region's capacity check (`battleRegionBytes`/`battleRegionCeiling`,
-  `main/build/battletables.js`) is **exact**: `test/unit/bankedbytes.test.js` asserts equality
-  with nesasm's usage, per board, including every `*_BATTLE_ALLOWANCE`. `battletables.js` imports
-  only from `shared/` and must stay that way — the renderer imports it.
-- `switchableMappers` (`generate.js`) answers "would a different mapper fix this?" by asking
-  `reconcileCartridge`, `validateProject` and the capacity checks rather than restating their
-  rules, and offers no board at all to a project carrying hand-written 6502.
+  `jmp set_screen_ptr` — the restore *is* the return (`banked.test.js`).
 - Combatants are one index space (0-3 party, 4-7 monsters). The `combatant_*` lookups preserve X
   and Y and return through `bt_ret`. `bt_tmp2` is `cast_all`'s end-of-side sentinel and must
   survive the whole `spell_damage` chain.
-- Anything needing a multiply is a precomputed table; `ACTOR_BATTLE_DEFAULTS`
-  (`shared/project.js`) is the single writer for an actor's battle defaults.
-
-Also there: Code Forge overrides of the battle code and the `.fail` guard, status effects, spell
-amount ranges, the ITEM menu filter, monster spell lists, battle animation, hit feedback and MISS,
-the preview canvas, the party attack visual, and what to do when 8 KB runs out.
 
 ### The emulator
 
 `renderer/emulator/core/` is a vendored jsnes. **Read `renderer/emulator/core/FORGE-PATCHES.md`
 before touching or upgrading it.** Run control is layered *outside* the core in `runcontrol.js`;
 `Emulator.stepInstruction()` mirrors the body of `nes.frame()` and must be updated in step with
-it; `Emulator.reset()` goes through the core's own `reloadROM()`. The run loop paces itself by
-wall-clock time, never one-frame-per-rAF. Capture's `onFrame` copies and queues, nothing more, and
-any change to `renderer/emulator/gif.js` must keep the smoke test's `ImageDecoder` check.
+it; `Emulator.reset()` goes through the core's own `reloadROM()`.
 `test/lib/eventdecoder.js` decodes the compiled event wire format for tests and must be kept in
 step with it. Full text: `docs/reference-emulator.md`.
 
@@ -377,19 +268,7 @@ Three independent layers, all of which should pass before calling a change done:
 temp directory precisely because an earlier version saved edits back into it and left the two
 suites fighting over the ROM. If a test seems flaky, suspect shared state before adding retries.
 
-**In-game naming means `sample`/`sample-rpg` now boot into a grid, so roughly thirty ROM-booting
-unit test files have to get past it before their own assertions can run.** `test/lib/naming.js`
-exports the shared grid primitives (`finishNamingIfOpen`, `typeNameAndFinish`, `clearName`, …),
-each operating on an already-booted `nes` instance with raw `nes.frame()` calls; each ROM-booting
-suite wraps them in its own local boot helper (`rpg.test.js`'s own `bootPastNaming`, for one).
-`test/unit/testoverrides.test.js` deliberately does **not** use this module — its own
-`bootPast`/`gridTap` drive the grid through `Emulator`'s `runFrame()`/`setButton` instead, since
-raw `nes.frame()` bypasses the `Emulator`'s own PC-intercept table, and that file's ROM-driving
-tests depend on it holding every frame, naming frames included, not only ones turning
-invincibility on. `npm run smoke` drives every naming grid it meets the same frame-paced way, `pressFramePaced` anchored to
-`Emulator.frames` rather than `wait(ms)` — a throttled window starves a wall-clock hold. Mesen's
-`save_sram.lua` gained its own naming phases for `sample-rpg-mmc1`; see
-`docs/design-rpg-save-fixture.md`.
+ROM-booting tests must get past the in-game naming grid; shared `nes` helpers and the Emulator-driven exception are in `docs/reference-fixtures.md`, "In-game naming in tests".
 
 ## 6502 traps this codebase has already hit
 
@@ -428,17 +307,6 @@ Each cost real debugging time and has a regression test; the full stories are in
   users never see raw assembler output.
 - Re-render a node with `fill(node, ...)` from `renderer/ui.js`, never `clear(node).append(...)`.
   `el()` skips nulls and flattens arrays; the DOM's `append` stringifies both, so a conditional
-  child renders as "null" and a list of rows as "[object HTMLDivElement]" — reading as bad data,
-  not a wrong append, and it cost the Map Forge its whole placed-actor list (remove buttons
-  included) until a screenshot caught it. Bare `clear()` is still right for the
+  child renders as "null" and a list of rows as "[object HTMLDivElement]". Bare `clear()` is still right for the
   clear-then-append-in-a-loop case.
-- `showModal` (`renderer/ui.js`) resolves `null` for Escape, a backdrop click, a bare `close()`,
-  and an action with `value: undefined` — a caller can't tell "dismissed" from a chosen `null`
-  through the promise alone; one needing that brings its own sentinel: `editEvent`
-  (`renderer/forges/map/events.js`) resolves Clear event and an emptied-draft Save through a
-  private `CLEAR_EVENT` Symbol, folded by `resolveEventEditorResult` (pinned by
-  `events.test.js`). One `showModal` trap: an action's `onClick` must do nothing fallible —
-  `renderer/ui.js` awaits it before `close()`, so a throw leaves the dialog unresolved until a
-  later dismissal settles it; the derive modal above returns only raw inputs; planning reads the
-  project only after the `await` and its guards. Its overlay blocks pointer
-  clicks only, not keyboard activation.
+- `showModal` (`renderer/ui.js`) resolves `null` for every dismissal, and an action's `onClick` must do nothing fallible. Full text: `docs/reference-electron-layout.md`.

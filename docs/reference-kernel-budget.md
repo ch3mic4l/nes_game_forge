@@ -794,3 +794,15 @@ game-type exclusion, conditional on every other buildable composition passing, a
 them (those were tried, removed, and are not coverage). The final aggregate (`node test/lua/run_sw_cross.mjs --aggregate=<the six launch files>`, run 2026-10-04; `handoff-next/s3b/impl/D/aggregate.json`): **13,808 planned results, 0 problems, 0 refusals outside every group, evidence 7,526 raw and
 5,761 historical, `complete: true`**. The RPG-bound class-(a) composition (`ref` lead) is a capacity refusal, *not covered*: see
 `docs/design-streamed-worlds-phase3a.md`, "S3b: measured outcomes", for the X5 probe that confirms hseam-a on the leads that do build.
+
+### Rules moved from CLAUDE.md, The kernel budget
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+- Each allowance is **equality-asserted** against nesasm's real usage by
+  `test/unit/kernelbytes.test.js`, and the combined reservation must leave a margin between
+  `KERNEL_SLACK` (20) and twice that. If the engine grows, re-measure; never pad.
+
+- `kernelShortfallAdvice` prices a removal by full counterfactual kernel-lo occupancy, never by
+  summing allowance constants, and a mapper offered as a fix must still hold every tileset, every
+  screen and the project's mirroring choice.

@@ -119,3 +119,62 @@ per-mount flag there can't stop a second caller from racing `generate.js`'s own 
 It only covers that one channel — unit and Lua tests import `buildProject`
 (`main/build/pipeline.js`) directly, bypassing both this gate and `main/build/cli.js`, and
 `npm run smoke` is the only thing that goes through `build:run` and is covered by it.
+
+### Running the app: the Electron sandbox
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+`npm start` passes `--no-sandbox` because Ubuntu 24.04's AppArmor policy blocks unprivileged user
+namespaces. `npm run start:sandboxed` works after a one-time `chown root` of
+`node_modules/electron/dist/chrome-sandbox` (see README).
+
+### The headless CLI and the build gate (moved from CLAUDE.md, The pipeline)
+
+In the first paragraph below, "this" is the build pipeline of `CLAUDE.md`, "The pipeline": project JSON → `main/build/generate.js` → `engine/*.asm` copied into `build/` → `nesasm main.asm` (`main/build/nesasm.js`) → `inspectRom()` (`main/build/pipeline.js`) → `build/game.nes` + `game.fns`.
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+`main/build/cli.js` runs exactly this without Electron, which is what the package's own
+`build:sample`/`build:sample:rpg`/etc. scripts use it for — not the tests, which call `buildProject`
+directly (below).
+
+`main/build/buildgate.js` allows exactly one in-flight `build:run` IPC call per project directory,
+refusing a second rather than queuing it; unit and Lua tests import `buildProject` directly and
+bypass it (`docs/reference-electron-layout.md`, "The build gate").
+
+### Conventions moved from CLAUDE.md
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+- Re-render a node with `fill(node, ...)` from `renderer/ui.js`, never `clear(node).append(...)`.
+  `el()` skips nulls and flattens arrays; the DOM's `append` stringifies both, so a conditional
+  child renders as "null" and a list of rows as "[object HTMLDivElement]" — reading as bad data,
+  not a wrong append, and it cost the Map Forge its whole placed-actor list (remove buttons
+  included) until a screenshot caught it. Bare `clear()` is still right for the
+  clear-then-append-in-a-loop case.
+
+- `showModal` (`renderer/ui.js`) resolves `null` for Escape, a backdrop click, a bare `close()`,
+  and an action with `value: undefined` — a caller can't tell "dismissed" from a chosen `null`
+  through the promise alone; one needing that brings its own sentinel: `editEvent`
+  (`renderer/forges/map/events.js`) resolves Clear event and an emptied-draft Save through a
+  private `CLEAR_EVENT` Symbol, folded by `resolveEventEditorResult` (pinned by
+  `events.test.js`). One `showModal` trap: an action's `onClick` must do nothing fallible —
+  `renderer/ui.js` awaits it before `close()`, so a throw leaves the dialog unresolved until a
+  later dismissal settles it; the derive modal above returns only raw inputs; planning reads the
+  project only after the `await` and its guards. Its overlay blocks pointer
+  clicks only, not keyboard activation.
+
+### Registry and store rules moved from CLAUDE.md, Electron layout
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+Every map/screen restructuring operation is a commit-free core in
+`shared/project.js`, called by both `renderer/forges/map/map.js` (wrapped in one
+`store.commit()`) and the unit tests.
+
+### Smoke screenshots (moved from CLAUDE.md, Testing)
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+`FORGE_SHOT=out.png` (optionally with `FORGE_SHOT_FORGE=map`) makes `npm run smoke` write a
+screenshot, which is the practical way to see the UI without a human at the keyboard.

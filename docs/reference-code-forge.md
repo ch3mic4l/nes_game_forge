@@ -97,3 +97,14 @@ module-level, never saved.
   (`STREAMED_BOUNDS_CODE_SENTENCE`, `main/build/generate.js`) exactly when the project carries
   code **and** streams actors — `test/unit/streamtilewarning.test.js` pins the condition. A
   project without streamed actors, or without code, is unchanged.
+
+### Rules moved from CLAUDE.md, The Code Forge
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+In brief: `engineFileNames()` in `generate.js` is the single writer of what a stock file is;
+overrides are copied in at their own name and line numbers, and `build/` is `rm -rf`'d every build;
+`assets/usercode.inc` is always emitted, so a project with no code assembles byte-identically.
+
+The editor is hand-rolled (no runtime dependencies, no bundler); `placeInPane`/
+`focusPane` end every pane reassignment and `ensureTab` is the single load-or-reuse path.

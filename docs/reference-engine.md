@@ -829,3 +829,40 @@ SHA-256 gate). Two traps: prove a delegation structural by reading `generate.js`
 its output; probe a game-type gate on the *other* game type — `battleSpriteBudget`'s own gate
 went missing for several review rounds, caught only on an action build. See
 `docs/design-draw-validation.md` for the full depth.
+
+### Rules moved from CLAUDE.md, The engine
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+- A streamed world's current screen has a third identity (`flat_screen` global id, `ord_screen`
+  compacted table row, `cur_map`) alongside the ordinary one; `sw_resolve_screen` is the single
+  place a landing resolves it (`docs/reference-engine.md`). The two-nametable ring's design, entry-gate method and measured acceptance table are
+  `docs/design-streamed-worlds-phase3b.md`.
+
+- `generate.js`'s `checkCapacity()` reports overflow in plain language *before* the assembler
+  runs. Adding per-screen or per-actor data means updating the byte math there too.
+
+- MMC3's scanline IRQ gives the font its own CHR bank (`engine/split.asm`): interrupt-time code
+  only ever selects MMC3 register 1, mapper-register pairs run only under forced blank or
+  `switch_prg_bank`'s own critical section, and the split follows state, not events.
+
+- The camera is gated on `project.cartridge.camera`; `cameraAxes(mapper, cartridge)` is the single
+  writer for which axis slides. Camera off, every fixture is byte-identical.
+
+- `Heal`/`Damage` — commands, metatiles and items alike — mean whichever health model
+  `BATTLE_ENABLED` selected. A killing hit must `jmp player_died` from the routine that was itself
+  reached by `jmp`; a callee reached by `jsr` answers with `rts` and lets its caller decide.
+
+- The entity pass hands X back across a battle and **the first contact wins**: `battle_begin` uses Y, and
+  `update_entities_loop` ends the pass once `game_state` has left `ST_GAMEPLAY` (RPG only, inside
+  `.if BATTLE_ENABLED`; `docs/reference-engine.md`, "The entity pass and a battle").
+
+- `init_session` is the single definition of "new game"; `do_action` (`input.asm`) the single
+  place that decides what an action means in the current state.
+
+### Topic list moved from CLAUDE.md, The engine
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+Also there: UNROM 512's CHR-RAM and flash save, four-screen mirroring, `headerPatch()`, the
+mappers deliberately left out, the nesasm bank table, `box_close`, validate-as-you-draw.

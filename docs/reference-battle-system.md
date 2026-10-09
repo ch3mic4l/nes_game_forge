@@ -338,3 +338,38 @@ lives in the DOM-free file, not the wrapper, since its own unit tests (§15.7) r
 `pc_anim_attack` behind `PARTY_ATTACK_ANIM_ENABLED`
 (`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 10`); the acting party member walks forward (both RPG fixtures
 re-pinned).
+
+### Rules moved from CLAUDE.md, The battle system
+
+In the paragraph below, "It" is `call_battle` in `engine/banks.asm`, the only cross-bank call there may be.
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+It has 22 entry points
+  (`BE_*`, `engine/constants.asm`); the 13 `BE_DLG_*` from `BE_DLG_FIRST` up are the streamed
+  dialogue overlay's, and skip its strip cancel. `BE_JOIN`'s operand is guarded against `NO_MEMBER`
+  and a stale index.
+
+- In-game naming (`engine/nameentry.asm`) is one source assembled in exactly one of two
+  placements — banked on an RPG, kernel on an action project — behind five `name_*` shims in
+  `engine/ui.asm`.
+
+- The banked region's capacity check (`battleRegionBytes`/`battleRegionCeiling`,
+  `main/build/battletables.js`) is **exact**: `test/unit/bankedbytes.test.js` asserts equality
+  with nesasm's usage, per board, including every `*_BATTLE_ALLOWANCE`. `battletables.js` imports
+  only from `shared/` and must stay that way — the renderer imports it.
+
+- `switchableMappers` (`generate.js`) answers "would a different mapper fix this?" by asking
+  `reconcileCartridge`, `validateProject` and the capacity checks rather than restating their
+  rules, and offers no board at all to a project carrying hand-written 6502.
+
+- Anything needing a multiply is a precomputed table; `ACTOR_BATTLE_DEFAULTS`
+  (`shared/project.js`) is the single writer for an actor's battle defaults.
+
+### Topic list moved from CLAUDE.md, The battle system
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+Also there: Code Forge overrides of the battle code and the `.fail` guard, status effects, spell
+amount ranges, the ITEM menu filter, monster spell lists, battle animation, hit feedback and MISS,
+the preview canvas, the party attack visual, and what to do when 8 KB runs out.

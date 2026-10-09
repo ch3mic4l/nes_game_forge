@@ -369,3 +369,29 @@ what makes "this happened already" expressible. `switch_test` / `switch_set` / `
 and `switch_split` builds its mask by shifting rather than indexing a table for exactly that
 reason: `spawn_entities` calls `switch_test` with the entity slot in X and the record cursor in Y,
 and reloading Y after the test would set the flags from the reload rather than from the switch.
+
+### Rules moved from CLAUDE.md, The event system
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+- What makes an event run is a byte of the entity record: `EVENT_TRIGGERS` (`shared/project.js`)
+  in wire order, `TRIG_*` in `engine/constants.asm`. `availableTriggers` is the single writer for
+  which triggers are real for a placement and `effectiveTrigger(entity, actor, project)` what
+  everything then asks; the stored choice is deliberately never rewritten.
+
+- `NO_ACTOR == NO_ITEM == $FF`, and `LIMITS.metasprites`/`LIMITS.animations` cap an id space at
+  its sentinel's own value. A recognised command whose operand names nothing stops the event
+  rather than being dropped (`NO_COMMON_EVENT_SLOT`, `NO_MEMBER`).
+
+- An item's effect is `{kind, amount}` with `ITEM_EFFECT_KINDS` order as the wire format;
+  `use_item_apply` is reached by `jsr` and must never itself `jmp player_died`.
+
+- `{name}` in a `Say` or plain dialogue — never a choice label — compiles to `TXT_NAME`.
+
+### Topic list moved from CLAUDE.md, The event system
+
+Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.
+
+Also there: `Move`'s three rules, questions and branches on the wire, `OP_CALL` and
+`CALL_STACK_DEPTH`, `resolveEntityByte`, the player's modular parts, battle animation references, and a streamed
+`Move`'s talker identity across a seam (`TALKER_ENABLED`, Rule R; `talkeraudit.test.js` pins every `talk_ent` reader and writer).
