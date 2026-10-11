@@ -1314,7 +1314,7 @@ export const BOUND_TILE_KERNEL_ALLOWANCE = 381;
 export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // Phase 2 slice 10b (ROADMAP item 15): a streamed RPG whose music+sfx+text would
 // not fit the resident kernel-hi ceiling moves the whole dialogue overlay above
-// (the three terms just above: mapper 613 + lifecycle 537 rpg + relocated 222; lifecycle was 520
+// (the three terms just above: mapper 520 + lifecycle 537 rpg + relocated 222; lifecycle was 520
 // before the Say/Move overrun fix, which also left 6 resident bytes behind -- the READ_CHUNK term -- and
 // moved the shim block from 113 to 111) into
 // the battle bank -- streamworldDialogueBanked below is the one predicate. Under

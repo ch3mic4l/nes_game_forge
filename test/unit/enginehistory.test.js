@@ -24,7 +24,8 @@ import {
   stripOverrunFromStreamworld,
   carryOverrunLever,
   stripOverrunCloseFromFlat,
-  dropOverrunRetiredFromOld
+  dropOverrunRetiredFromOld,
+  dropDeadWriteRowFromOld
 } from '../lib/enginehistory.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -287,4 +288,22 @@ test('overrun fix: the close routine and sw_dlg_metatile are cut from both sides
   assert.ok(!cutOld.includes('sw_dlg_metatile:') && !cutOld.includes('sw_dlgcr_loop'), 'the accessor and the per-cell close are gone');
   assert.throws(() => stripOverrunCloseFromFlat(current.replace('sw_dlgcr_end:\n  jmp vram_end\n', 'sw_dlgcr_end:\n  nop\n  jmp vram_end\n')), /not found exactly once/);
   assert.throws(() => dropOverrunRetiredFromOld(old.replace('  jmp sw_terrain_or_fill\n', '  jmp sw_terrain_or_fill ; x\n')), /not found exactly once/);
+});
+
+test('dead sw_dlg_write_row: cut from an inline older text exactly, left alone in a text without it, and a changed endpoint or interior throws', () => {
+  const old = sh('59d4468', 'engine/streamworld.asm');
+  assert.ok(old.includes('sw_dlg_write_row:\n'), 'the old inline text has the routine');
+  const cut = dropDeadWriteRowFromOld(old);
+  assert.ok(!cut.includes('sw_dlg_write_row:') && !cut.includes('sw_dlgwr_'), 'the routine and its labels are gone');
+  assert.ok(cut.includes('sw_dlg_attr_precompute:') && cut.includes('sw_dlg_tile_addr:'), 'its neighbours stay');
+  const dropped = old.split('\n').length - cut.split('\n').length;
+  assert.equal(dropped, 49, 'exactly the routine\'s own 49 lines came out');
+  assert.equal(dropDeadWriteRowFromOld(currentDialog()), currentDialog(), 'the current text has none: returned untouched');
+  assert.throws(() => dropDeadWriteRowFromOld(old.replace('  bne sw_dlgwr_ns_loop\n  jmp vram_end\n', '  bne sw_dlgwr_ns_loop\n  nop\n  jmp vram_end\n')), /end was not found exactly once/);
+  assert.throws(() => dropDeadWriteRowFromOld(old + '\nsw_dlg_write_row:\n'), /found 2 times/);
+  // an INTERIOR change keeps both endpoints intact and must still refuse (endpoints alone would have cut the extra call silently)
+  assert.throws(() => dropDeadWriteRowFromOld(old.replace('sw_dlg_write_row:\n', 'sw_dlg_write_row:\n  jsr unrelated_live_routine\n')), /not the pinned routine/);
+  assert.throws(() => dropDeadWriteRowFromOld(old.replace('  jsr vram_push\n', '  jsr vram_open\n')), /not the pinned routine/);
+  // a comment-only interior difference is not a code difference
+  assert.equal(dropDeadWriteRowFromOld(old.replace('sw_dlg_write_row:\n', 'sw_dlg_write_row:\n  ; an interior comment\n')), cut);
 });

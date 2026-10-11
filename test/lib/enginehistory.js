@@ -18,6 +18,7 @@
 // (506a8ea, three slices back) since so much unrelated content was added in between with no stable
 // anchor for diff3 to split on. A plain textual append has no such failure mode at any distance.
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { streamProjBounds } from '../../shared/streamlayout.js';
@@ -313,7 +314,7 @@ export function mergeReconstructEngineFile(root, rev, name, { headRev = 'HEAD' }
   validateB1Block(b1Block, root, rev);
   const merged = `${historicalText.replace(/\n+$/, '')}\n\n${b1Block}`;
   const currentDialog = fs.readFileSync(path.join(root, 'engine', 'streamdialog.asm'), 'utf8');
-  return carryOverrunLever(carryS3a5Lever(merged, currentText), currentText, currentDialog);
+  return dropDeadWriteRowFromOld(carryOverrunLever(carryS3a5Lever(merged, currentText), currentText, currentDialog));
 }
 
 // Phase 3a slice S1 added a contiguous block of equates to engine/constants.asm (the projection's
@@ -605,6 +606,32 @@ export function carryOverrunConstants(oldText, currentText) {
 
 export function stripOverrunConstants(text) {
   return text.replace(overrunAliasBlock(text), '');
+}
+
+// ---- the removed sw_dlg_write_row ---------------------------------------------------------------------------------------------------
+// The split-packet writer sw_dlg_write_row had no engine caller (sw_dlg_run_open/push replaced it) and was removed from
+// engine/streamdialog.asm. A text from before the overlay moved into that file carries the routine INLINE in streamworld.asm, and a
+// ROM-identity or code-line comparison against it would then differ by the routine's 93 bytes for a reason that has nothing to do
+// with what the comparison checks. dropDeadWriteRowFromOld cuts it (anchored, count-checked) and leaves a text without it untouched.
+// What it cuts is pinned COMPLETE: the cut region's code lines (comments and blank lines aside) must hash to WRITE_ROW_CODE_SHA, the
+// digest of the routine's 49 code lines as 8b4d5a9, 0ea504b, 2563ef4, 59d4468 and the last engine/streamdialog.asm that carried it (2251b2f)
+// all have them, so an interior change in an older text (a different call, a moved branch) throws instead of being cut with it.
+const WRITE_ROW_START = 'sw_dlg_write_row:\n';
+const WRITE_ROW_END = 'sw_dlgwr_ns_loop:\n  lda [sw_dlgw_srclo],y\n  jsr vram_push\n  iny\n  cpy #32\n  bne sw_dlgwr_ns_loop\n  jmp vram_end\n';
+
+const WRITE_ROW_CODE_SHA = 'd39e406315d2e8b957ac0a02ee5be62647820376fc1f07d6c3ff8b1c194ad2c2';
+const writeRowCodeSha = (region) => crypto.createHash('sha256').update(region.split('\n').map((l) => l.replace(/;.*$/, '').trimEnd()).filter((l) => l.trim() !== '').join('\n')).digest('hex');
+
+export function dropDeadWriteRowFromOld(text) {
+  const hits = text.split(WRITE_ROW_START).length - 1;
+  if (hits === 0) return text;
+  if (hits !== 1) throw new Error(`dead sw_dlg_write_row: the start was found ${hits} times, expected once`);
+  const a = text.indexOf(WRITE_ROW_START);
+  const b = text.indexOf(WRITE_ROW_END, a);
+  if (b < 0 || text.indexOf(WRITE_ROW_END, b + 1) >= 0) throw new Error('dead sw_dlg_write_row: the end was not found exactly once after the start');
+  const region = text.slice(a, b + WRITE_ROW_END.length);
+  if (writeRowCodeSha(region) !== WRITE_ROW_CODE_SHA) throw new Error('dead sw_dlg_write_row: the region between its start and end is not the pinned routine (an interior code line changed)');
+  return text.slice(0, a) + text.slice(b + WRITE_ROW_END.length);
 }
 
 // ---- the entity pass's battle contract (the slot-5 hang fix) ----------------------------------------------------------------------

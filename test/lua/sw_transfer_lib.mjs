@@ -21,7 +21,10 @@ export const TRANSFER_KIND = 'harness-transfer-certificate';
 export const TRANSFER_VERSION = 1;
 export const TOOL_VERSION = 1;
 export const TRANSFER_DIR_REL = 'test/fixtures/harness-transfer';
-export const ARCHIVE_DIR_REL = `${TRANSFER_DIR_REL}/archive-7b1155d0e306`;
+// Live discovery (checkTransfers) reads only the `.json` files directly under TRANSFER_DIR_REL, so `retired/` is invisible to it. The one archive on disk is the
+// retired one (the recorded harness 7b1155d0e306): a future transfer archives its own recorded harness and moves this constant with it.
+export const RETIRED_DIR_REL = `${TRANSFER_DIR_REL}/retired`;
+export const ARCHIVE_DIR_REL = `${RETIRED_DIR_REL}/archive-7b1155d0e306`;
 export const ARCHIVE_SUFFIX = '.archived';
 export const PILOT_MIN = 40;
 export const TRANSFER_STAGES = ['A', 'B', 'C', 'F', 'R', 'P']; // the sweep's stages (sw_identity_cert.mjs STAGES; a unit test pins the two equal)

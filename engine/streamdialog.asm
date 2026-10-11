@@ -1,6 +1,6 @@
 ; streamdialog.asm -- the streamed-world dialogue overlay, sw_dlg_origin_capture's
 ; predecessors and everything through sw_dlg_relocated_end: the address mapper,
-; split-at-seam packet writer, masked-attribute code, the terrain-tile accessor,
+; split-aware run writer, masked-attribute code, the terrain-tile accessor,
 ; the production writers, the lifecycle state machine and the twelve relocated
 ; text.asm dispatch bodies (docs/design-streamed-worlds.md section 7).
 ;
@@ -104,67 +104,6 @@ sw_dlgta_combine:
   clc
   adc sw_rw_nt_hi,x
   rts
-
-; ==========================================================================
-; sw_dlg_write_row -- the split-at-seam packet writer, tile granularity.
-; A = box-relative tile row (0-5); sw_dlgw_srclo/hi point at 32 source
-; bytes. Queues them via the ordinary vram_open/push/end primitives
-; (engine/text.asm), split into two packets when the row straddles a
-; physical nametable seam. Never opens a packet it will not push to: the
-; r==0 case (camera exactly nametable-aligned horizontally) skips the
-; second packet outright rather than opening one with a zero count --
-; vram_drain_byte's own 256-byte trap (CLAUDE.md), applied to this
-; producer's own direct-write path.
-; ==========================================================================
-sw_dlg_write_row:
-  sta <sw_dlgw_band
-  lda <cam_x_lo
-  lsr a
-  lsr a
-  lsr a
-  sta <sw_dlgw_r
-  beq sw_dlgwr_nosplit
-  lda #32
-  sec
-  sbc <sw_dlgw_r
-  sta <sw_dlgw_count1
-  lda <sw_dlgw_band
-  ldx #0
-  jsr sw_dlg_tile_addr
-  jsr vram_open
-  ldy #0
-sw_dlgwr_seg1_loop:
-  lda [sw_dlgw_srclo],y
-  jsr vram_push
-  iny
-  cpy <sw_dlgw_count1
-  bne sw_dlgwr_seg1_loop
-  jsr vram_end
-  lda <sw_dlgw_band
-  ldx <sw_dlgw_count1
-  jsr sw_dlg_tile_addr
-  jsr vram_open
-  ldy <sw_dlgw_count1
-sw_dlgwr_seg2_loop:
-  lda [sw_dlgw_srclo],y
-  jsr vram_push
-  iny
-  cpy #32
-  bne sw_dlgwr_seg2_loop
-  jmp vram_end
-sw_dlgwr_nosplit:
-  lda <sw_dlgw_band
-  ldx #0
-  jsr sw_dlg_tile_addr
-  jsr vram_open
-  ldy #0
-sw_dlgwr_ns_loop:
-  lda [sw_dlgw_srclo],y
-  jsr vram_push
-  iny
-  cpy #32
-  bne sw_dlgwr_ns_loop
-  jmp vram_end
 
 ; ==========================================================================
 ; sw_dlg_attr_precompute -- must run once before any sw_dlg_attr_open_band/
@@ -567,14 +506,14 @@ sw_dlgoc_ydiv_done:
 
 
 ; ==========================================================================
-; sw_dlg_run_open/push/reopen -- the split-aware run writer, generalised
-; from sw_dlg_write_row above to an arbitrary starting column and an
-; arbitrary (even variable, caller-decided) length: border/close-row writes
+; sw_dlg_run_open/push/reopen -- the split-aware run writer, the one producer
+; of tile packets for the box: it starts at an arbitrary column and runs an
+; arbitrary (even variable, caller-decided) length. Border/close-row writes
 ; run the full 32-tile width from column 0, but a text-clear or choice-label
 ; row starts at column 2 and runs at most BOX_COLS (28), and a choice
 ; label's real length is however many glyphs precede its TXT_END, capped
-; there. sw_dlg_write_row's own single fixed-shape split is unaffected (its
-; producers, the attribute band writers, keep using it).
+; there. (The attribute band writers do not use it: they build their own
+; packets.)
 ;
 ; sw_dlg_run_open never calls vram_open itself -- only sw_dlg_run_push's own
 ; first call does, lazily, so a caller that computes the seam and then finds

@@ -49,7 +49,8 @@ import {
   stripOverrunFromStreamworld,
   stripOverrunCloseFromFlat,
   stripSaveRangeFromStreamworld,
-  dropOverrunRetiredFromOld
+  dropOverrunRetiredFromOld,
+  dropDeadWriteRowFromOld
 } from '../lib/enginehistory.js';
 import { buildCommittedInventory } from '../lib/streamedinventory.js';
 import {
@@ -88,7 +89,7 @@ function code(text) {
 // The resident-placement flattening (test/lib/enginesource.js) equals the pre-slice text.
 // ---------------------------------------------------------------------------------------------
 
-test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 in every code line, S1, S3a, S3a.5 and the save-range helper aside', () => {
+test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 in every code line, S1, S3a, S3a.5, the save-range helper and the removed dead sw_dlg_write_row aside', () => {
   const old = spawnSync('git', ['show', '59d4468:engine/streamworld.asm'], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(old.status, 0, `git show must succeed: ${old.stderr}`);
   // S1 (phase 3a) added a Flash guard and the projection wrapper to this file, and S3a added four
@@ -100,6 +101,9 @@ test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 
   // compared is every CODE line, in order: comment-only and blank lines are ignored, because S3a
   // retired the prose that described the deleted routines (and streamdialog.asm's own header comment
   // and the blank line at its include's end were always the only other additions).
+  // The one other exception is the dead sw_dlg_write_row: it was deleted from engine/streamdialog.asm, 59d4468 still carries it inline, and
+  // dropDeadWriteRowFromOld cuts it from the OLD side only after checking the cut region is the pinned routine (a code-line digest), so this is
+  // "every code line, the removed dead routine aside", not a literal comparison with the untouched commit.
   const flat = stripOverrunCloseFromFlat(
     stripOverrunFromStreamworld(
       stripS3a5FromStreamworld(stripS3aFromStreamworld(stripS3bFromStreamworld(stripS1FromStreamworld(stripSaveRangeFromStreamworld(readEngineSource('streamworld.asm'))))))
@@ -107,7 +111,7 @@ test('readEngineSource("streamworld.asm") is the pre-relocation text of 59d4468 
   );
   const codeLines = (text) => text.split('\n').filter((l) => l.trim() !== '' && !/^\s*;/.test(l));
   const stripped = codeLines(flat);
-  const oldLines = codeLines(dropOverrunRetiredFromOld(dropS3a5RetiredFromOld(dropS3aRetiredFromOld(old.stdout))));
+  const oldLines = codeLines(dropDeadWriteRowFromOld(dropOverrunRetiredFromOld(dropS3a5RetiredFromOld(dropS3aRetiredFromOld(old.stdout)))));
   const bad = stripped.findIndex((l, k) => l !== oldLines[k]);
   assert.equal(bad, -1, `flattening must reproduce the pre-slice engine/streamworld.asm code exactly (first difference at code line ${bad + 1}: ${JSON.stringify(stripped[bad])} vs ${JSON.stringify(oldLines[bad])})`);
   assert.equal(stripped.length, oldLines.length, 'flattening must not add or drop any other code line');

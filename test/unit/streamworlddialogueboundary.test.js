@@ -76,8 +76,12 @@ const skip = !hasNesasm && 'nesasm not found on PATH';
 //
 // The Continue-at-local-y fix then moved ONLY the Save row DOWN, by exactly 24 (relocated 2530 -> 2506). Cause: a streamed Save build now carries
 // sw_save_streamed_screen (STREAMWORLD_SAVE_RANGE_KERNEL_HI_ALLOWANCE, 24 kernel-hi bytes); the no-Save and Move rows carry no Save and do not move.
+//
+// Removing the dead sw_dlg_write_row (93 bytes, STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE 613 -> 520) moved ONLY the resident ceiling,
+// UP by exactly 93 (1384 -> 1477): a relocated build never charged the mapper term to kernel-hi, so no relocated ceiling moves, and the
+// battle-bank overlay shrank by the same 93 (STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE 1402 -> 1309).
 const CEILINGS = {
-  nosave: { resident: 1384, relocated: 2645 },
+  nosave: { resident: 1477, relocated: 2645 },
   save: { relocated: 2506 },
   move: { relocated: 2392 }
 };
@@ -137,7 +141,7 @@ const report = (row, variant, project, extra = '') =>
 
 // ---- rows 1-2: the resident edge (no-Save) --------------------------------------------------
 
-test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1384) stays resident and builds', { skip }, async () => {
+test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1477) stays resident and builds', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), false, 'content == the resident ceiling fits it: the overlay must stay resident');
@@ -148,7 +152,7 @@ test('F2 row 1 [no-Save]: content exactly at the resident ceiling (1384) stays r
   report(1, 'nosave', project, ' -> stays resident, builds');
 });
 
-test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1385) relocates and builds under the relocated ceiling', { skip }, async () => {
+test('F2 row 2 [no-Save]: content one byte over the resident ceiling (1478) relocates and builds under the relocated ceiling', { skip }, async () => {
   const project = authorContent('nosave', { twin: true, total: CEILINGS.nosave.resident + 1 });
   assert.equal(residentContentCeilingBytes(project), CEILINGS.nosave.resident, 'the resident ceiling is the authored figure');
   assert.equal(streamworldDialogueBanked(project), true, 'content one byte over the resident ceiling must relocate');

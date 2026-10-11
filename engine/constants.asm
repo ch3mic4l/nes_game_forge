@@ -608,17 +608,16 @@ ord_screen = $FF
 sw_axis_pref    = $C7      ; 0 = X owns the accumulator, 1 = Y does
 ; The dialogue overlay's own scratch (docs/design-streamed-worlds.md §7,
 ; phase 2 slice 7a) -- transient per-open-box working state for
-; sw_dlg_tile_addr/sw_dlg_write_row (the tile mapper/split-packet writer)
-; and sw_dlg_attr_precompute/sw_dlg_attr_open_band/sw_dlg_attr_close_band
-; (the masked-attribute code), engine/streamworld.asm. Meaningless while no
-; box is open; owner: this slice. 36 of the reserved $C8-$F2 (43 bytes) are
-; named here. $EC-$F2 are NOT free: phase 3a slice S1 allocated them to the
-; streamed entity projection (sw_cx0_lo..sw_dyb_lo, below the box-working names).
-sw_dlgw_band     = $C8     ; sw_dlg_write_row's own band-relative tile row (0-5)
-sw_dlgw_r        = $C9     ; sw_dlg_write_row's own cam_x_lo>>3 remainder / split flag
-sw_dlgw_count1   = $CA     ; sw_dlg_write_row's own segment-1 length (32-r)
-sw_dlgw_srclo    = $CB     ; sw_dlg_write_row's own source pointer, lo
-sw_dlgw_srchi    = $CC     ; sw_dlg_write_row's own source pointer, hi
+; sw_dlg_tile_addr and the run writer sw_dlg_run_open/push (the tile mapper and
+; the split-packet writer) and sw_dlg_attr_precompute/sw_dlg_attr_open_band/
+; sw_dlg_attr_close_band (the masked-attribute code), engine/streamdialog.asm.
+; Meaningless while no box is open; owner: this slice. $C9-$CC are free: they
+; were sw_dlg_write_row's own scratch (cam_x_lo>>3 remainder, segment-1 length,
+; source pointer lo/hi), and went with that routine, which had no caller left.
+; The other names keep their addresses. $EC-$F2 are NOT free: phase 3a slice S1
+; allocated them to the streamed entity projection (sw_cx0_lo..sw_dyb_lo,
+; below the box-working names).
+sw_dlgw_band     = $C8     ; the run writer's band-relative tile row (0-5): sw_dlg_run_open/reopen
 sw_dlgw_ta_row   = $CD     ; sw_dlg_tile_addr's own private scratch (physRow)
 sw_dlgw_ta_col   = $CE     ; sw_dlg_tile_addr's own private scratch (physCol)
 sw_dlgw_ta_nt    = $CF     ; sw_dlg_tile_addr's own private scratch (nt XOR bits)

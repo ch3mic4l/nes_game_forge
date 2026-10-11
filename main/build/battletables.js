@@ -785,7 +785,9 @@ export const STREAMWORLD_BACKDROP_BATTLE_SAVING = 7;
 // difference in nesasm's real region usage between the relocated and resident
 // builds of one project (test/unit/bankedbytes.test.js). Flat across Save/Move:
 // what those change stays resident.
-export const STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE = 1402;
+// 1402 -> 1309 when the dead sw_dlg_write_row (93 bytes, no engine caller since the run writer
+// replaced it) was removed; the resident mapper term below drops by the same 93.
+export const STREAMWORLD_DIALOGUE_BATTLE_ALLOWANCE = 1309;
 
 // monster_turn's pick-first rewrite plus its two gated helpers
 // (mod_monster_len, monster_pick_limit) -- docs/design-monster-spell-list.md

@@ -11,8 +11,9 @@
 //   3. banked kernel-hi (the relocated content ceiling)     -- streamworlddialogueboundary.test.js F2 rows 3-8
 //   4. the relocation threshold, both sides                 -- F2 rows 1-2 (a roomy battle bank) and here (rows T1-T3: a battle bank
 //                                                              that cannot take the overlay)
-//   5. the reviewer's counterexample                        -- T3: a resident-at-HEAD 88-actor project, content 1,407, which now relocates,
-//                                                              would need 8,190 in a bank that holds 8,172, and must get the message
+//   5. the reviewer's counterexample                        -- T3: the 88-actor project at content 1,407 (refused once the fix lowered the
+//                                                              resident ceiling; resident again since sw_dlg_write_row went) and, past the new
+//                                                              edge, a 91-actor project that must get the message
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -148,12 +149,13 @@ test('R2: one byte over the resident ceiling is refused with the Sound Forge / M
 
 // ---- T1-T3: the relocation threshold, for a battle bank that cannot take the overlay ----------
 
-// The nosave resident twin with 88 actors: its battle region is 6,788 at the old resident ceiling, so a relocation there
-// needs 6,788 + the whole 1,402-byte overlay = 8,190 > 8,172. Before the fix its resident ceiling was 1,407 (it built resident);
-// now the ceiling is 1,384, so the last 23 content bytes tip it over the line.
-function crowdedTwin(content) {
+// The nosave resident twin with 91 actors: its battle region is 6,788 + 3 x 30 = 6,878, so a relocation there needs 6,878 + the whole
+// 1,309-byte overlay = 8,187 > 8,172. (It was 88 actors, 6,788 and a 1,402-byte overlay = 8,190 until the dead sw_dlg_write_row's 93 bytes
+// left the overlay, which let the 88-actor twin's overlay fit: 8,097. Before the overrun fix its resident ceiling was 1,407 (it built
+// resident); the fix lowered it to 1,384, and removing sw_dlg_write_row raised it to 1,477.)
+function crowdedTwin(content, actors = 91) {
   const { project: p, slot } = buildPinching('nosave', { twin: true });
-  addActors(p, 88 - p.sprites.actors.length);
+  addActors(p, actors - p.sprites.actors.length);
   const filler = { op: 'say', text: 'Filler' };
   p.maps[0].screens[3].entities[slot].props.event.pages[0].commands.push({ op: 'end' }, filler);
   for (const opening of ['Filler', 'Filler a', 'Filler a b', 'Filler a b c']) {
@@ -173,7 +175,7 @@ test('T1: the crowded twin with content exactly at the new resident ceiling stay
   const ceiling = residentContentCeilingBytes(probe);
   const p = crowdedTwin(ceiling);
   assert.equal(streamworldDialogueBanked(p, MAPPER), false, 'content == the resident ceiling fits it');
-  assert.equal(p.sprites.actors.length, 88);
+  assert.equal(p.sprites.actors.length, 91);
   assert.deepEqual(errorsOf(p), []);
   assert.ok(!hasSymbol(await built(p), 'sw_dlg_banked_start'));
 });
@@ -191,16 +193,23 @@ test('T2: one byte over the resident ceiling makes the crowded twin relocate; th
   await assertBuildRefusedWith(p, /with that dialogue code, needs \d+ bytes there/);
 });
 
-test("T3: the review's counterexample -- a project that built resident at content 1,407 (battle bank 6,788) is now refused with the capacity message, needing 8,190 in a bank that holds 8,172", { skip }, async () => {
-  const p = crowdedTwin(1407);
-  assert.ok(residentContentCeilingBytes(p) < 1407, 'the resident ceiling fell below the old edge');
-  assert.equal(streamworldDialogueBanked(p, MAPPER), true);
-  assert.equal(regionOf(p), 8190, 'the whole 1,402-byte overlay on top of 6,788');
-  assert.ok(regionOf(p) - CEILING === 18, 'by 18 (it was 25 before phase 3b S0 shortened the streamed backdrop lookups by 7)');
-  const errors = errorsOf(p);
+test("T3: the review's counterexample -- the 88-actor project at content 1,407 was refused once the overrun fix lowered the resident ceiling below it; with the ceiling at 1,477 it builds resident again, and one byte past the new edge it is refused with the capacity message", { skip }, async () => {
+  const old = crowdedTwin(1407, 88);
+  assert.ok(residentContentCeilingBytes(old) >= 1407, 'the resident ceiling is back above the old edge');
+  assert.equal(streamworldDialogueBanked(old, MAPPER), false, 'content 1,407 stays resident');
+  assert.deepEqual(errorsOf(old), []);
+  assert.ok(!hasSymbol(await built(old), 'sw_dlg_banked_start'));
+  const p = crowdedTwin(residentContentCeilingBytes(old) + 1, 88);
+  assert.equal(streamworldDialogueBanked(p, MAPPER), true, 'one byte over the new edge relocates');
+  assert.equal(regionOf(p), 6788 + 1309, 'the whole 1,309-byte overlay on top of 6,788 fits the bank (8,097 of 8,172): no refusal');
+  assert.deepEqual(errorsOf(p), [], 'the 88-actor project fits relocated');
+  const crowded = crowdedTwin(residentContentCeilingBytes(old) + 1);
+  assert.equal(regionOf(crowded), 8187, 'the whole 1,309-byte overlay on top of 6,878');
+  assert.ok(regionOf(crowded) - CEILING === 15, 'by 15 (3 more actors, 30 bytes each, past the bank)');
+  const errors = errorsOf(crowded);
   assert.equal(errors.length, 1, errors.map((e) => e.message).join(' | '));
-  assert.match(errors[0].message, /needs 8190 bytes there but the bank holds 8172/);
-  await assertBuildRefusedWith(p, /needs 8190 bytes there but the bank holds 8172/);
+  assert.match(errors[0].message, /needs 8187 bytes there but the bank holds 8172/);
+  await assertBuildRefusedWith(crowded, /needs 8187 bytes there but the bank holds 8172/);
 });
 
 // keep decorateTerrain imported for symmetry with the close oracle's projects (a decorated project must stay capacity-neutral)

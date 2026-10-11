@@ -9,6 +9,10 @@
 // replaced by the CURRENT ones (carryOverrunLever / carryOverrunConstants), so "identical to the parent" still means what it
 // did for every build that streams text; the close row itself is held by streamdialogclose.test.js's independent oracle.
 //
+// --carry-overrun ALSO removes the dead sw_dlg_write_row (this generator gets the deletion by copying the CURRENT streamdialog.asm in whole; the tests' mergeReconstructEngineFile in enginehistory.js reaches the same bytes through dropDeadWriteRowFromOld, outside carryOverrunLever): the routine had no caller and was
+// deleted from the current engine, and the parent's streamdialog.asm still carries its 93 bytes, so the baseline records `+deadwriter` in `carries`
+// and every text-bearing shape's romSha / namesSha / khAnchor moves by exactly that routine (khAnchor -93); no other measured value changes.
+//
 // --carry-backdrop (Phase 3b S0): the parent's engine/battle.asm and engine/battleturn.asm are replaced by the CURRENT ones, so
 // the battle backdrop fix (draw_battle_screen/wipe_monster read cur_map under STREAMING_ENABLED) is in both builds. It changes every
 // streamed RPG ROM by construction, so "identical to the parent" would otherwise be false for each of them; a non-streamed ROM never
@@ -140,7 +144,7 @@ try {
   }
   const file = path.join(ROOT, 'test/fixtures/identity', `${slice}.json`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify({ slice, parentRev: fullRev, ...(carryLever ? { carries: 's3a5-lever' } : {}), ...(carryOverrun ? { carries: (carryBackdrop ? 'overrun-lever+backdrop' : 'overrun-lever') + (carryEntityPass ? '+entitypass' : '') + (carrySaveRange ? '+saverange' : '') } : {}), shapes: result }, null, 2)}\n`);
+  fs.writeFileSync(file, `${JSON.stringify({ slice, parentRev: fullRev, ...(carryLever ? { carries: 's3a5-lever' } : {}), ...(carryOverrun ? { carries: (carryBackdrop ? 'overrun-lever+backdrop' : 'overrun-lever') + (carryEntityPass ? '+entitypass' : '') + (carrySaveRange ? '+saverange' : '') + '+deadwriter' } : {}), shapes: result }, null, 2)}\n`);
   process.stdout.write(`wrote ${path.relative(ROOT, file)}: ${Object.keys(result).length} shapes\n`);
 } finally {
   execFileSync('git', ['worktree', 'remove', '--force', wt], { cwd: ROOT, stdio: 'ignore' });

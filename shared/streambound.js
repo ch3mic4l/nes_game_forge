@@ -40,8 +40,8 @@
 //                   a POLICY figure, and the record's `probe` (stage P) runs ONE shape (action, wide art, P8, k = 7, Flash y 212,
 //                   Flash x 241, even split) at every n from certified+1 up, each curve ending at its first failing row, CONFIRMED
 //                   by an isolated re-run; the cliff must be at least certified+2 (the test fails otherwise, and then the old rule
-//                   applies again). The cliff is 56 on the plain curve (31,253 cycles) and 54 with bound
-//                   tiles (31,243), about 40 tiles above the shipped figures. Why: the S3a.5 camera lever
+//                   applies again). The cliff is 55 on the plain curve (2026-10-11 re-sweep; 56 before it) and 54 with bound
+//                   tiles, about 40 tiles above the shipped figures. Why: the S3a.5 camera lever
 //                   (sw_camera_window_recompute's closed-form Y half) took about 4,700 cycles out of these scenes, so stage F's 500
 //                   candidates per curve at 17 / 16 found nothing (worst 25,130 / 25,227) and the exhaustive partition stage at the
 //                   new cliff's own certified n (13,708 partitions at 52) would be about 219,000 jobs per curve, about 20 hours.
@@ -55,9 +55,10 @@
 //                   to 32 frames, durations 1..255 and non-looping animations; the presets use 1-4 frames, durations 1/2/8
 //                   and loops, and `loop` has no reader in main/build, so a non-looping animation compiles to the same bytes);
 //                   RPG beyond the n = 16 spot checks; and, above the certified n, everything but the probe shape and stage F's sample.
-//   margin          the tightest passing row at the certified n: plain 16 -- 25,012 cycles, 4,768 under the 29,780 gate (action,
-//                   wide art, P8, k = 7, Flash y 216, Flash x 241); bound tiles 15 -- 25,115, 4,665 under (the same shape, Flash y
-//                   216). Both re-measured after the Say/Move overrun fix (2026-10-04): the plain figure is unchanged, the bound one is 4 cycles dearer. The shipped figures are one tile below, so the author's margin is larger still. STREAM_TILE_MARGIN_CYCLES
+//   margin          the tightest passing row at the certified n: plain 16 -- 25,019 cycles, 4,761 under the 29,780 gate (action,
+//                   wide art, P8, k = 7, Flash y 216, Flash x 241); bound tiles 15 -- 25,118, 4,662 under (the same shape, Flash y
+//                   212). Both re-measured on the phase 3b S2 C1 re-sweep (2026-10-11, after the dead dialogue row-writer was removed
+//                   from the streamed engine): the plain figure is 7 cycles dearer, the bound one 3. The shipped figures are one tile below, so the author's margin is larger still. STREAM_TILE_MARGIN_CYCLES
 //                   records the two figures; the test recomputes them.
 //   the failure     is the frame's own limit, unchanged by the lever: the body that carries the deferred strip arm plus a coincident
 //                   interrupt crosses 29,780 and the overrun skips a frame (plan 11.8). It needs blocked chasers (about 85 cycles
@@ -69,6 +70,6 @@
 //                   tables do not define, or overrides the mover gate, voids the bounds (plan T11).
 export const STREAM_TILE_CERTIFIED = Object.freeze({ plain: 16, boundTiles: 15 });
 export const STREAM_TILE_MARGIN = 1;
-export const STREAM_TILE_MARGIN_CYCLES = Object.freeze({ plain: 4768, boundTiles: 4665 });
+export const STREAM_TILE_MARGIN_CYCLES = Object.freeze({ plain: 4761, boundTiles: 4662 });
 export const STREAM_TILE_BOUND = STREAM_TILE_CERTIFIED.plain - STREAM_TILE_MARGIN;
 export const STREAM_TILE_BOUND_WITH_BOUND_TILES = STREAM_TILE_CERTIFIED.boundTiles - STREAM_TILE_MARGIN;

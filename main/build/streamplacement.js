@@ -171,7 +171,9 @@ export const STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles;
 // CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE below, re-measured directly at
 // the true sw_dlg_mapper_start..sw_dlg_origin_capture boundary -- 613, not
 // derived by subtracting the other two terms from the combined span.
-export const STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE = 613;
+// Later: 613 -> 520 when the dead sw_dlg_write_row (93 bytes; its only remaining caller was a unit
+// test, the live producer being the sw_dlg_run_open/push run writer) was removed.
+export const STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE = 520;
 
 // Fix round 2 (review round 2, finding A4): Chris's 2026-09-25 ruling --
 // "the lifecycle/terrain/consumer helpers get their own term." This is

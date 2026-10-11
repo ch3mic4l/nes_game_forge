@@ -3237,7 +3237,7 @@ async function measureBankTotals(project, { overrides = null } = {}) {
 
 for (const gameType of ['action', 'rpg']) {
   test(
-    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 57-byte REDUCTION since the Say/Move overrun fix (80 before it, 2 before S3a.5), not equal (lo -476, hi +419, was +396, +474 originally; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
+    `B1 total kernel-lo+hi bytes (fix round 1c, item 2 correction): ${gameType} -- current vs flat 2563ef4 is a net 150-byte REDUCTION since the dead sw_dlg_write_row's removal (57 before it, 80 before the Say/Move overrun fix, 2 before S3a.5), not equal (lo -476, hi +326, was +419, +396, +474 originally; B1 alone is -501 / +474 / -27, S1's OAM_BUSY adds 18 and (a1)'s mover parity gate 7 to kernel-lo)`,
     { skip: !hasNesasm && 'nesasm not found on PATH' },
     async () => {
       const current = await measureBankTotals(createStreamedNoProjectionProject({ gameType }));
@@ -3266,8 +3266,11 @@ for (const gameType of ['action', 'rpg']) {
       // text: the 6-byte sw_dlg_read_chunk (STREAMWORLD_DIALOGUE_READ_CHUNK_KERNEL_HI_ALLOWANCE) plus the close row's 17 (folded into
       // the lifecycle/terrain/consumer allowance, 523/520 -> 540/537). Kernel-lo is untouched.
       const OVERRUN_HI_COST = 23;
-      assert.equal(hiDelta, 474 - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost (474) less S3a.5's 78-byte camera-window saving, plus the overrun fix's 23`);
-      assert.equal(totalDelta, -27 + 18 + 7 + ENTITY_PASS_BATTLE_LO - S3A5_HI_SAVING + OVERRUN_HI_COST, `${gameType}: total kernel-lo+hi delta is a net 57-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78, plus the overrun fix's 23), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
+      // Removing the dead sw_dlg_write_row (engine/streamdialog.asm) then took 93 kernel-hi bytes out of every streamed project with text;
+      // 2563ef4's inline overlay still has the routine, so it is a saving against this baseline too. Kernel-lo is untouched.
+      const DEAD_WRITE_ROW_HI_SAVING = 93;
+      assert.equal(hiDelta, 474 - S3A5_HI_SAVING + OVERRUN_HI_COST - DEAD_WRITE_ROW_HI_SAVING, `${gameType}: kernel-hi delta must be the four B1 routines' own combined allowance cost (474) less S3a.5's 78-byte camera-window saving, plus the overrun fix's 23, less the dead sw_dlg_write_row's 93`);
+      assert.equal(totalDelta, -27 + 18 + 7 + ENTITY_PASS_BATTLE_LO - S3A5_HI_SAVING + OVERRUN_HI_COST - DEAD_WRITE_ROW_HI_SAVING, `${gameType}: total kernel-lo+hi delta is a net 150-byte reduction (B1's -27 plus S1's 18 plus (a1)'s 7 less S3a.5's 78, plus the overrun fix's 23, less the dead sw_dlg_write_row's 93), NOT zero -- the fix-1b brief's "totals are equal" claim does not hold under real measurement`);
     }
   );
 }

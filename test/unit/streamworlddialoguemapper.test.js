@@ -1,5 +1,5 @@
 // Large streamed worlds (ROADMAP item 15), phase 2 slice 7a: the dialogue overlay's address
-// mapper, split-at-seam packet writer, and masked-attribute code (engine/streamworld.asm's
+// mapper, split-at-seam run writer, and masked-attribute code (engine/streamworld.asm's
 // sw_dlg_mapper_start..end block) -- restricted scope per the slice's own brief: no lifecycle
 // state machine exists yet (that is slice 7b's), so every routine here is driven directly
 // (test/lib/callroutine.js's callRoutine), never through a production call site, and the
@@ -13,10 +13,12 @@
 //   sw_dlg_tile_addr   -- A=box-relative tile row (0-5), X=box-local column (0-31); returns
 //                          A=$2006 hi, Y=$2006 lo, for the physical position the box's own fixed
 //                          bottom-6-row footprint maps to under the current camera.
-//   sw_dlg_write_row   -- A=box-relative tile row; sw_dlgw_srclo/hi (zero page $CB/$CC) point at
-//                          32 source bytes. Queues 1-2 vram_buf packets, split at the physical
-//                          nametable seam when the row straddles one -- never opens a packet it
-//                          will not push to.
+//   sw_dlg_run_open / sw_dlg_run_push -- the run writer (it replaced sw_dlg_write_row, removed as
+//                          dead): run_open takes A=box-relative tile row, X=starting column;
+//                          run_push takes A=the byte for the next column. Queues 1-2 vram_buf
+//                          packets, split at the physical nametable seam when the run straddles
+//                          one -- never opens a packet it will not push to. The caller closes the
+//                          run with vram_end.
 //   sw_dlg_attr_precompute -- no args; computes each of the box's 3 metatile-row bands' own
 //                          attribute row/row-wrap-nt-bit/row-half-mask (promoted to $FF for both
 //                          bands of whichever pair shares one physical attribute byte), plus the
@@ -51,21 +53,14 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // engine/constants.asm -- hardcoded per CLAUDE.md's own rule (a test that reads the file it is
 // checking proves nothing). cam_x_lo/y_lo/nt are chained zero-page equates nesasm never lists in
 // game.fns; these three literals are test/unit/streamworld.test.js's own already-resolved values
-// (its own comment there explains the equate-chain walk). sw_dlgw_srclo/srchi are this slice's
-// own fresh named equates, engine/constants.asm's dialogue scratch block ($C8-$F2).
+// (its own comment there explains the equate-chain walk).
 const CAM_X_LO = 0xaf;
 const CAM_Y_LO = 0xb0;
 const CAM_NT = 0xb1;
-const SW_DLGW_SRCLO = 0xcb;
-const SW_DLGW_SRCHI = 0xcc;
 const ATTR_SHADOW = 0x0600; // engine/constants.asm:1177
 const VRAM_LEN = 0x3c;
 const VRAM_READY = 0x3f;
 const VRAM_BUF = 0x0400; // engine/constants.asm:1150
-// Free RAM: nothing in engine/constants.asm names anything in $0704-$077F (the callRoutine stub
-// itself only ever occupies $0700-$0703; the next named allocation is the frozen-world block at
-// $0780) -- confirmed by grep, not assumed. 32 bytes for sw_dlg_write_row's own source row.
-const SRC_BUF = 0x0710;
 
 const SW_RW_NT_HI = [0x20, 0x24, 0x28, 0x2c]; // engine/streamworld.asm's own sw_rw_nt_hi table, reused verbatim by every routine here rather than a second copy
 
@@ -94,21 +89,23 @@ function dlgTileAddr(camXLo, camYLo, camNt, row, col) {
   return { hi: addrHi, lo: addrLo, nt };
 }
 
-/** Every (nt, flat tile offset, source byte) cell sw_dlg_write_row must produce for one row. */
-function expectedWriteRowCells(camXLo, camYLo, camNt, row, source32) {
-  const r = camXLo >> 3;
-  const cells = [];
-  if (r === 0) {
-    const { physRow, physCol, nt } = dlgPhysPos(camXLo, camYLo, camNt, row, 0);
-    for (let i = 0; i < 32; i++) cells.push({ nt, offset: physRow * 32 + physCol + i, byte: source32[i] });
-    return cells;
-  }
-  const count1 = 32 - r;
-  const seg1 = dlgPhysPos(camXLo, camYLo, camNt, row, 0);
-  for (let i = 0; i < count1; i++) cells.push({ nt: seg1.nt, offset: seg1.physRow * 32 + seg1.physCol + i, byte: source32[i] });
-  const seg2 = dlgPhysPos(camXLo, camYLo, camNt, row, count1);
-  for (let i = 0; i < r; i++) cells.push({ nt: seg2.nt, offset: seg2.physRow * 32 + seg2.physCol + i, byte: source32[count1 + i] });
+/** The {PPU address -> byte} cells a run of `bytes` written from box-relative column `startCol` of
+ * tile row `row` must produce: each column goes through dlgTileAddr on its own, so a run that
+ * fails to split where the physical nametable wraps lands its tail on the wrong row instead. */
+function expectedRunCells(camXLo, camYLo, camNt, row, startCol, bytes) {
+  const cells = new Map();
+  bytes.forEach((byte, i) => {
+    const { hi, lo } = dlgTileAddr(camXLo, camYLo, camNt, row, startCol + i);
+    cells.set((hi << 8) | lo, byte);
+  });
   return cells;
+}
+
+/** How many packets a run from `startCol` of `length` columns needs: one, plus one more when the
+ * physical nametable wraps strictly inside it (a seam on the run's own first column splits nothing). */
+function expectedRunPackets(camXLo, startCol, length) {
+  const seam = 32 - (camXLo >> 3); // 32 when nametable-aligned: no column ever equals it
+  return seam > startCol && seam < startCol + length ? 2 : 1;
 }
 
 /** The box's own physical attribute-quadrant footprint, computed geometrically from the world
@@ -274,13 +271,18 @@ function readAttrShadowByte(mem, nt, arow, ac) {
   return mem[ATTR_SHADOW + nt * 64 + arow * 8 + ac];
 }
 
-function callWriteRow(nes, mem, addrOf, row, source32) {
-  for (let i = 0; i < 32; i++) mem[SRC_BUF + i] = source32[i];
-  mem[SW_DLGW_SRCLO] = SRC_BUF & 0xff;
-  mem[SW_DLGW_SRCHI] = SRC_BUF >> 8;
+/** One whole run through the live writer, the way sw_dlg_write_border drives it: run_open, one
+ * run_push per byte, then vram_end. Leaves the queued packets unread in vram_buf. */
+function callRun(nes, mem, addrOf, row, startCol, bytes) {
   mem[VRAM_LEN] = 0;
   nes.cpu.REG_ACC = row;
-  callRoutine(nes, addrOf('sw_dlg_write_row'));
+  nes.cpu.REG_X = startCol;
+  callRoutine(nes, addrOf('sw_dlg_run_open'));
+  for (const byte of bytes) {
+    nes.cpu.REG_ACC = byte;
+    callRoutine(nes, addrOf('sw_dlg_run_push'));
+  }
+  callRoutine(nes, addrOf('vram_end'));
 }
 
 function callPrecompute(nes, addrOf) {
@@ -303,24 +305,58 @@ function callCloseBand(nes, mem, addrOf, band) {
 // Case 1: the split-at-seam address mapper, straddling two physical nametable halves.
 // ---------------------------------------------------------------------------------------------
 
-test('case 1: split-at-seam packet writer -- a row straddling the horizontal seam lands as two packets at their own independently-computed physical destinations', async (t) => {
+test('case 1: split-at-seam run writer -- a row straddling the horizontal seam lands as two packets at their own independently-computed physical destinations', async (t) => {
   const { addrOf, nes, mem } = await buildHarness(t);
   setCam(mem, 128, 0, 0); // camXLo=128 -> r=16, an even 16/16 split of the 32-byte row
   const row = 2;
   const source = Array.from({ length: 32 }, (_, i) => 0x50 + i);
-  const expected = expectedWriteRowCells(128, 0, 0, row, source);
-  assert.equal(expected.length, 32);
-  // Sanity: this camera genuinely produces a split (two distinct nt values), or the case is not
+  const expected = expectedRunCells(128, 0, 0, row, 0, source);
+  // Sanity: this camera genuinely produces a split (two distinct nametables), or the case is not
   // exercised at all.
-  const nts = new Set(expected.map((c) => c.nt));
+  const nts = new Set(source.map((_, i) => dlgPhysPos(128, 0, 0, row, i).nt));
   assert.equal(nts.size, 2, `precondition: camXLo=128 must straddle two nametables, got nt set ${JSON.stringify([...nts])}`);
 
-  callWriteRow(nes, mem, addrOf, row, source);
+  callRun(nes, mem, addrOf, row, 0, source);
+  assert.equal(mem[VRAM_LEN], 32 + 2 * 3, 'two packets: 32 bytes plus two 3-byte headers');
+  assertExactCells(readVramCells(mem), expected, 'camXLo=128 row 2');
   drainVram(nes, addrOf);
 
-  for (const cell of expected) {
-    assert.equal(readTile(nes, cell.nt, cell.offset), cell.byte, `nt ${cell.nt} offset ${cell.offset} (source byte ${cell.byte})`);
+  for (const [addr, byte] of expected) {
+    const { nt, localOffset } = { nt: Math.floor((addr - 0x2000) / 0x400), localOffset: addr & 0x3ff };
+    assert.equal(readTile(nes, nt, localOffset), byte, `nt ${nt} offset ${localOffset} (source byte ${byte})`);
   }
+});
+
+test('case 1b: a nametable-aligned camera (r=0) queues exactly one packet -- the run writer never opens a zero-count second one', async (t) => {
+  const { addrOf, nes, mem } = await buildHarness(t);
+  setCam(mem, 0, 0, 0);
+  const source = Array.from({ length: 32 }, (_, i) => 0x50 + i);
+  callRun(nes, mem, addrOf, 2, 0, source);
+  // A second vram_open that is never pushed to would add a 3-byte header whose count of zero drains as 256.
+  assert.equal(mem[VRAM_LEN], 32 + 3, 'one packet: 32 bytes plus one 3-byte header');
+  assertExactCells(readVramCells(mem), expectedRunCells(0, 0, 0, 2, 0, source), 'camXLo=0 row 2');
+});
+
+test('case 1c: run writer sweep -- every aligned camera X x two camera Y x (full-width, text-clear-shaped) run lands every column exactly once, in the right number of packets', async (t) => {
+  const { addrOf, nes, mem } = await buildHarness(t);
+  let runs = 0;
+  // camY 0 keeps the box on one nametable row; camY 48 puts row 0 exactly on the row-wrap boundary,
+  // so the vertical torus seam is crossed as well (rows 1-5 are on the far side of it).
+  for (const [cy, row] of [[0, 3], [48, 5]]) {
+    for (let cx = 0; cx < 256; cx += 16) {
+      for (const [startCol, length] of [[0, 32], [2, 28]]) {
+        setCam(mem, cx, cy, 0);
+        const source = Array.from({ length }, (_, i) => 0x40 + startCol + i);
+        callRun(nes, mem, addrOf, row, startCol, source);
+        const label = `camXLo=${cx} camYLo=${cy} row=${row} cols ${startCol}..${startCol + length - 1}`;
+        const packets = expectedRunPackets(cx, startCol, length);
+        assert.equal(mem[VRAM_LEN], length + 3 * packets, `${label}: ${packets} packet(s)`);
+        assertExactCells(readVramCells(mem), expectedRunCells(cx, cy, 0, row, startCol, source), label);
+        runs++;
+      }
+    }
+  }
+  assert.equal(runs, 64, 'sanity: 16 camera X x 2 camera Y x 2 run shapes');
 });
 
 // ---------------------------------------------------------------------------------------------

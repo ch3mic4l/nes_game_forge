@@ -922,7 +922,9 @@ for (const { label, withSave } of BOUNDARY_CONFIGS) {
       // The Say/Move overrun fix then raised the resident dialogue charge by an ODD 23 bytes (the 6-byte
       // chunk read plus the 17-byte close routine growth), which flipped the parity again; each string
       // carries exactly one more '!' than after S1.
-      addFillerDialogue(p, screen, withSave ? 'Welcome traveler rest well before the road ahead!!!!' : 'Welcome traveler rest well before the road ahead!!!', { save: withSave });
+      // Removing the dead sw_dlg_write_row then lowered the resident dialogue charge by an ODD 93 bytes, flipping it once more; each
+      // string carries exactly one more '!' than after the overrun fix.
+      addFillerDialogue(p, screen, withSave ? 'Welcome traveler rest well before the road ahead!!!!!' : 'Welcome traveler rest well before the road ahead!!!!', { save: withSave });
       const ceiling = contentCeilingBytes(p);
       const capFixed = checkCapacity(p);
       const targetSfxDelta = ceiling - capFixed.musicBytes - capFixed.textBytes - capFixed.sfxBytes;

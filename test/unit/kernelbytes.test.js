@@ -6125,7 +6125,7 @@ test(
 );
 
 // The mapper term itself: sw_dlg_mapper_start..sw_dlg_origin_capture, 7a's own content only, must
-// stay at the measured 613 regardless of how much this slice's own lifecycle/terrain/consumer code
+// stay at the measured 520 (613 until the dead sw_dlg_write_row's 93 bytes were removed) regardless of how much this slice's own lifecycle/terrain/consumer code
 // grows beside it (the exact confusion Chris's 2026-09-25 ruling corrected).
 test(
   'phase 2 slice 7b fix round 2 (A4): STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE equals the real sw_dlg_mapper_start..sw_dlg_origin_capture span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
