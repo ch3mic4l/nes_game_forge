@@ -146,6 +146,9 @@ import {
   battleEnabledFor,
   streamworldDialogueBanked,
   streamworldResidentHiBytes,
+  projectStreamRing,
+  STREAMWORLD_RING_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_RING_KERNEL_ALLOWANCE,
   projectUsesTalker
 } from './streamplacement.js';
 export {
@@ -178,6 +181,9 @@ export {
   STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
   streamworldUpdatePlayerKernelHiAllowance,
   STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_RING_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_RING_KERNEL_ALLOWANCE,
+  projectStreamRing,
   battleEnabledFor,
   streamworldDialogueBanked
 } from './streamplacement.js';
@@ -2181,6 +2187,9 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_HAZARD_KERNEL_ALLOWANCE : 0) +
+    // Phase 3b S2: the vertical ring fork's kernel-lo cost (0 today: the fork is all kernel-hi, STREAMWORLD_RING_KERNEL_HI_ALLOWANCE),
+    // charged on the one predicate that turns the ring on so a future non-zero measurement needs no new gate.
+    (usesStreaming && projectStreamRing(project, mapper) !== 0 ? STREAMWORLD_RING_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText ? STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText && streamworldDialogueBanked(project, mapper)
       ? STREAMWORLD_DIALOGUE_BANKED_KERNEL_ALLOWANCE
@@ -4073,6 +4082,17 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // exists, and identical to it -- byte for byte, including row order -- when none does.
   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
   const hasStreamed = streamedPlan !== null;
+  // Phase 3b S2: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
+  // streamRingMode). Mode 2 (horizontal) is the S3 row fork, which this engine does not carry: refuse it here even though
+  // validateProject already does, so a caller that reaches the generator another way never assembles a half-forked ROM.
+  const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
+  if (ringMode === 2) {
+    throw new Error(
+      'Build panel: this project streams a map on a board with horizontal mirroring, which needs the horizontal two-nametable ' +
+        'ring -- not implemented yet. Streamed maps need UNROM 512 with four-screen mirroring today; change the board and ' +
+        'mirroring in the Build panel, or remove "streamed" for this map.'
+    );
+  }
   const projA = projectUsesStreamedActors(project);
   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
 
@@ -4311,6 +4331,14 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // slice 2a. A project with no streamed map assembles with the file
     // absent: ROM byte-identical.
     `STREAMING_ENABLED = ${hasStreamed ? 1 : 0}`,
+    // Phase 3b S2: the streamed ring (0 four-screen torus, 1 vertical X ring) and the three constants engine/streamworld.asm's
+    // `.if STREAM_RING` fork reads: the column strip's length and wrap modulus (a ring column is one screen, 15 blocks, not two,
+    // 30), and the render-window nametable index sequence (vertical 0,1 -- end 2; the torus 0..3 -- end 4). Emitted on every
+    // build: equates occupy no bytes, and the torus values are the literals the fork replaced.
+    `STREAM_RING = ${ringMode}`,
+    `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
+    `SW_RW_NT_STEP = 1`,
+    `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
     // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on
     // projectUsesStreaming alone. STREAM_PROJ_ENABLED: the cheap streamed entity projection,
     // gated on projectUsesStreamedActors (a streaming project with no placed actor keeps the

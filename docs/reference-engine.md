@@ -832,6 +832,34 @@ its output; probe a game-type gate on the *other* game type — `battleSpriteBud
 went missing for several review rounds, caught only on an action build. See
 `docs/design-draw-validation.md` for the full depth.
 
+### The vertical ring (phase 3b slice S2, commit C2)
+
+A streamed board with **vertical mirroring** (MMC1, MMC3, UNROM 512 non-four-screen) has two live nametables, `$2000` and `$2400`. The engine
+streams it as a 32 x 15-block **ring**: `streamRingMode(mapper, mirroringId)` (`shared/cartridge.js`, the single writer; 1 vertical, 2 horizontal,
+0 four-screen or not streamable) is read by `projectStreamRing` (`main/build/streamplacement.js`, the one predicate for the generated constant and
+the allowance) and becomes `STREAM_RING` in `config.inc`. The dead axis is pinned by the extent clamp, so the NT index `n = 2*(screenRow&1) +
+(screenCol&1)` only ever takes {0,1}; the cached camera nametable `cam_nt` is that index uncompacted, and the dialogue and attribute consumers
+(`engine/streamdialog.asm`) are unchanged and correct on it.
+
+Four conditional blocks in `engine/streamworld.asm` (three rows below: the column strip's length load and its builder compare are two blocks), each an indented `.if STREAM_RING` with the pre-ring lines in the `.else` (so `STREAM_RING = 0` assembles
+the original bytes; `streamringidentity.test.js` proves it for the six fixtures and the four-screen streamed shapes):
+
+| Fork | Ring value | Torus value | Labels (immediate pinned from the ROM) |
+| --- | --- | --- | --- |
+| column strip length and builder compare | `SW_RING_COL_LEN` = 15 (one screen) | 30 | `sw_ring_col_len`, `sw_ring_col_cmp` |
+| column strip wrap of `st_vary` | `SW_RING_COL_LEN` | 30 | `sw_ring_wrap_col` |
+| render-window nametable sequence | `SW_RW_NT_STEP` 1, `SW_RW_NT_END` 2 | 1, 4 | `sw_ring_nt_step`, `sw_ring_nt_end` |
+
+The column strip therefore reads one screen (two `switch_prg_bank` calls: one read, one restore) where the torus reads two. The render window
+writes nametables 0 and 1 only, so no PPU write is ever addressed to `$28xx`/`$2Cxx`. **A horizontal ring is not built**: the row-strip forks and
+`player.asm`'s Y handling are slice S3; `generate.js` refuses mode 2 ("Build panel: ... not implemented yet") and `validateProject` still refuses
+every two-nametable streamed board, so the ring is reachable only through the test-only bypass copy of `test/lib/ringbypass.js` (a mkdtemp copy of
+`engine/ main/ shared/` with the one validate refusal neutralized; there is no shipped flag). Tests: `streamring.test.js` (selection, constants,
+refusals), `streamringoracle.test.js` (laps, seam, alias-write trace), `streamringredraw.test.js` and `streamringcontinue.test.js` (every
+full-redraw path), `streamringdialogue.test.js` (both live indices, split close), `streamringstrip.test.js` (one-screen strip),
+`streamringidentity.test.js`, and the named sabotages of `test/lua/run_ring_sabotage.mjs`. The scenes, interpreter and judge are the certified S1
+prototype's (`test/lua/ring_gate/`); C3 re-certifies the production code against S1's cells.
+
 ### Rules moved from CLAUDE.md, The engine
 
 Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.

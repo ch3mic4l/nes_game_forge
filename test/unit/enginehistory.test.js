@@ -24,6 +24,8 @@ import {
   stripOverrunFromStreamworld,
   carryOverrunLever,
   stripOverrunCloseFromFlat,
+  stripRingFromStreamworld,
+  RING_FORKS,
   dropOverrunRetiredFromOld,
   dropDeadWriteRowFromOld
 } from '../lib/enginehistory.js';
@@ -306,4 +308,15 @@ test('dead sw_dlg_write_row: cut from an inline older text exactly, left alone i
   assert.throws(() => dropDeadWriteRowFromOld(old.replace('  jsr vram_push\n', '  jsr vram_open\n')), /not the pinned routine/);
   // a comment-only interior difference is not a code difference
   assert.equal(dropDeadWriteRowFromOld(old.replace('sw_dlg_write_row:\n', 'sw_dlg_write_row:\n  ; an interior comment\n')), cut);
+});
+
+test('ring forks (phase 3b S2): the four STREAM_RING forks collapse to their pre-ring arm exactly, and a changed shape throws', () => {
+  const cut = stripRingFromStreamworld(currentStreamworld);
+  assert.ok(!/STREAM_RING|sw_ring_|SW_RING_COL_LEN|SW_RW_NT_(STEP|END)/.test(cut), 'no ring symbol survives');
+  assert.ok(cut.includes('  cmp #30\n  bne sw_ssc_loop') && cut.includes('  inc sw_rw_nt\n'), 'the pre-ring arms are what remains');
+  assert.equal(currentStreamworld.split('\n').filter((l) => /^\s*\.if STREAM_RING\s*$/.test(l)).length, RING_FORKS);
+  const fork = '  .if STREAM_RING\n  nop\n  .else\n  rts\n  .endif\n';
+  assert.throws(() => stripRingFromStreamworld(currentStreamworld + fork), /expected exactly 4 forks, found 5/);
+  assert.throws(() => stripRingFromStreamworld(currentStreamworld.replace('  .else\n  cmp #30\n  .endif', '  .endif')), /without \.else/);
+  assert.throws(() => stripRingFromStreamworld(currentStreamworld + '  .if STREAM_RING\n'), /nested|unterminated/);
 });

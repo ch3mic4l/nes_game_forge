@@ -369,6 +369,19 @@ export function streamCapableTwoNametable(mapper, mirroringId) {
   return Boolean(mapper?.streamable && !mirroringById(mirroringId).fourScreen);
 }
 
+/**
+ * Which streamed-ring geometry a build uses (the single writer; main/build/generate.js emits it as STREAM_RING):
+ * 0 = four-screen torus, 1 = vertical mirroring (32 x 15 blocks, an X ring), 2 = horizontal mirroring
+ * (16 x 30 blocks, a Y ring). Derived from cameraAxes, never from a second reading of the mirroring string.
+ * Phase 3b S2 ships mode 1 only: the generator refuses mode 2 (the row fork is S3).
+ */
+export function streamRingMode(mapper, mirroringId) {
+  if (!streamCapableTwoNametable(mapper, mirroringId)) return 0;
+  const axes = cameraAxes(mapper, { mirroring: mirroringId });
+  if (axes.horizontal && axes.vertical) return 0;
+  return axes.horizontal ? 1 : 2;
+}
+
 /** Either ring: is a `map.streamed` legal on this board and mirroring at all? */
 export function streamCapable(mapper, mirroringId) {
   return streamCapableFourScreen(mapper, mirroringId) || streamCapableTwoNametable(mapper, mirroringId);

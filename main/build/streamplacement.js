@@ -13,7 +13,7 @@
 
 import { LIMITS, battleBankEnabled, projectUsesBoundTiles, projectUsesFlash, projectUsesMove, projectUsesSave } from '../../shared/project.js';
 import { projectUsesText } from '../../shared/font.js';
-import { resolveMapper, saveMediaImplemented } from '../../shared/cartridge.js';
+import { resolveMapper, saveMediaImplemented, streamRingMode } from '../../shared/cartridge.js';
 import { projectUsesStreaming, projectUsesStreamedActors } from '../../shared/streamlayout.js';
 import { songTableBytes, compileSfx } from './songcompile.js';
 import { compileText } from './textcompile.js';
@@ -643,6 +643,26 @@ export function streamworldDialogueBanked(project, mapper = resolveMapper(projec
   return musicSize(project.songs) + sfxSize(project.sfx) + compileText(project).bytes > residentCeiling;
 }
 
+/**
+ * Phase 3b S2: which streamed-ring geometry this project builds with -- 0 four-screen torus (every build before the ring
+ * existed, byte-identical), 1 vertical two-nametable ring, 2 horizontal (refused by the generator until S3). THE single
+ * predicate for the generated STREAM_RING, the ring allowance below and every test: it asks shared/cartridge.js's
+ * streamRingMode and nothing else, and only for a project that streams.
+ */
+export function projectStreamRing(project, mapper = resolveMapper(project.cartridge.mapper)) {
+  return projectUsesStreaming(project) ? streamRingMode(mapper, project.cartridge.mirroring) : 0;
+}
+
+// Phase 3b S2: the vertical ring's fork of engine/streamworld.asm (`.if STREAM_RING`), charged only to a build whose
+// STREAM_RING is nonzero -- a project on the four-screen torus assembles byte-for-byte as if the fork did not exist.
+// The fork is three immediates that keep their size (the column strip's length compare and load, the wrap compare)
+// and the render-window index step, whose `inc/lda/cmp` (8 bytes) became `lda/clc/adc/sta/cmp` (11): +3, all in
+// kernel-hi (streamworld.asm). Measured (test/unit/kernelbytes.test.js, a ring build against the same vertical project with
+// STREAM_RING forced to 0) on MMC3, MMC1 and UNROM 512 non-four-screen, action and RPG: flat. Kernel-lo is 0: no ring code
+// lives there, and the generated constants are equates.
+export const STREAMWORLD_RING_KERNEL_HI_ALLOWANCE = 3;
+export const STREAMWORLD_RING_KERNEL_ALLOWANCE = 0;
+
 export function streamworldResidentHiBytes(project, mapper) {
   const usesMoveHere = projectUsesMove(project);
   const usesText = projectUsesText(project);
@@ -695,7 +715,8 @@ export function streamworldResidentHiBytes(project, mapper) {
       ? STREAMWORLD_ENTITY_PROJ_KERNEL_HI_ALLOWANCE
       : STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE) +
     STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE +
-    streamworldLandingBoundCacheHiBytes
+    streamworldLandingBoundCacheHiBytes +
+    (projectStreamRing(project, mapper) !== 0 ? STREAMWORLD_RING_KERNEL_HI_ALLOWANCE : 0)
   );
 }
 

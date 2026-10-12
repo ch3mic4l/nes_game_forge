@@ -1,0 +1,106 @@
+// A TEST-ONLY way to build a two-nametable streamed project (phase 3b S2).
+//
+// validateProject still refuses every streamed map on a board that is not four-screen ("not implemented yet"), because the ring is not
+// admitted to users until the horizontal half (S3) and the gates (S4+) land. The vertical ring engine (STREAM_RING=1) therefore has to be
+// built through a COPY of the product in which that one refusal is neutralized: engine/ main/ shared/ and package.json are copied to a
+// mkdtemp directory, `shared/project.js` has the capability branch's condition replaced (asserted to match exactly once, so a refactor
+// of the refusal fails loudly instead of silently building nothing), and the copy's own buildProject is imported. There is no flag in the
+// shipped code: the real tree is never touched, and a build through the real tree still refuses.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const REFUSAL = '} else if (!streamCapableFourScreen(mapper, mirroringId)) {';
+const NEUTRALIZED = '} else if (false) {';
+
+/**
+ * The sabotages of phase 3b S2 (handoff-next/s2-c2/sabotage.log): each is a set of exact-once edits to the COPY that breaks one piece of the
+ * vertical ring on purpose. FORGE_RING_SABOTAGE=<name> makes every makeBypassTree() in the process apply it, so any ring test run under that
+ * variable must fail somewhere (test/lua/run_ring_sabotage.mjs runs them). The shipped tree is never edited.
+ */
+export const RING_SABOTAGES = {
+  'strip-len-30': { note: 'the column strip keeps its 30-block, two-screen length (and wrap)', edits: [
+    { file: 'main/build/generate.js', from: '`SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`', to: '`SW_RING_COL_LEN = 30`' }] },
+  'strip-load-30': { note: 'only the strip builder\'s st_len load keeps 30 (compare and wrap are 15)', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_ring_col_len:\n  lda #SW_RING_COL_LEN', to: 'sw_ring_col_len:\n  lda #30' }] },
+  'wrap-skipped': { note: 'sw_nmi_stream never wraps st_vary at the ring length', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_ring_wrap_col:\n  cmp #SW_RING_COL_LEN', to: 'sw_ring_wrap_col:\n  cmp #$FF' }] },
+  'render-4-nts': { note: 'sw_render_window enumerates all four nametable indices', edits: [
+    { file: 'main/build/generate.js', from: '`SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`', to: '`SW_RW_NT_END = 4`' }] },
+  'render-step-2': { note: 'sw_render_window steps the index by 2 (the horizontal ring\'s sequence): nametable 1 is never drawn', edits: [
+    { file: 'main/build/generate.js', from: '`SW_RW_NT_STEP = 1`', to: '`SW_RW_NT_STEP = 2`' }] },
+  'shadow-n32': { note: 'sw_render_window stores the attribute shadow at n*32 instead of n*64', edits: [
+    { file: 'engine/streamworld.asm', from: '  lda sw_rw_nt\n  asl a\n  asl a\n  asl a\n  asl a\n  asl a\n  asl a\n  sta <sw_rw_shadow_lo', to: '  lda sw_rw_nt\n  asl a\n  asl a\n  asl a\n  asl a\n  asl a\n  sta <sw_rw_shadow_lo' }] },
+  'attr-hi-3-omitted': { note: 'the dialogue attribute address forgets the +3 that moves the nametable hi byte to its attribute table', edits: [
+    { file: 'engine/streamdialog.asm', from: '  lda sw_rw_nt_hi,x\n  clc\n  adc #3\n  pha', to: '  lda sw_rw_nt_hi,x\n  pha' }] },
+  'cam-nt-compacted': { note: 'cam_nt carries the X parity in bit 1 (a compacted {0,2} index instead of the parity index {0,1})', edits: [
+    { file: 'engine/streamworld.asm', from: '  and #1\n  asl a\n  ora sw_tmp\n  sta <cam_nt\n  dec <cam_dirty', to: '  lda sw_tmp\n  asl a\n  sta <cam_nt\n  dec <cam_dirty' }] },
+  'torus-leak': { note: 'the fork leaks into a four-screen build: the torus column compare reads 29 (only a STREAM_RING = 0 byte-identity test can see it)', edits: [
+    { file: 'engine/streamworld.asm', from: '  .else\n  cmp #30\n  .endif\n  bne sw_ssc_loop', to: '  .else\n  cmp #29\n  .endif\n  bne sw_ssc_loop' }] },
+  'ring-flag-off': { note: 'the build is generated with STREAM_RING = 0: the unforked four-screen strip and render on a two-nametable board', edits: [
+    { file: 'main/build/generate.js', from: '`STREAM_RING = ${ringMode}`', to: '`STREAM_RING = 0`' }] }
+};
+export const ACTIVE_SABOTAGE = process.env.FORGE_RING_SABOTAGE || null;
+if (ACTIVE_SABOTAGE && !RING_SABOTAGES[ACTIVE_SABOTAGE]) throw new Error(`FORGE_RING_SABOTAGE=${ACTIVE_SABOTAGE} is not one of ${Object.keys(RING_SABOTAGES).join(', ')}`);
+
+/**
+ * Resolves the nested `.if STREAM_RING ... .else <original> .endif` forks of an engine source for STREAM_RING = 0: the fork lines and the
+ * ring-only labels go, the `.else` body stays. What is left is the engine as it read before the ring existed (a build of it is the identity
+ * control for every four-screen ROM). Throws on any other shape, so a new fork nesting cannot be half-resolved silently.
+ */
+export function collapseRingFork(text) {
+  const out = [];
+  let state = 'none'; // none | ring (before .else) | else
+  for (const line of text.split('\n')) {
+    if (/^\s*\.if STREAM_RING\s*$/.test(line)) { if (state !== 'none') throw new Error('nested .if STREAM_RING'); state = 'ring'; continue; }
+    if (state === 'ring') { if (/^\s*\.else\s*$/.test(line)) state = 'else'; else if (/^\s*\.endif\s*$/.test(line)) throw new Error('.if STREAM_RING without .else'); continue; }
+    if (state === 'else') { if (/^\s*\.endif\s*$/.test(line)) state = 'none'; else out.push(line); continue; }
+    out.push(line);
+  }
+  if (state !== 'none') throw new Error('unterminated .if STREAM_RING');
+  return out.join('\n');
+}
+
+/**
+ * makeBypassTree({ edits, transforms }) -> { root, dispose() }. `edits` = [{ file, from, to }] exact-once replacements applied to the copy;
+ * `transforms` = { 'engine/x.asm': (text) => text }. The active FORGE_RING_SABOTAGE (if any) is applied after them. The copy is a distinct
+ * file URL per call, so module caches never alias the real tree or another copy.
+ */
+export function makeBypassTree({ edits = [], transforms = {}, bypass = true, sabotage = ACTIVE_SABOTAGE } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-bypass-'));
+  for (const d of ['engine', 'main', 'shared']) fs.cpSync(path.join(ROOT, d), path.join(root, d), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(root, 'package.json'));
+  const replaceOnce = (file, from, to) => {
+    const p = path.join(root, file);
+    const text = fs.readFileSync(p, 'utf8');
+    const n = text.split(from).length - 1;
+    if (n !== 1) throw new Error(`ringbypass: ${file}: expected exactly one match for ${JSON.stringify(from)}, found ${n}`);
+    fs.writeFileSync(p, text.replace(from, () => to));
+  };
+  if (bypass) replaceOnce('shared/project.js', REFUSAL, NEUTRALIZED);
+  for (const [file, fn] of Object.entries(transforms)) fs.writeFileSync(path.join(root, file), fn(fs.readFileSync(path.join(root, file), 'utf8')));
+  for (const e of edits) replaceOnce(e.file, e.from, e.to);
+  if (sabotage) for (const e of RING_SABOTAGES[sabotage].edits) replaceOnce(e.file, e.from, e.to);
+  return { root, dispose: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+/** The copy's own public build path: { buildProject, saveProject, loadProject, generate, shared, cartridge }. */
+export async function loadBypassTree(tree) {
+  const u = (p) => pathToFileURL(path.join(tree.root, p)).href;
+  const [pipeline, projectIo, generate, shared, cartridge] = await Promise.all([
+    import(u('main/build/pipeline.js')), import(u('main/project-io.js')), import(u('main/build/generate.js')),
+    import(u('shared/project.js')), import(u('shared/cartridge.js'))
+  ]);
+  return { buildProject: pipeline.buildProject, saveProject: projectIo.saveProject, loadProject: projectIo.loadProject, generate, shared, cartridge };
+}
+
+/** Builds `project` through the copy into a fresh mkdtemp dir. Returns { dir, romPath, symbolPath, log, built } (the dir is the caller's to remove). */
+export async function buildThrough(loaded, project) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-build-'));
+  const log = [];
+  await loaded.saveProject(dir, project);
+  const built = await loaded.buildProject({ dir, project, log: (l) => log.push(l) });
+  return { dir, romPath: built.romPath, symbolPath: built.symbolPath, log, built };
+}

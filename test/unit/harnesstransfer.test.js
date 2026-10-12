@@ -96,14 +96,18 @@ test('current evidence: the live directory holds no harness-transfer certificate
   assert.notEqual(nowCurve.provenance.harness, CERT.oldHarness, 'the fresh curve is not the one the retired certificate recorded');
 });
 
-test('current evidence: the fresh curve is accepted through the C1 metadata identity certificate, not a transfer; removing it, or moving the harness, refuses', () => {
+test('current evidence: the fresh curve is accepted through the C2 identity certificate, not a transfer; removing it, or moving the harness, refuses', () => {
   const transfers = liveTransfers(nowCtx, ROOT);
   const verdicts = checkCertificates(path.join(ROOT, CERT_DIR_REL), { ...nowCtx, transfers });
-  const meta = verdicts.find((v) => v.file === 's2-c1-metadata.json');
-  assert.ok(meta, 'the C1 metadata certificate is checked in');
+  const meta = verdicts.find((v) => v.file === 's2c2.json');
+  assert.ok(meta, 'the C2 identity certificate is checked in');
   assert.deepEqual(meta.problems, []);
+  // C1's metadata certificate certified the engine C1 committed; C2 changed the engine, so it is history now and may only fail on exactly those two bindings
+  const c1 = verdicts.find((v) => v.file === 's2-c1-metadata.json');
+  assert.ok(c1, 'the C1 metadata certificate stays checked in as history');
+  assert.deepEqual(c1.problems, ["the certificate's current engine fingerprint is not the live engine", "the certificate's current generator fingerprint is not the live generator"]);
   assert.equal(transfers.length, 0);
-  assert.equal(curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts, transfers }).via, 'certificate s2-c1-metadata.json');
+  assert.equal(curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts, transfers }).via, 'certificate s2c2.json');
   // the generator was edited after the sweep (the margin edit): the sweep's records reach it only through that certificate, so without it the curve is refused
   assert.notEqual(liveNow.generator, nowCurve.provenance.generator, 'precondition: the live generator is not the recorded one');
   const without = curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts: verdicts.filter((v) => v.file !== meta.file), transfers });

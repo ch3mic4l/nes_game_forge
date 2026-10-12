@@ -809,3 +809,19 @@ Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below 
 - `kernelShortfallAdvice` prices a removal by full counterfactual kernel-lo occupancy, never by
   summing allowance constants, and a mapper offered as a fix must still hold every tileset, every
   screen and the project's mirroring choice.
+
+**Phase 3b slice S2, commit C2 — the vertical ring fork (kernel-hi +3, kernel-lo +0).** `projectStreamRing` (`main/build/streamplacement.js`)
+is the one predicate for the generated `STREAM_RING` and for the allowance: `STREAMWORLD_RING_KERNEL_HI_ALLOWANCE` (3, charged in
+`streamworldResidentHiBytes`, so it comes straight off `contentCeilingBytes`) and `STREAMWORLD_RING_KERNEL_ALLOWANCE` (0, a measured zero,
+charged in `kernelCodeBytes` on the same predicate). The three bytes are the render-window index step written as `clc / adc #SW_RW_NT_STEP`
+instead of `inc`; the strip compares and the `st_len` load are the same size either way. Measured identically on MMC1, MMC3 and UNROM 512
+vertical (the ring build against the same project with `STREAM_RING` forced to 0, which isolates the fork), equality-asserted by
+`test/unit/kernelbytes.test.js`:
+
+| Board | Game type | kernel-hi free before -> after | kernel-lo free (unchanged) |
+| --- | --- | ---: | ---: |
+| MMC1 / MMC3 / UNROM 512 | action | 2676 -> 2673 | 1755 / 1734 / 1563 |
+| MMC1 / MMC3 / UNROM 512 | rpg | 1445 -> 1442 | 1431 / 1242 / 1236 |
+
+The figures are those of the C2 worktree (the `S3b` tree plus the dlgwr removal) for the shapes `createStreamedProject` builds; the flat figure
+across the three boards and two game types is a measured result, not an assumption, so no `*_BY_MAPPER` split exists.

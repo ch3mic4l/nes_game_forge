@@ -536,6 +536,31 @@ function cutOverrun(text, start, end, what) {
   return text.slice(0, a) + text.slice(b + end.length);
 }
 
+/** Phase 3b S2 (C2): the vertical ring's `.if STREAM_RING ... .else <pre-ring lines> .endif` forks in engine/streamworld.asm, collapsed to their
+ *  `.else` arm -- the engine as every earlier slice's baseline read. Exactly RING_FORKS forks must be found (a fifth, or a missing .else, throws). */
+export const RING_FORKS = 4;
+export function stripRingFromStreamworld(text) {
+  const out = [];
+  let state = 'none';
+  let forks = 0;
+  for (const line of text.split('\n')) {
+    if (/^\s*\.if STREAM_RING\s*$/.test(line)) {
+      if (state !== 'none') throw new Error('ring fork: nested .if STREAM_RING');
+      state = 'ring';
+      forks++;
+    } else if (state === 'ring') {
+      if (/^\s*\.else\s*$/.test(line)) state = 'else';
+      else if (/^\s*\.endif\s*$/.test(line)) throw new Error('ring fork: .if STREAM_RING without .else');
+    } else if (state === 'else') {
+      if (/^\s*\.endif\s*$/.test(line)) state = 'none';
+      else out.push(line);
+    } else out.push(line);
+  }
+  if (state !== 'none') throw new Error('ring fork: unterminated .if STREAM_RING');
+  if (forks !== RING_FORKS) throw new Error(`ring fork: expected exactly ${RING_FORKS} forks, found ${forks}`);
+  return out.join('\n');
+}
+
 export function stripOverrunCloseFromFlat(text) {
   return cutOverrun(text, OVERRUN_NEW_CLOSE_START, OVERRUN_NEW_CLOSE_END, 'the bounded-read sw_dlg_close_row');
 }

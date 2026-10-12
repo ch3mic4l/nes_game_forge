@@ -280,3 +280,18 @@ read-price sweeps, the coverage conjunctions and the decoded seams.
 `test/lua/ring_gate/ringjobs.mjs` is its job list and `test/lua/ring_gate/s1ccontrols.mjs` its control table. The harness's own unit tests are
 `iso_unit.mjs`, `judge_unit.mjs`, `prov_unit.mjs`, `s1b_unit.mjs`, `record_controls.mjs` and `s1c_unit.mjs` in the same directory.
 `docs/design-streamed-worlds-phase3a.md` records the shelved handover window; `docs/design-streamed-worlds.md` is the current-state design.
+
+## 7. Slice S2, commit C2: the vertical ring in the shipped engine
+
+C2 carries the certified prototype's vertical semantics into production behind `STREAM_RING` (`docs/reference-engine.md`, "The vertical ring"),
+still unreachable for a user: `validateProject` refuses every two-nametable streamed board and the generator refuses the horizontal mode. Decisions
+and deviations from the prototype patches (`test/lua/ring_gate/02-ring-engine.patch`):
+
+- **The row-strip forks are not shipped.** The prototype's `SW_RING_ROW_LEN`, `sw_ring_row_*` labels and the 32-wide shadow wrap belong to the
+  horizontal ring (slice S3); a vertical ring has no row strip, so `STREAM_RING = 1` builds none of them.
+- **`SW_RW_NT_STEP` stays an `adc`**, the prototype's form, so slice S3 changes only the constants (3 bytes of kernel-hi, measured, on every board).
+- **Selection** is `streamRingMode`/`projectStreamRing`, not the prototype's inline mapper test; the generator refuses mode 2 with a message naming
+  the Build panel.
+- **Evidence** is the prototype's own scenes, interpreter and judge run against the production engine through a test-only bypass copy, plus the
+  PPU write trace (no `$28xx`/`$2Cxx` write) the judge cannot see because it reads through the mirror. The sabotages and the file that catches each
+  are in `handoff-next/s2-c2/sabotage.log` of the round-1 report; C3 re-certifies against S1's cells and rebaselines the ring gate.

@@ -192,7 +192,13 @@ import {
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
-import { TALKER_KERNEL_HI_ALLOWANCE, TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE } from '../../main/build/streamplacement.js';
+import {
+  TALKER_KERNEL_HI_ALLOWANCE,
+  TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_RING_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_RING_KERNEL_ALLOWANCE
+} from '../../main/build/streamplacement.js';
+import { makeBypassTree, loadBypassTree, buildThrough } from '../lib/ringbypass.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { buildPinching } from '../lib/streamedpinching.js';
 
@@ -5398,6 +5404,63 @@ test(
         expected,
         `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) + STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE (${STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE}) + knockback + sw_update_player + STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE}) + dialogue terms + B1's relocated/new hi terms = ${expected}`
       );
+    }
+  }
+);
+
+// Phase 3b S2 (C2): STREAMWORLD_RING_KERNEL_HI_ALLOWANCE / STREAMWORLD_RING_KERNEL_ALLOWANCE are the kernel cost of the vertical ring's fork
+// (`.if STREAM_RING` in engine/streamworld.asm), charged only to a build whose STREAM_RING is nonzero. Isolation: the SAME streamed vertical
+// project is built twice through the test-only bypass copy (test/lib/ringbypass.js -- validateProject still refuses a two-nametable streamed board
+// in the shipped tree), once as shipped and once with the generated STREAM_RING forced to 0, which assembles the unforked four-screen strip and
+// render code on the identical board, project and mapper. The used-byte delta of each fixed bank is the fork's whole cost. Measured on every board
+// a vertical ring can run on (MMC1, MMC3, UNROM 512 non-four-screen) x both game types: nothing else varies between the two builds, so a flat figure
+// is a real flat figure, not an assumption.
+test(
+  'phase 3b S2: STREAMWORLD_RING_KERNEL_HI_ALLOWANCE and STREAMWORLD_RING_KERNEL_ALLOWANCE equal the real kernel-hi / kernel-lo cost of the vertical ring fork on MMC1, MMC3 and UNROM 512 vertical, both game types',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const ringTree = makeBypassTree({ sabotage: null });
+    const flatTree = makeBypassTree({
+      sabotage: null,
+      edits: [{ file: 'main/build/generate.js', from: '`STREAM_RING = ${ringMode}`', to: '`STREAM_RING = 0`' }]
+    });
+    t.after(() => {
+      ringTree.dispose();
+      flatTree.dispose();
+    });
+    const [ringLoaded, flatLoaded] = await Promise.all([loadBypassTree(ringTree), loadBypassTree(flatTree)]);
+    const usedOf = async (loaded, project, mapper) => {
+      const built = await buildThrough(loaded, project);
+      t.after(() => fsp.rm(built.dir, { recursive: true, force: true }));
+      const { kernelHiBank, kernelLoBank } = prgLayout(mapper);
+      const row = (bank) => {
+        const line = built.log.find((l) => new RegExp(`^BANK\\s+${bank}\\s`).test(l));
+        assert.ok(line, `${mapper.name}: no usage row for bank ${bank}`);
+        const [, used, free] = line.match(/(\d+)\/\s*(\d+)\s*$/);
+        return { used: Number(used), free: Number(free) };
+      };
+      return { hi: row(kernelHiBank), lo: row(kernelLoBank) };
+    };
+    for (const id of [1, 4, 30]) {
+      const mapper = resolveMapper(id);
+      for (const gameType of ['action', 'rpg']) {
+        const project = createStreamedProject({ gameType, mapper: id, mirroring: 'vertical', gridW: 4, gridH: 1, camera: true });
+        const ring = await usedOf(ringLoaded, project, mapper);
+        const flat = await usedOf(flatLoaded, project, mapper);
+        console.log(
+          `${mapper.name} ${gameType} ring: kernel-hi delta ${ring.hi.used - flat.hi.used} (free ${flat.hi.free} -> ${ring.hi.free}), kernel-lo delta ${ring.lo.used - flat.lo.used} (free ${flat.lo.free} -> ${ring.lo.free})`
+        );
+        assert.equal(
+          ring.hi.used - flat.hi.used,
+          STREAMWORLD_RING_KERNEL_HI_ALLOWANCE,
+          `${mapper.name} ${gameType}: real kernel-hi cost of the ring fork != STREAMWORLD_RING_KERNEL_HI_ALLOWANCE (${STREAMWORLD_RING_KERNEL_HI_ALLOWANCE})`
+        );
+        assert.equal(
+          ring.lo.used - flat.lo.used,
+          STREAMWORLD_RING_KERNEL_ALLOWANCE,
+          `${mapper.name} ${gameType}: real kernel-lo cost of the ring fork != STREAMWORLD_RING_KERNEL_ALLOWANCE (${STREAMWORLD_RING_KERNEL_ALLOWANCE})`
+        );
+      }
     }
   }
 );

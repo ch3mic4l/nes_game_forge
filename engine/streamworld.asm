@@ -1571,10 +1571,20 @@ sw_ssc_store:
   inc sw_probe_row_screen
 sw_ssc_noadv:
   lda ss_i
+  .if STREAM_RING
+sw_ring_col_cmp:
+  cmp #SW_RING_COL_LEN
+  .else
   cmp #30
+  .endif
   bne sw_ssc_loop
   jsr sw_locate_current        ; restore the CURRENT (player) screen
+  .if STREAM_RING
+sw_ring_col_len:
+  lda #SW_RING_COL_LEN
+  .else
   lda #30
+  .endif
   sta st_len
   lda #0
   sta st_cur
@@ -1708,7 +1718,12 @@ sw_ns_loop:
   cmp #1
   bne sw_ns_wrap32
   lda st_vary
+  .if STREAM_RING
+sw_ring_wrap_col:
+  cmp #SW_RING_COL_LEN
+  .else
   cmp #30
+  .endif
   bne sw_ns_wrapdone
   lda #0
   sta st_vary
@@ -2055,9 +2070,19 @@ sw_rw_shadow_nohi:
   lda sw_rw_arow
   cmp #8
   bne sw_rw_arow_loop
+  .if STREAM_RING
+  lda sw_rw_nt
+  clc
+sw_ring_nt_step:
+  adc #SW_RW_NT_STEP
+  sta sw_rw_nt
+sw_ring_nt_end:
+  cmp #SW_RW_NT_END
+  .else
   inc sw_rw_nt
   lda sw_rw_nt
   cmp #4
+  .endif
   beq sw_rw_done
   jmp sw_rw_nt_loop
 sw_rw_done:
