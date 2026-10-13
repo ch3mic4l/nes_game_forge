@@ -84,13 +84,14 @@ function record(row) {
   if (row.error) errors++; else if (row.mismatch || row.fails.length && !sabotage) failures++;
 }
 
-// One tree per orientation: a vertical cell is built through the production-vertical tree (C2's shipped forks + the refusal lift), a horizontal cell through the production-horizontal tree (C1's shipped forks + the refusal lift).
+// One tree per orientation and lift form: a vertical cell is built through a production-vertical tree (C2's shipped forks), a horizontal cell through a production-horizontal tree (C1's shipped forks), each carrying the refusal lift
+// only where production still refuses the cell (an MMC3 action cell is admitted by production: its tree is BASELINE itself).
 const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 
 // ---- STREAM_RING=0: the six fixtures through the patched tree are byte-identical to the unpatched tree (every constituent build stamped). The patched tree is the
 // horizontal production tree: it carries the most ring code (the row fork and the far branch as well), so it is the one a leak into a four-screen build could come from.
 if (!sabotage) {
-  const tree = trees.forRing(2);
+  const tree = trees.forRing(2, true);
   const pristine = makeTree({ ring: false });
   for (const name of FIXTURES) {
     let a, b;
@@ -122,7 +123,7 @@ for (const cell of CELLS.filter((c) => !flag('ring') || c.ring === Number(flag('
         witnessed++; results.push({ row: 'identity', cell: cell.id, gameType, placement, fails: [], witnessed: `sabotage ${sabotage} has no ring-${cell.ring} form: ${noFormReason(sabotage, cell.ring)}` });
         continue;
       }
-      const tree = trees.forCell(cell);
+      const tree = trees.forCell(cell, gameType);
       let built;
       try { built = await buildCell({ tree, project, cell, gameType, provDir, links, sabotage: sabotage ?? null, label: `${stamp}${cell.id}-${gameType}${banked ? '-banked' : ''}`, requestedPlacement: placement }); }
       catch (e) {
@@ -156,7 +157,7 @@ if (!sabotage) {
     project.maps[0].gridW = 2; project.maps[0].gridH = 2; // four-screen keeps both axes live: a 2 x 2 world
     project.maps[0].screens = [0, 1, 2, 3].map(() => structuredClone(project.maps[0].screens[0]));
     let built;
-    const tree = trees.forCell(cell);
+    const tree = trees.forCell(cell, 'action');
     try { built = await buildCell({ tree, project, cell, gameType: 'action', provDir, links, label: `control-four-screen-${cell.id}` }); }
     catch (e) { record({ row: 'identity-control', cell: `${cell.id} built four-screen`, gameType: 'action', fails: [], error: `BUILD ERROR (not a catch): ${e.message.split('\n')[0]}` }); continue; }
     const fails = identityFailures(built, cell, { expectBanked: false });

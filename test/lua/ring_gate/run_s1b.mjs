@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
-import { makeTree, refreshProof, consumedEvidence, consumedSnapshot } from './ringtree.mjs';
+import { makeCellTree, refreshProof, consumedEvidence, consumedSnapshot } from './ringtree.mjs';
 import { CELLS, GAME_TYPES } from './ringworld.mjs';
 import { prepareRing } from './ringcli.mjs';
 import { runWitness, plannedInvocations, SIZES } from './ringwork.mjs';
@@ -58,7 +58,7 @@ const label = `s1b-${sabotage ? `sab-${sabotage}-` : ''}${fault ? `fault-${fault
 // patched tree's own normalized project): an action project has no battle bank, so the predicate is false whatever the text volume. The scene carrying 3,000 characters
 // of never-reached text (what forces an RPG's overlay into its battle bank) is built, and its capacity verdict reported: resident or refused, never banked.
 if (placement === 'banked' && gt === 'action') {
-  const tree = makeTree({ ring: cell.ring });
+  const tree = makeCellTree({ cell, gameType: gt });
   const info = await prepareRing({ cellId: cell.id, gt, sizes: SIZES, wide: true, bulk: BULK, tree, n: 4 });
   const base = pathToFileURL(tree.root).href;
   const sp = await import(`${base}/main/build/streamplacement.js`), sh = await import(`${base}/shared/project.js`), gen = await import(`${base}/main/build/generate.js`), cart = await import(`${base}/shared/cartridge.js`);
@@ -80,7 +80,7 @@ const iso = openIsolatedHome();
 const { home, loaded } = iso;
 const mesenCtx = iso.ctx;
 
-const tree = makeTree({ ring: cell.ring, extra: sabotage ? [sabotage] : [] });
+const tree = makeCellTree({ cell, gameType: gt, extra: sabotage ? [sabotage] : [] });
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null };
 const provPath = writeAttempt(provDir, label, {

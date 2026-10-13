@@ -9,11 +9,11 @@ streamed-map refusal for mirrored boards stayed on through S3. Slices S2 onward 
 proof docs. This file is a dated record: it names constants (`SW_RING_ROW_LEN`, the row fork's labels) that the S1 prototype's patches added and that production has carried since S3 C1.
 
 **The gate certifies a baseline.** S1 made its patched copy from commit `5138c1f` (the tree after phase 3b slice S0 and the shipped fixes that
-preceded S1). **S2 commit C3 rebaselined it onto C2, `cd7a9f8`, the production vertical ring; S3 commit C2 rebaselined it again onto C1, `aaa678a`, the production vertical AND
-horizontal ring:** `BASELINE` in `test/lua/ring_gate/ringtree.mjs` is now `aaa678a1a9c627a2306e083ca3ac298c349cb1fa`, and `verifyBaseline()` there refuses to run if
-`engine/`, `main/` or `shared/` differ from it. At C2 round 1 the six cells (MMC1, MMC3 and U512, each V and H) run on shipped forks, byte for byte, and the horizontal
-cells carry the same exact-content and consumed-input proof as the vertical ones (section 10). The measured table in section 3 below was produced at `5138c1f` (S1) and
-`cd7a9f8` (S2 C3, kept there as history) and **re-measured once at `aaa678a` by the S3 C2 final matrix** (section 3's certificate paragraph), on production code for both rings.
+preceded S1). **S2 commit C3 rebaselined it onto C2, `cd7a9f8`, the production vertical ring; S3 commit C2 rebaselined it onto C1, `aaa678a`, the production vertical AND
+horizontal ring; S4a commit C2 rebaselined it onto S4a C1, `9b00c59`, which admits MMC3 action games:** `BASELINE` in `test/lua/ring_gate/ringtree.mjs` is now `9b00c5992a0ed2d9c34f1b710526af6977192ee6`, and `verifyBaseline()` there refuses to run if
+`engine/`, `main/` or `shared/` differ from it. At S4a C2 the six cells (MMC1, MMC3 and U512, each V and H) run on shipped forks, byte for byte; the MMC3 action cells run on a tree that is `9b00c59` itself with no patch at all, the
+other cells on `9b00c59` plus the narrowed refusal lift (sections 10 to 12). The measured table in section 3 below was produced at `5138c1f` (S1) and
+`cd7a9f8` (S2 C3) and `aaa678a` (S3 C2), all kept there as history, and **re-measured once at `9b00c59` by the S4a C2 final matrix** (section 3's certificate paragraph).
 
 **Not everything is certified.** Five items are declared UNCERTIFIED (option A, Chris), and the limits of the row 4 to 8 evidence are
 recorded under "Limits of this proof". Both are stated plainly below; neither is shown as PASS anywhere the gate prints a table.
@@ -233,24 +233,31 @@ changes more than it says shows up. Harness mutations (the validator is told som
 
 ## 3. The measured table
 
-**The certificate** is the one full matrix of S3 commit C2: `run_matrix.mjs` into the provenance directory `s3-c2-provenance-final` and the log directory `s3-c2-logs-final`, `--jobs=18`, started 2026-10-13 05:44 PDT and
-finished 07:12 PDT with exit status 0, on baseline `aaa678a` (S3 C1, the production vertical AND horizontal ring) and a 247-input harness fingerprint that every one of its stamps carries. Result: 377 jobs, 0 unexpected, 1,785 provenance stamps (1,764 built, 15 error, 6
+**The certificate** is the one full matrix of S4a commit C2: `run_matrix.mjs` into the provenance directory `s4a-c2-provenance-final` and the log directory `s4a-c2-logs-final`, `--jobs=18` (49 GB available), started 2026-10-13 11:49 PDT and
+finished 13:14 PDT with exit status 0, on baseline `9b00c59` (S4a C1: the production vertical and horizontal ring, admitted on MMC3 for action games) and a 248-input harness fingerprint that every one of its stamps carries (and every one of the 1,271 stamps of the pilot that preceded it). Result: 377 jobs, 0 unexpected, 1,785 provenance stamps (1,764 built, 15 error, 6
 ring-0 comparisons), 0 problems. `ringprovindex.mjs --verify` passes on the finalized index with 0 problems, and `run_sw_ring_gate.sh` run in its default verify mode (INDEX hashes checked, 0 audit problems, 0 stale-fingerprint stamps; 376 matrix jobs judged, the gate does not judge itself) prints, over 24 cell and build lines × 9 rows × 2
-emulators (432 entries): **144 PASS, 54 UNCERTIFIED, 234 N/A, 0 FAIL, 0 UNMEASURED**, `GATE PASS`: the same totals, and the same table cell for cell, as the S2 C3 certificate and the S1c certificate (below, "history"). Every vertical stamp (897) is
+emulators (432 entries): **144 PASS, 54 UNCERTIFIED, 234 N/A, 0 FAIL, 0 UNMEASURED**, `GATE PASS`: the same totals, and the same table cell for cell (the gate's output differs from S3 C2's in one line, the directory paths), as the S3 C2 and S2 C3 certificates and the S1c certificate (below, "history"). The stamps' tree form follows the cell: the 258 stamps of the two MMC3 action cells (V and H) are **unlifted**, 160 with an empty patch set and
+`productionProof.lifted: false` (the tree is `9b00c59`, nothing else) and 98 carrying only a sabotage patch (the controls), and every MMC3 RPG, MMC1 and UNROM 512 stamp (1,509 of them) carries `00-refusal-lift.patch`; the form is derived from production's own `streamRingAdmitted` at the baseline, and
+the audit found 0 stamps that disagree with it. Every vertical stamp (897) is
 `production-vertical` and every horizontal stamp (882) is `production-horizontal`, each with an exact-content proof (`productionProof.exact`); 876 of the horizontal stamps and all 897 vertical ones carry consumed-input evidence (the other six horizontal stamps are the ring-0 identity comparisons, which carry the
 proof of their patched side instead); the six pristine ring-0 builds have neither, and **no stamp is of a prototype kind**. The 234 N/A entries are source proofs: action × banked on every
 board (108), row 8 on the MMC1 and U512 cells (24) and on jsnes for the MMC3 cells (6), rows 5 and 6 on jsnes (36), row 4 on jsnes (18), row 7 on Mesen (18), and row 9 where a build carries no S1c control or the emulator is
 jsnes (24). Row 9 prints a control-level N/A proof for every equivalent mutant (section 2.4): `nmi-wrap-row-32` on the three vertical action resident cells, and `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` on the three horizontal ones; those controls are not part of the cell's
-row-9 verdict, which is its other controls, so no cell changed status.
+row-9 verdict, which is its other controls, so no cell changed status. **No measurement moved because the MMC3 action cells lost the lift:** all 1,764 built ROMs are byte for byte the ROMs of the S3 C2 matrix (same label, same SHA-256), 280 of the 319 JSON logs are byte-identical (the other 39 differ in a provenance block or by one frame or one body), and the MMC3 action ROMs are also pinned equal to plain `node main/build/cli.js` output by a unit (section 12).
 
-*History.* This certificate replaces the S2 C3 one (matrix `s2-c3-provenance-final2`, 2026-10-12, baseline `cd7a9f8`, 383 jobs, 1,809 stamps, 250-entry fingerprint, vertical rows on production trees and horizontal rows on the prototype trees), which
-section 8 describes as stale for the door landing-default fix and which stays intact as the historical record. Before it, a first S2 C3 attempt (2026-10-11, directories `s2-c3-provenance-final` and `s2-c3-logs-final`) exited 1 on two scheduling defects, not on any cell: the harness scheduled
+*History.* The previous certificate was S3 C2's (matrix `s3-c2-provenance-final`, 2026-10-13 05:44 to 07:12 PDT, baseline `aaa678a`, 247-entry fingerprint, 377 jobs, 1,785 stamps, every ring cell on a lifted tree), with the same totals and table. It is now history (section 8): this harness no longer verifies it
+(`run_sw_ring_gate.sh` on its directories prints 1,779 stale-fingerprint stamps and GATE FAIL, which is a property of that old index and of this checkout's baseline, not a defect of either). What differs from it: the baseline and fingerprint; the stamps of the MMC3 action cells (`lifted:false`, empty patch set, or a sabotage patch only, against the lift before);
+the sabotage and lift patches' bytes (re-cut at the new baseline; the identity logs differ only in their provenance block: 29 files); and measured quantities that moved by one frame or one body (Mesen run lengths are not deterministic to the frame): row 8's measured-frame counts are one *lower* on five of the six MMC3 cells (so they equal S2 C3's again), and one Mesen body count in the `pad-mainline-over` MMC3-H witness is 375 against 374, inside an item that passes as declared.
+The S1c control tally is the same: **147 runs (25 controls): 135 caught as declared, 12 passing as declared, 0 not as declared.** Rows 5 and 6 were produced by logs byte-identical to S3 C2's, so every certified margin, bound W, observed minimum and row 6's least margin (278.0) are S3 C2's for all 18 builds, and the largest measured `G` (20,026) is unchanged.
+
+Before S3 C2, the S2 C3 certificate (matrix `s2-c3-provenance-final2`, 2026-10-12, baseline `cd7a9f8`, 383 jobs, 1,809 stamps, 250-entry fingerprint, vertical rows on production trees and horizontal rows on the prototype trees), which
+section 8 describes as stale for the door landing-default fix and which stays intact as the historical record, was the current one; S3 C2 replaced it. Before it, a first S2 C3 attempt (2026-10-11, directories `s2-c3-provenance-final` and `s2-c3-logs-final`) exited 1 on two scheduling defects, not on any cell: the harness scheduled
 `nmi-wrap-row-32` on the vertical cells, which have no form of it (fix 3 makes the control N/A there, printed under "control N/A proofs"), and the no-flag checks compared against baselines recorded before C2 (fixes 3 and 4,
-section 2.4). The S1c certificate (matrix `s1c-provenance-final`, 2026-10-07, 386 jobs, 1,821 stamps, on the prototype trees) had the same totals. What differs from the S2 C3 certificate: six fewer jobs (383 to 377: the six horizontal
+section 2.4). The S1c certificate (matrix `s1c-provenance-final`, 2026-10-07, 386 jobs, 1,821 stamps, on the prototype trees) had the same totals. What S3 C2 differed in from S2 C3: six fewer jobs (383 to 377: the six horizontal
 `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` runs, equivalent mutants on a ring whose `SW_RING_COL_LEN` is already 30) and 24 fewer stamps (1,809 to 1,785: those six runs and the 18 identity builds of the two retired horizontal sabotage forms, all built), so **147 S1c control runs (25 controls): 135 caught as declared, 12 passing as declared, 0 not as
-declared** (S2 C3: 153, 135, 18; S1c: 156, 135, 21); the horizontal stamps' tree kind (`prototype-horizontal` with null evidence at S2 C3, `production-horizontal` with evidence now); the no-flag check against `noflag/s1b-aaa678a.json` instead of `s1b-cd7a9f8.json` (section 10); and measured
-quantities that moved by one frame or one body (Mesen run lengths are not deterministic to the frame): row 8's measured-frame counts are one higher on five of the six MMC3 cells, and one Mesen body count in the `pad-mainline-over` MMC3-H witness (374 against 375) differs inside an item that passes as declared. Rows 5 and 6 were produced by byte-identical logs, so every certified margin, bound W and observed minimum, and row 6's least margin of 278.0, are those of the S2 C3 certificate for all 18 builds, **the horizontal cells included**: the production horizontal engine is line for line the prototype patch that S2 C3 measured, so no horizontal margin change was expected and none occurred. The
-largest measured `G` (20,026) is unchanged.
+declared** (S2 C3: 153, 135, 18; S1c: 156, 135, 21); the horizontal stamps' tree kind (`prototype-horizontal` with null evidence at S2 C3, `production-horizontal` with evidence at S3 C2 and now); the no-flag check against `noflag/s1b-aaa678a.json` instead of `s1b-cd7a9f8.json` (section 10); and measured
+quantities that moved by one frame or one body (row 8's measured-frame counts were one higher on five of the six MMC3 cells, and one Mesen body count in the `pad-mainline-over` MMC3-H witness was 374 against 375). Rows 5 and 6 were produced by byte-identical logs, so every certified margin, bound W and observed minimum, and row 6's least margin of 278.0, were those of the S2 C3 certificate for all 18 builds, **the horizontal cells included**: the production horizontal engine is line for line the prototype patch that S2 C3 measured, so no horizontal margin change was expected and none occurred. The
+largest measured `G` (20,026) was unchanged, and is now.
 
 | Row | Result | Figures (all on Mesen) |
 |---|---|---|
@@ -258,10 +265,10 @@ largest measured `G` (20,026) is unchanged.
 | 2 workload | PASS with UNCERTIFIED items, both emulators | see below |
 | 3 oracle | PASS, both emulators | |
 | 4 mainline `G` | measured `G` PASS, class bounds UNCERTIFIED | the largest measured `G` over the classes C1 to C4c and their variants is 20,026 cycles (S2 C3: 20,026; S1c: 20,033) against the gate 29,780; the forced-blank C0 class is exempt and not counted |
-| 5 NMI deadline | PASS on 18 buildable cells; every certified margin positive | tightest **certified** margin 33.67 cycles (mixed) and 115.67 (strip), MMC3-H RPG banked; tightest **observed** margin 90.0 (mixed) and 186.0 (strip), the same build; every certified margin, bound W and observed minimum is identical to the S2 C3 certificate's (the horizontal cells moved from prototype to production code with no change); against S1c five observed minima differ by 1 to 2 cycles (below) |
-| 6 close | PASS on 18 buildable cells | vertical 88 bytes (`vram_len` 87) split, horizontal 85 bytes (`vram_len` 84) in one packet; least margin 278.0 cycles (MMC3 vertical action resident; the same as S2 C3; S1c: 277.0, MMC3 vertical RPG resident) |
+| 5 NMI deadline | PASS on 18 buildable cells; every certified margin positive | tightest **certified** margin 33.67 cycles (mixed) and 115.67 (strip), MMC3-H RPG banked; tightest **observed** margin 90.0 (mixed) and 186.0 (strip), the same build; every certified margin, bound W and observed minimum is identical to the S3 C2 and S2 C3 certificates' (the horizontal cells moved from prototype to production code at S3 C2, and the MMC3 action cells from a lifted to an unpatched tree at S4a C2, with no change); against S1c five observed minima differ by 1 to 2 cycles (below) |
+| 6 close | PASS on 18 buildable cells | vertical 88 bytes (`vram_len` 87) split, horizontal 85 bytes (`vram_len` 84) in one packet; least margin 278.0 cycles (MMC3 vertical action resident, now on an unpatched tree; the same as S3 C2 and S2 C3; S1c: 277.0, MMC3 vertical RPG resident) |
 | 7 decoded seam | PASS on jsnes; Mesen N/A | see "Limits" |
-| 8 MMC3 split and lock | PASS on the 6 MMC3 buildable cells | 1,551 to 2,105 measured frames (S2 C3: 1,550 to 2,104; five cells are one frame longer), 389 to 603 `switch_prg_bank` calls and 1,261 to 1,748 split IRQs per cell (the last two unchanged) |
+| 8 MMC3 split and lock | PASS on the 6 MMC3 buildable cells | 1,550 to 2,104 measured frames (S3 C2: 1,551 to 2,105; S2 C3: 1,550 to 2,104, which this run equals again), 389 to 603 `switch_prg_bank` calls and 1,261 to 1,748 split IRQs per cell (the last two unchanged) |
 | 9 controls | 147 S1c control runs (25 controls): 135 caught as declared, 12 passing as declared (a declared non-catch on the other axis), 0 not as declared | plus the S1a and S1b controls; the four `prg-transient` runs are caught; `nmi-wrap-row-32` is N/A on the three vertical action resident cells and `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` on the three horizontal ones (no form on that ring, equivalent mutants), whose row 9 is `P/N` |
 
 Row 5 per build. "Observed" is the minimum margin to the end of vblank over every recorded interrupt (it contains the measured entry delay, at most 10.7 cycles). "Bound W" is the static longest path of the build's
@@ -288,7 +295,7 @@ own `nmi` handler; the **certified** margin is 2,272.67 − (22 entry + W + 6 `r
 | U512-H | RPG resident | 257.3 / 158.3 | 2042 / 2132 | 202.67 / 112.67 |
 | U512-H | RPG banked | 250.3 / 155.3 | 2063 / 2145 | 181.67 / 99.67 |
 
-The table above equals the S2 C3 certificate's cell for cell (computed by `handoff-next/s3-c2/final_checks.mjs` from the stamps and logs: 18 positives, 14/14 items each, all certified margins positive). Relative to the S1c certificate only the observed column of five action resident builds moved (strip / mixed; S1c in parentheses): MMC1-H 258.0 / 127.0 (259.0 / 126.0), MMC1-V 277.0 / 171.0 (277.0 / 170.0), MMC3-H 193.0 / 95.0
+The table above equals the S3 C2 and S2 C3 certificates' cell for cell (computed by `handoff-next/s4a-c2/final_checks.mjs` from the stamps and logs: 18 positives, 14/14 items each, all certified margins positive, 0 cells differing from S3 C2's table). Relative to the S1c certificate only the observed column of five action resident builds moved (strip / mixed; S1c in parentheses): MMC1-H 258.0 / 127.0 (259.0 / 126.0), MMC1-V 277.0 / 171.0 (277.0 / 170.0), MMC3-H 193.0 / 95.0
 (194.0 / 94.0), U512-H 258.7 / 158.0 (257.0 / 159.0) and U512-V 277.0 / 171.0 (277.0 / 172.0). Every bound W and certified margin is unchanged, so the tightest certified margin is still 33.67 cycles (mixed), MMC3-H RPG banked, and the
 observed minima are sampled over the recorded interrupts, not bounds. Row 6 moved the same way: ten of the 18 builds differ from S1c by 1 to 2 cycles (the least is now 278.0). The differences were not traced to a single cause.
 
@@ -369,17 +376,22 @@ and deviations from the prototype patches (`test/lua/ring_gate/02-ring-engine.pa
   are in `handoff-next/s2-c2/sabotage.log` of the round-1 report; C3 rebaselines the ring gate onto C2 (section 2.4, "Two ring trees") and re-runs S1's cells,
 so the vertical rows certify the production vertical ring at C2.
 
-## 8. The S2 certificate is stale for the door landing-default fix (2026-10-12), and the S3 C2 certificate that replaces it (2026-10-13)
+## 8. Certificate history: the S2 certificate stale for the door landing-default fix (2026-10-12), the S3 C2 certificate that replaced it, and the S4a C2 certificate that replaces that (2026-10-13)
 
 The S2 certificate (S2 C3, reviewed at `6322c22`) is intact as a historical record but was **stale for the commit that gives a placed door's landing coordinates a default**
 (`DOOR_LANDING_DEFAULT` in `shared/project.js`, read by `generate.js` and `streamed.js`; those files are in the ring harness fingerprint). On the tree after that fix
-`ringprovindex.mjs --verify` still passes on the archived S2 index, but `run_sw_ring_gate.sh` reports GATE FAIL on fingerprints only: 1803 stale-fingerprint
+the recorded hashes of the archived S2 index verified intact, and `ringprovindex.mjs --verify` passed on it with the harness of that time (under today's S4a C2 harness it reports tree-provenance problems only, no INDEX hash failure, because the S2 trees are prototype-horizontal at baseline `cd7a9f8`), but `run_sw_ring_gate.sh` reported GATE FAIL on fingerprints only: 1803 stale-fingerprint
 stamps, 0 FAIL or UNMEASURED cells, 0 unexpected jobs, 0 audit problems. By Chris's ruling of 2026-10-12 those stamps were not restamped and the fingerprint was
 not weakened; the directories `s2-c3-provenance-final2` / `s2-c3-logs-final2` still hold exactly what they held, and the 1,803-stale-stamp result is the property of that old index, not of the current tree. S3's final matrix recertified: the **new production certificate** of section 3
 (`s3-c2-provenance-final`, baseline `aaa678a`, 247-input fingerprint) carries the door default, the production horizontal ring and the S3 C2 harness, and gives a current `GATE PASS` on this harness and baseline. The two certificates must not be
-mixed: the S2 one is evidence for `cd7a9f8` with prototype horizontal trees; the S3 one is evidence for `aaa678a` with production trees on both rings, and it is the only one a reader should cite for the horizontal ring. Declared limits carry over unchanged: the 54 UNCERTIFIED cells are Chris's option A items (section 4), the limits of section 5 apply, and the RULE-A boundary of section 10 stands (the S1b no-flag check
+mixed: the S2 one is evidence for `cd7a9f8` with prototype horizontal trees; the S3 one is evidence for `aaa678a` with production trees on both rings, and was the only one a reader could cite for the horizontal ring until S4a C2 (next paragraph). Declared limits carry over unchanged: the 54 UNCERTIFIED cells are Chris's option A items (section 4), the limits of section 5 apply, and the RULE-A boundary of section 10 stands (the S1b no-flag check
 compares against C1 production output, so it cannot discover a regression already present in `aaa678a`). The no-flag baselines (`s1b-aaa678a.json` active for S1b with `s1b-cd7a9f8.json` kept unchanged as history, `s1c-cd7a9f8.json` active for S1c, section 10) and the pinned identity ROM hashes keep their historical bytes: the test builders that model inert NPCs write `toX: 0, toY: 0`
 explicitly, so only a placement that leaves the fields out takes the new default.
+
+**The S3 C2 certificate is history too (S4a C2, 2026-10-13).** S4a C1 changed `shared/` (admission) and the gate's baseline, lift patch, sabotage patches and tree maker moved with it, so the harness fingerprint is a different 248-entry one. The S3 C2 index (`s3-c2-provenance-final`, `s3-c2-logs-final`) is intact (its recorded hashes still check: zero INDEX hash failures) and
+current strict `ringprovindex.mjs --verify` rejects its old provenance (exit 1, 18,872 tree-provenance problems, the first a baseline mismatch against `9b00c59`), and `run_sw_ring_gate.sh` on it reports GATE FAIL on fingerprints and baseline (1,779 stale-fingerprint stamps, 18,872 audit problems against this harness's baseline, 0 unexpected jobs), as the S2 index did. By the same ruling nothing was restamped and the fingerprint was not weakened.
+The **current certificate** is section 3's (`s4a-c2-provenance-final`, baseline `9b00c59`, 248-input fingerprint, `GATE PASS`); the S3 one is evidence for `aaa678a`, where MMC3 was refused for every game type, and the MMC3 action cells' evidence now comes from unpatched production code. Declared limits carry over unchanged: the 54 UNCERTIFIED cells (section 4), the limits of section 5, and the RULE-A boundary of section 10, which now reads against `9b00c59`: the S1b no-flag check
+compares against C1 production output of `aaa678a` and the S1c one against `cd7a9f8`, so neither discovers a regression those baselines carry (both no-flag precheck jobs passed byte for byte against `s1c-cd7a9f8.json` and `s1b-aaa678a.json`, so no re-record was needed).
 
 ## 9. Slice S3, commit C1: the horizontal ring in the shipped engine
 
@@ -509,3 +521,54 @@ history from C1 on.
   cuts the lift down to MMC1, UNROM 512 and RPG, and runs the one matrix with the MMC3 action cells on an unpatched production tree. MMC1 (S4b), UNROM 512 non-four-screen (S4c) and RPG (S5) remain refused,
   each with the message above.
 
+
+## 12. Slice S4a, commit C2: the ring gate rebaselined onto C1, MMC3 action cells on unpatched production
+
+C1 admitted the two-nametable ring on MMC3 for action games, so the old blanket refusal that `00-refusal-lift.patch` deleted is gone from production. C2 moves the gate onto that commit and
+makes the lift a property of the **cell**, not of the gate. The measured table is section 3's, and the MMC3 production table is at the end of this section; both come from the one final matrix.
+
+- **New baseline.** `BASELINE` in `test/lua/ring_gate/ringtree.mjs` is `9b00c5992a0ed2d9c34f1b710526af6977192ee6` (S4a C1). The gate's tree is still `git show` of that commit's `engine/ main/ shared/` plus
+  canonical hashed patches, proven exact by content; nothing about the exact-content proof, the consumed-input guard or the stamp schema (`ring-prov-3`) changed.
+- **What the lift still lifts.** `regen_patches.mjs` re-cuts `00-refusal-lift.patch` as one hunk that deletes the `else if (!streamCapableFourScreen(...))` block of `streamedBoardProblems` in
+  `shared/project.js`: exactly the two refusals production still has, `capability` (MMC1 and UNROM 512 with horizontal or vertical mirroring) and `ringGame` (an RPG on MMC3). Every anchor of the regen
+  asserts exactly one match, the end anchor included, and the sabotage patches are cut on both the lifted and the unlifted tree and compared byte for byte, so one file serves both.
+- **The lift is a function of the cell, with one source.** `liftNeeded(cell, gameType)` (`ringtree.mjs`) asks production: `!streamRingAdmitted(mapper, mirroring, gameType)` from `shared/cartridge.js` **as it
+  is at `BASELINE`** (a `git show` of the blob, loaded once), not from the working tree, so an old certificate is still audited against the tree it was built on. There is no board list in the harness: when S4b
+  and S4c add `streamRingGameTypes: ['action']` to MMC1 and UNROM 512 the same rule drops their lift, and a baseline bump re-derives it. MMC3 action (V and H) is **unlifted**: its tree is `BASELINE`
+  byte for byte (plus a sabotage patch on a control job); MMC3 RPG, MMC1 and UNROM 512 are **lifted**. The ring-0 patched side and the six-fixture comparison keep the lifted ring-2 tree (the comparison
+  measures the lift-bearing build). The cell table moved to a leaf module, `ringcells.mjs`, so the tree maker, the stamp audit and the scene builder share it without an import cycle.
+- **The audit follows the cell.** `auditTreeProvenance` derives the expected form of a stamp from its own cell and game type and refuses (a) an MMC3 action stamp that carries the lift, (b) a lifted cell
+  stamp (MMC1, UNROM 512, MMC3 RPG) without it, (c) a stamp whose patch list, proof, or consumed evidence disagrees with its cell, and any stamp with an unknown cell or game type. `prov_unit.mjs` pins each as
+  an audit sabotage that must fail, directly and through `auditStamp`. The historical waiver is exactly as narrow as before (`HISTORICAL_KINDS`, the one `PRE_C2_BASELINE`): a current-baseline stamp is
+  never waived, and a unit pins that an MMC3 action stamp with a lift is refused even with the waiver option.
+- **Sabotages.** `SABOTAGE_RINGS` stays the single source of which ring a sabotage exists on. Every sabotage patch applies exactly once at the new baseline and changes the same files on the lifted and the
+  unlifted tree. The equivalent-mutant sweep of S3 C2 fix 1 (a positive and a sabotaged ROM per sabotage x ring x cell x {action resident, rpg resident, rpg banked}, each through its own cell's tree form)
+  finds the same set as before and nothing new: no scheduled control builds a ROM equal to its positive.
+- **MMC3 action on plain production.** A unit builds an MMC3-V and an MMC3-H action cell through the gate and compares its ROM with `node main/build/cli.js` on the same project in a fresh directory: byte for byte equal.
+- **C1 review P3.** `streamadmit.test.js` changes the registry datum (`streamRingGameTypes`) in place, restored in `finally`, and asserts `streamedBoardProblems` and `validateProject` follow it; the
+  escaping implementation (`mapper.id !== 4` and `gameType !== 'action'` hard-coded, helpers intact) fails that test and passes the earlier fourteen.
+- **Result of the final matrix.** Section 3 holds the certificate: 377 jobs, 0 unexpected, 1,785 stamps (1,764 built, 15 error, 6 ring-0 comparisons), 0 problems, **144 PASS / 54 UNCERTIFIED / 234 N/A / 0 FAIL / 0 UNMEASURED**, `GATE PASS`, the table equal to S3 C2's cell for cell. Every one of the 1,764 built ROMs is byte for byte
+  the ROM S3 C2 built from the same label, which is the point of the slice: moving the MMC3 action cells from a lifted to an unpatched tree is a change of provenance, not of bytes. Tree forms: MMC3 action V and H, 258 stamps: 160 with an empty patch set (`lifted:false`, tree == `9b00c59`) and
+  98 carrying a sabotage patch only (their tree is `9b00c59` plus that one patch); MMC3 RPG 348, MMC1 586 and UNROM 512 575 lifted cell stamps; 12 ring-0 builds (6 pristine, 6 on the lifted tree) and 6 ring-0 comparisons. All 1,785 stamps carry the 248-entry final fingerprint and baseline `9b00c59`; there are no prototype-kind stamps; every ring-1 and ring-2 stamp has an exact-content proof and consumed-input evidence
+  (the six comparisons carry the patched side's proof only, as before).
+- **Mutants and controls.** The equivalent-mutant set is S3's exactly. The control-level N/A proofs still print (vertical `wrap-row-32`; horizontal `strip-len-30-vertical` and `wrap-col-30`). S1c controls: 147 runs, 135 caught, 12 passing as declared, 0 not as declared, as S3. The campaign controls that the matrix schedules only on MMC1 and UNROM 512 cells were also run during the pilot as extras outside the matrix (33 of 33 as declared); they are not part of this certificate.
+- **What differed from the S3 C2 matrix**, all noise or provenance: 29 identity logs (provenance block only), and 10 Mesen logs where a frame or a body count moved by one (row 8 on five MMC3 cells, one `pad-over` body count, four row-8 controls on those cells); the 280 other JSON logs are byte-identical.
+
+### The MMC3 production table
+
+The two MMC3 **action** cells measured on **unlifted production code** (the tree is `9b00c59` with no patch, ROM equal to `node main/build/cli.js` output). Resident build; action × banked is N/A on every board.
+
+| | MMC3-V (vertical mirroring) | MMC3-H (horizontal mirroring) |
+|---|---|---|
+| gate row, Mesen / jsnes | 1 P/P, 2 C/C, 3 P/P, 4 C/N, 5 P/N, 6 P/N, 7 N/P, 8 P/N, 9 P/N | the same |
+| stamps (unlifted) | 80 empty patch set, 51 sabotage patch only | 80 empty patch set, 47 sabotage patch only |
+| row 4 largest measured `G` (cycles; gate 29,780) | 18,871 (class C2); NMI handler maximum 2,142 | 19,040 (class C4a); NMI handler maximum 2,153 |
+| row 5 observed margin, strip / mixed | 213.0 / 107.0 | 193.0 / 95.0 |
+| row 5 bound W, strip / mixed | 2,096 / 2,185 | 2,108 / 2,198 |
+| row 5 **certified** margin, strip / mixed | 148.67 / 59.67 | 136.67 / 46.67 |
+| row 6 close frame | 88-byte queue (`vram_len` 87) split at the nametable join; margin 278.0 cycles | 85-byte queue (`vram_len` 84) in one packet; margin 314.0 cycles |
+| row 8 run | 2,104 measured frames, 389 `switch_prg_bank` calls, 1,745 split IRQs | 1,550 measured frames, 477 `switch_prg_bank` calls, 1,261 split IRQs |
+| row 8 arm deadline, least margin | 153.3 cycles | 138.3 cycles |
+| row 9 | S1c controls caught as declared; `nmi-wrap-row-32` N/A | S1c controls caught as declared; `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` N/A |
+
+Every figure is identical to the S3 C2 certificate's for the same cell, where the tree was lifted (the logs for rows 4, 5 and 6 of these cells are byte-identical; row 8 differs by one frame, 2,105 and 1,551 there). The RPG and the other boards' cells are in section 3's per-build table, unchanged.

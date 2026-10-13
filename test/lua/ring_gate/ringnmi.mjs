@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { makeTree, sha256 } from './ringtree.mjs';
+import { makeCellTree, sha256 } from './ringtree.mjs';
 import { ringProject, buildCell } from './ringworld.mjs';
 import { MESEN, mesenUnavailable } from './ringrun_mesen.mjs';
 import { nmiBound, certifiedMargin, ENTRY_DELAY_CYCLES, RTI_CYCLES, VBLANK_CYCLES } from './ringwcet.mjs';
@@ -549,7 +549,7 @@ export async function buildNmiRing({ cell, gt = 'action', placement = 'resident'
   if (mutation && !(mutation in MUTATIONS)) throw new Error(`unknown --mutation ${mutation}: ${Object.keys(MUTATIONS).join(', ')}`);
   if (breakMode && !['chunk4', 'mixed3'].includes(breakMode)) throw new Error(`unknown --break mode: ${breakMode}`);
   const own = !tree;
-  const t = tree ?? makeTree({ ring: cell.ring, extra: sabotage ? [sabotage] : [] });
+  const t = tree ?? makeCellTree({ cell, gameType: gt, extra: sabotage ? [sabotage] : [] });
   const banked = placement === 'banked';
   const { project } = ringProject({ cell, gameType: gt, n: 4, talkers: 'none', start: { screen: 0, x: 120, y: 120 }, bulkText: bulkText ?? (banked ? 3000 : 100) });
   const stamp = label ?? `s1c-nmi-${sabotage ? `sab-${sabotage}-` : ''}${mutation ? `mut-${mutation}-` : ''}${breakMode ? `brk-${breakMode}-` : ''}${cell.id}-${gt}-${placement}`;

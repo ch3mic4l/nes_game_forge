@@ -1,11 +1,11 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index ad91ac1..a8d782b 100644
+index 7d549a8..a7706f5 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4091,7 +4091,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+@@ -4093,7 +4093,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
    // Phase 3b S2/S3: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
-   // streamRingMode): 1 vertical, 2 horizontal. validateProject still refuses every two-nametable streamed board (admission is S4's),
-   // so a mode-2 build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
+   // streamRingMode): 1 vertical, 2 horizontal. validateProject admits only MMC3 action games on a ring (S4a, streamRingAdmitted),
+   // so every other two-nametable build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
 -  const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
 +  const ringMode = 0;
    const projA = projectUsesStreamedActors(project);

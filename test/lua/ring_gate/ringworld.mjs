@@ -9,17 +9,7 @@ import { scanEquates, resolveEquates } from '../../lib/equates.js';
 import { ROOT, makeTree, loadTree, sha256, assertCellRing, verifyBuildDir, consumedSnapshot } from './ringtree.mjs';
 import { harnessFingerprint, projectSha256, writeAttempt, finishAttempt, nesasmStamp, hostStamp } from './ringprov.mjs';
 
-/** The six mapper/mirroring pairs of the acceptance table (plan 2.5). `ring` is the STREAM_RING value the pair must build with. */
-export const CELLS = [
-  { id: 'MMC1-V', mapper: 1, mirroring: 'vertical', ring: 1, header: { mapper: 1, mirror: 'V' } },
-  { id: 'MMC1-H', mapper: 1, mirroring: 'horizontal', ring: 2, header: { mapper: 1, mirror: 'H' } },
-  { id: 'MMC3-V', mapper: 4, mirroring: 'vertical', ring: 1, header: { mapper: 4, mirror: 'V' } },
-  { id: 'MMC3-H', mapper: 4, mirroring: 'horizontal', ring: 2, header: { mapper: 4, mirror: 'H' } },
-  { id: 'U512-V', mapper: 30, mirroring: 'vertical', ring: 1, header: { mapper: 30, mirror: 'V' } },
-  { id: 'U512-H', mapper: 30, mirroring: 'horizontal', ring: 2, header: { mapper: 30, mirror: 'H' } }
-];
-export const cellById = (id) => CELLS.find((c) => c.id === id) ?? (() => { throw new Error(`unknown ring cell ${id}`); })();
-export const GAME_TYPES = ['action', 'rpg'];
+export { CELLS, cellById, GAME_TYPES } from './ringcells.mjs';
 
 const SOLID_ID = 24;
 /** Metatile id of world block (screen s, col c, row r): 23 distinct ids, varying with all three, so an aliased or shifted write shows. */
@@ -92,8 +82,8 @@ function parseBuildLog(lines) {
  * prov is the S1a certificate-build record (plan review 3, obligation 2).
  */
 export async function buildCell({ tree, project, cell, gameType, label, provDir, requestedPlacement = null, links = {}, sabotage = null }) {
-  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the production-horizontal tree
-  assertCellRing(tree, cell);
+  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the production-horizontal tree, each lifted exactly when production refuses the cell
+  assertCellRing(tree, cell, gameType);
   const loaded = await loadTree(tree); // re-proves a ring-1 tree from the files on disk, NOW; the stamps carry that proof (loaded.proof)
   const proof = loaded.proof;
   const stampLabel = label ?? cell?.id ?? 'x';

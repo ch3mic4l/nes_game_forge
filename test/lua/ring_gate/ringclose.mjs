@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { makeTree, sha256, readTreeText } from './ringtree.mjs';
+import { makeCellTree, sha256, readTreeText } from './ringtree.mjs';
 import { buildCell } from './ringworld.mjs';
 import { createStreamedProject } from '../../lib/streamedproject.js';
 import { renderSections } from './ringsections.mjs';
@@ -83,7 +83,7 @@ export async function buildCloseRing({ cell, gt = 'rpg', placement = 'resident',
   if (mutation && !(mutation in CLOSE_MUTATIONS)) throw new Error(`unknown --mutation ${mutation}: ${Object.keys(CLOSE_MUTATIONS).join(', ')}`);
   if (breakMode && !['no-flash', 'slow-drain'].includes(breakMode)) throw new Error(`unknown --break ${breakMode}`);
   const own = !tree;
-  const t = tree ?? makeTree({ ring: cell.ring, extra: sabotage ? [sabotage] : [] });
+  const t = tree ?? makeCellTree({ cell, gameType: gt, extra: sabotage ? [sabotage] : [] });
   const { project } = await ringCloseProject({ tree: t, cell, gt, placement });
   const overrides = [];
   if (breakMode === 'slow-drain') {

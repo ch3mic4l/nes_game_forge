@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { makeTree } from './ringtree.mjs';
+import { makeCellTree } from './ringtree.mjs';
 import { cellById, ringProject, buildCell } from './ringworld.mjs';
 import { laps } from './ringscene.mjs';
 import { bootRom, runSteps } from './ringrun_jsnes.mjs';
@@ -15,7 +15,7 @@ const cell = cellById('MMC1-V');
 const scene = laps({ ring: cell.ring, talkers: 'enter' });
 const { project, gridW, gridH } = ringProject({ cell, gameType: 'action', talkers: 'enter' });
 const ctx = { project, ring: cell.ring, gridW, gridH, typing: scene.expect.typing };
-const tree = makeTree({ ring: cell.ring });
+const tree = makeCellTree({ cell, gameType: 'action' });
 const built = await buildCell({ tree, project, cell, gameType: 'action', label: 'record-controls' });
 const records = runSteps(bootRom(built.romPath), scene.steps);
 fs.rmSync(built.dir, { recursive: true, force: true });

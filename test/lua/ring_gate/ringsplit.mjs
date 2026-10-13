@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeTree, sha256, readTreeText } from './ringtree.mjs';
+import { makeCellTree, sha256, readTreeText } from './ringtree.mjs';
 import { ringProject, buildCell } from './ringworld.mjs';
 import { spawnMesen } from './ringnmi.mjs';
 
@@ -185,7 +185,7 @@ export async function buildSplitRing({ cell, gt = 'action', placement = 'residen
   if (!cell.id.startsWith('MMC3')) throw new Error(`row 8 is MMC3-only; ${cell.id} is ${cell.mapper}`);
   if (sabotage && !(sabotage in SPLIT_SABOTAGES)) throw new Error(`unknown row-8 sabotage ${sabotage}: ${Object.keys(SPLIT_SABOTAGES).join(', ')}`);
   const own = !tree;
-  const t = tree ?? makeTree({ ring: cell.ring });
+  const t = tree ?? makeCellTree({ cell, gameType: gt });
   const sab = sabotage ? SPLIT_SABOTAGES[sabotage] : null;
   const { project } = ringProject({ cell, gameType: gt, n: 4, talkers: 'none', start: { screen: 0, x: 120, y: 120 }, bulkText: placement === 'banked' ? 3000 : 100 });
   const banks = readTreeText(t, 'engine/banks.asm');

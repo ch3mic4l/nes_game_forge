@@ -42,10 +42,10 @@ export async function maxAdmitted(tree, spec) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree (both are production code since S3 C2)
+  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree, lifted only where production refuses the cell (both rings are production code)
   const rows = [];
   for (const cell of CELLS) for (const gameType of GAME_TYPES) for (const talkers of RESOURCE_SHAPES) for (const bulk of gameType === 'rpg' && talkers === 'landing' ? [false, true] : [false]) {
-    const r = await maxAdmitted(trees.forCell(cell), { cell, gameType, talkers, bulk });
+    const r = await maxAdmitted(trees.forCell(cell, gameType), { cell, gameType, talkers, bulk });
     rows.push({ cell: cell.id, ring: cell.ring, gameType, talkers, bulk, max: r.max, firstRefusal: r.firstProblem });
     console.log(`${cell.id.padEnd(7)} ring ${cell.ring} ${gameType.padEnd(6)} ${(talkers + (bulk ? '+bulk' : '')).padEnd(11)} max N = ${String(r.max).padStart(3)}  ${r.firstProblem ? '| N+1: ' + r.firstProblem.slice(0, 150) : ''}`);
   }

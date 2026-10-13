@@ -98,6 +98,60 @@ test('(a) the admission predicate is one datum per board: only MMC3 lists a game
   }
 });
 
+test('(a) streamedBoardProblems FOLLOWS the registry datum: changing streamRingGameTypes on a board changes what validate admits, with nothing else edited (C1 review P3)', () => {
+  // Catches the escaping implementation the review named: `mapper.id !== 4` / `gameType !== 'action'` hard-coded in streamedBoardProblems while the helpers
+  // (streamRingAdmitted & co.) stay intact and keep passing the datum-only tests above. The registry entry is changed in place and restored in finally.
+  const entry = (id) => MAPPERS.find((m) => m.id === id);
+  const kindsOf = (mapper, mirroring, gameType) => kinds(project({ mapper, mirroring, gridW: mirroring === 'vertical' ? 6 : 1, gridH: mirroring === 'vertical' ? 1 : 6, gameType }));
+  const mmc1 = entry(MMC1), mmc3 = entry(MMC3), u512 = entry(U512);
+  const orig = { mmc1: Object.getOwnPropertyDescriptor(mmc1, 'streamRingGameTypes'), mmc3: Object.getOwnPropertyDescriptor(mmc3, 'streamRingGameTypes'), u512: Object.getOwnPropertyDescriptor(u512, 'streamRingGameTypes') };
+  assert.deepEqual(mmc3.streamRingGameTypes, ['action']);
+  assert.equal(orig.mmc1, undefined, 'MMC1 has no datum today');
+  const set = (m, v) => Object.defineProperty(m, 'streamRingGameTypes', { value: v, configurable: true, writable: true, enumerable: true });
+  try {
+    for (const mirroring of ['vertical', 'horizontal']) {
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'action'), [], `${mirroring}: as shipped, MMC3 action is admitted`);
+      // the datum removed: MMC3 action is refused, as a board without a ring (not as a game-type refusal)
+      delete mmc3.streamRingGameTypes;
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'action'), ['capability'], `${mirroring}: MMC3 without the datum is a board with no ring`);
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'rpg'), ['capability']);
+      // an empty list is the same as none
+      set(mmc3, []);
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'action'), ['capability'], `${mirroring}: an empty list`);
+      // a game type added: RPG follows
+      set(mmc3, ['action', 'rpg']);
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'rpg'), [], `${mirroring}: rpg added to MMC3 is admitted`);
+      // the datum narrowed to rpg only: action is now the refused game type, with the game-type kind (the board still has a ring)
+      set(mmc3, ['rpg']);
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'action'), ['ringGame'], `${mirroring}: action removed from MMC3`);
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'rpg'), []);
+      set(mmc3, orig.mmc3.value);
+      // the datum ADDED to a board that has none: MMC1 and UNROM 512 action are admitted, their RPG is the game-type refusal
+      set(mmc1, ['action']);
+      assert.deepEqual(kindsOf(MMC1, mirroring, 'action'), [], `${mirroring}: ['action'] added to MMC1`);
+      assert.deepEqual(kindsOf(MMC1, mirroring, 'rpg'), ['ringGame']);
+      assert.deepEqual(kindsOf(MMC3, mirroring, 'action'), [], 'and MMC3 is unchanged');
+      delete mmc1.streamRingGameTypes;
+      set(u512, ['action']);
+      assert.deepEqual(kindsOf(U512, mirroring, 'action'), [], `${mirroring}: ['action'] added to UNROM 512`);
+      delete u512.streamRingGameTypes;
+      assert.deepEqual(kindsOf(MMC1, mirroring, 'action'), ['capability'], 'restored');
+      assert.deepEqual(kindsOf(U512, mirroring, 'action'), ['capability'], 'restored');
+    }
+    // validateProject, the user-facing gate, follows the same datum
+    delete mmc3.streamRingGameTypes;
+    assert.ok(errors(project({ mapper: MMC3, mirroring: 'vertical', gridW: 6, gridH: 1 })).some((x) => /stream/i.test(x.message)), 'validateProject refuses MMC3 action when the datum is gone');
+  } finally {
+    for (const [m, d] of [[mmc1, orig.mmc1], [mmc3, orig.mmc3], [u512, orig.u512]]) {
+      if (d) Object.defineProperty(m, 'streamRingGameTypes', d); else delete m.streamRingGameTypes;
+    }
+  }
+  assert.deepEqual(mmc3.streamRingGameTypes, ['action'], 'restored');
+  assert.equal('streamRingGameTypes' in mmc1, false);
+  assert.equal('streamRingGameTypes' in u512, false);
+  assert.deepEqual(kinds(project({ mapper: MMC3, mirroring: 'vertical', gridW: 6, gridH: 1 })), []);
+});
+
 test('(a) the refusal messages: MMC1 / UNROM 512 say "not implemented yet on this board" and name MMC3; neither is the old "four-screen only" text', () => {
   // Catches a stale message that tells an MMC3 user the board they just were admitted on does not work.
   for (const [mapper, mirroring] of [[MMC1, 'horizontal'], [U512, 'vertical']]) {

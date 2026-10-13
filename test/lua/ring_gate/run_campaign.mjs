@@ -71,7 +71,7 @@ for (const p of plan) {
   const { project, gridW, gridH } = ringProject({ cell, gameType, n: p.n, talkers: scene.world?.talkers ?? 'none', start: scene.start, bulkText: banked ? BULK : 0, mutate: scene.world?.mutate });
   const label = `${registryEmus ? 'reg-' + registryEmus.join('+') + '-' : ''}${sabotage ? `sab-${sabotage}${expectVerdict === 'any' ? '' : `-exp-${expectVerdict}`}-` : ''}${cell.id}-${gameType}-${p.placement}-${p.id}`;
   let built;
-  const tree = trees.forCell(cell);
+  const tree = trees.forCell(cell, gameType);
   try { built = await buildCell({ tree, project, cell, gameType, provDir, links, sabotage: sabotage ?? null, label, requestedPlacement: p.placement }); }
   catch (e) { rows.push({ ...base, emu: 'build', error: `build failed: ${e.message.split('\n')[0]}` }); if (e.provPath) stampResult(e.provPath, { ...base, error: e.message.split('\n')[0] }); continue; }
   if (banked) {

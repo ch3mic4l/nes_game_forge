@@ -6,8 +6,9 @@ import { auditChain } from './ringhome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { sha256, BASELINE, PRE_C2_BASELINE, CONSUMED_MECHANISM, REQUIRED_JS, RING_PATCH_SETS, TREE_KIND, PROTOTYPE_TREE_KIND, patchFile, sabotageHasRing, expectedContent, expectedTreeBlobs, expectedEngineNames } from './ringtree.mjs';
+import { sha256, BASELINE, PRE_C2_BASELINE, CONSUMED_MECHANISM, REQUIRED_JS, patchSetFor, LIFT_PATCH, liftNeeded, cellOfId, TREE_KIND, PROTOTYPE_TREE_KIND, patchFile, sabotageHasRing, expectedContent, expectedTreeBlobs, expectedEngineNames } from './ringtree.mjs';
 import { controlFlags } from './s1ccontrols.mjs';
+import { GAME_TYPES } from './ringcells.mjs';
 import zlib from 'node:zlib';
 import { relationshipFailures, requiredEvidence } from './s1bagree.mjs';
 import { validateS1cResult } from './s1caudit.mjs';
@@ -93,12 +94,14 @@ function auditConsumed(st, name, expected, ring) {
 /**
  * The tree provenance of a build or run stamp (round-1 review, finding 2): a stamp that names the wrong baseline, the wrong ring's tree kind, patches other than the ring's required
  * set (names, ORDER and content hashes, checked against the canonical patch files) plus the one sabotage the stamp declares, or a production proof that is not the exact expected
- * content of BASELINE plus those patches, is refused -- a truthy head/baseline and an array of patches certify nothing. Since S3 C2 BOTH rings are production trees with the same proof:
- *   ring 1 (a -V cell)  treeKind 'production-vertical', patches = 00 (+ the declared sabotage's ring-1 form), productionProof = the exact proof recomputed here from the patch files, consumed-input evidence.
- *   ring 2 (a -H cell)  treeKind 'production-horizontal', patches = 00 (+ the sabotage's ring-2 form), the same proof and evidence. A 'prototype-horizontal' stamp is refused at this baseline: the
+ * content of BASELINE plus those patches, is refused -- a truthy head/baseline and an array of patches certify nothing. BOTH rings are production trees with the same proof, and the required
+ * patch set is a function of the stamp's CELL and GAME TYPE (S4a C2): the refusal lift exactly when production refuses that cell (`liftNeeded`, from BASELINE's own streamRingAdmitted), so an MMC3
+ * action stamp carries NO lift (its tree is BASELINE itself) and an MMC1 / UNROM 512 stamp or an MMC3 RPG stamp carries it. A stamp whose patches, proof or consumed evidence disagree with its cell is refused.
+ *   ring 1 (a -V cell)  treeKind 'production-vertical', patches = [00 when lifted] (+ the declared sabotage's ring-1 form), productionProof = the exact proof recomputed here from the patch files, consumed-input evidence.
+ *   ring 2 (a -H cell)  treeKind 'production-horizontal', patches = [00 when lifted] (+ the sabotage's ring-2 form), the same proof and evidence. A 'prototype-horizontal' stamp is refused at this baseline: the
  *                       prototype tree was retired, and the only admissible old prototype stamps are the pre-C2 S1b certificate's, waived by auditStamp under their own historical baseline.
- *   ring 0              a ring-0 identity build: the 'pristine' side carries no patches and no tree kind, proof or evidence; the 'patched' side is a build through the ring-2 tree and carries
- *                       exactly what a ring-2 build does, and the six-fixture comparison names that tree (kind and proof, no build of its own, so no consumed evidence).
+ *   ring 0              a ring-0 identity build: the 'pristine' side carries no patches and no tree kind, proof or evidence; the 'patched' side is a build through the LIFTED ring-2 tree (no cell: the
+ *                       lift is part of what the six-fixture comparison measures) and carries exactly what a lifted ring-2 build does, and the comparison names that tree (kind and proof, no build of its own, so no consumed evidence).
  * A declared sabotage control (st.sabotage on a build / witness stamp, st.control's patch on an s1c run) must be exactly the one extra patch, and an extra patch must be declared.
  */
 export function auditTreeProvenance(st, name) {
@@ -115,9 +118,20 @@ export function auditTreeProvenance(st, name) {
   // the tree kind: required for every production tree (a -V/-H cell, the ring-0 patched side and the comparison); the pristine ring-0 side has none
   if (ring === 0) need(st.treeKind === undefined, `a pristine ring-0 stamp carries treeKind ${st.treeKind}`);
   else need(st.treeKind === TREE_KIND[ring], `treeKind ${JSON.stringify(st.treeKind)}, a ${ring0 ? `ring-0 ${st.kind === 'ring0-build' ? st.tree : 'comparison'}` : st.cell} stamp (ring ${ring}) needs ${TREE_KIND[ring]}${st.treeKind === PROTOTYPE_TREE_KIND ? ' (the prototype-horizontal tree was retired at S3 C2)' : ''}`);
+  // does this stamp's tree carry the refusal lift? ring 0: the pristine side none, the patched side / comparison the lifted ring-2 tree. A cell stamp: exactly when production refuses its cell and game type.
+  let lifted;
+  if (ring === 0) lifted = false;
+  else if (ring0) lifted = true;
+  else {
+    const cell = cellOfId(st.cell);
+    if (!cell || cell.ring !== ring) { need(false, `cell ${JSON.stringify(st.cell)} is none of the six ring cells`); return bad; }
+    if (!GAME_TYPES.includes(st.gameType)) { need(false, `gameType ${JSON.stringify(st.gameType)} is none of ${GAME_TYPES.join(', ')}: the required patch set depends on it`); return bad; }
+    lifted = liftNeeded(cell, st.gameType);
+  }
   // the patch list: required set in order, with hashes; then the declared sabotage only
   const patches = Array.isArray(st.patches) ? st.patches : [];
-  const base = ring === 0 ? [] : RING_PATCH_SETS[ring];
+  const base = ring === 0 ? [] : patchSetFor(lifted);
+  if (ring !== 0 && !ring0) need(patches.some((p) => p?.name === LIFT_PATCH) === lifted, `the stamp's tree ${lifted ? 'lacks' : 'carries'} ${LIFT_PATCH}: production ${lifted ? 'refuses' : 'admits'} ${st.cell} ${st.gameType}, so its tree is ${lifted ? 'BASELINE plus the lift' : 'BASELINE itself (no lift)'}`);
   need(patches.length >= base.length && base.every((n, i) => patches[i]?.name === n), `patches [${patches.map((p) => p?.name).join(', ')}] do not start with the ring-${ring} required set [${base.join(', ')}] in that order`);
   const extras = patches.slice(base.length);
   const canonicalHash = (n) => { try { return sha256(fs.readFileSync(patchFile(n, ring))); } catch { return null; } };
@@ -132,9 +146,10 @@ export function auditTreeProvenance(st, name) {
   const pv = st.productionProof;
   if (ring === 1 || ring === 2) {
     need(pv && typeof pv === 'object' && pv.exact === true && pv.baseline === BASELINE && pv.ring === ring, `a ring-${ring} stamp carries no exact production proof for ring ${ring}`);
+    if (pv && pv.exact === true) need(pv.lifted === lifted, `the proof was made for a ${pv.lifted ? 'lifted' : 'unlifted'} tree, the stamp's cell needs ${lifted ? 'a lifted' : 'an unlifted'} one`);
     if (pv && pv.exact === true) {
       try {
-        const exp = expectedContent(patches.map((p) => ({ name: p.name, file: patchFile(p.name, ring) })), ring);
+        const exp = expectedContent(patches.map((p) => ({ name: p.name, file: patchFile(p.name, ring) })), ring, lifted);
         need(JSON.stringify(pv.patches) === JSON.stringify(exp.patches) && JSON.stringify(pv.patches) === JSON.stringify(patches.map(({ name: n, sha256: h }) => ({ name: n, sha256: h }))), 'the proof was made for different patches than the stamp lists');
         need(JSON.stringify(pv.expected) === JSON.stringify(exp.expected), 'the proof\'s expected file contents are not BASELINE plus the stamp\'s patches');
         need(JSON.stringify(pv.declared) === JSON.stringify([...exp.declared].sort()) && JSON.stringify(pv.changed) === JSON.stringify(pv.declared), 'the proof\'s changed files are not exactly the files the patches declare');

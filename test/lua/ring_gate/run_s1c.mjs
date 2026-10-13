@@ -9,7 +9,7 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { makeTree, sha256, refreshProof, consumedEvidence, consumedSnapshot } from './ringtree.mjs';
+import { makeCellTree, sha256, refreshProof, consumedEvidence, consumedSnapshot } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject } from './ringworld.mjs';
 import { openIsolatedHome, auditChain } from './ringhome.mjs';
 import { MESEN, mesenUnavailable, userSavesSnapshot } from './ringrun_mesen.mjs';
@@ -51,7 +51,7 @@ const label = controlId ? controlLabel(controlId, cell.id, gt, placement) : posi
 // modules): an action project has no battle bank, so it is false whatever the text volume. The scene carrying 3,000 characters of never-reached text (what forces an RPG's overlay
 // into its battle bank) is built, and the capacity verdict reported: resident or refused, never banked.
 if (placement === 'banked' && gt === 'action') {
-  const tree = makeTree({ ring: cell.ring });
+  const tree = makeCellTree({ cell, gameType: gt });
   const base = pathToFileURL(tree.root).href;
   const sp = await import(`${base}/main/build/streamplacement.js`), sh = await import(`${base}/shared/project.js`), gen = await import(`${base}/main/build/generate.js`), cart = await import(`${base}/shared/cartridge.js`);
   const { project } = ringProject({ cell, gameType: 'action', n: 4, talkers: 'none', start: { screen: 0, x: 120, y: 120 }, bulkText: BULK });
@@ -73,7 +73,7 @@ const flags = controlId ? controlFlags(controlId) : { sabotage: null, mutation: 
 const savesBefore = userSavesSnapshot();
 const iso = openIsolatedHome();
 const { home, loaded } = iso;
-const tree = makeTree({ ring: cell.ring, extra: flags.sabotage ? [flags.sabotage] : [] });
+const tree = makeCellTree({ cell, gameType: gt, extra: flags.sabotage ? [flags.sabotage] : [] });
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null, raw: flag('json') ? path.resolve(flag('json')).replace(/\.json$/, '.raw.gz') : null };
 const provPath = writeAttempt(provDir, label, {

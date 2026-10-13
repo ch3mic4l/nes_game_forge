@@ -1,8 +1,8 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index ad91ac1..3aaafc2 100644
+index 7d549a8..fb07282 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4339,8 +4339,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+@@ -4341,8 +4341,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
      `STREAM_RING = ${ringMode}`,
      `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
      `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,

@@ -71,7 +71,7 @@ for (const cell of cells) for (const gameType of gts) for (const placement of pl
     const label = `${sabotage ? `sab-${sabotage}-` : ''}${cell.id}-${gameType}-${placement}-${talkers}-${sc.id}`;
     const base = { cell: cell.id, gameType, placement, talkers, scenario: sc.id };
     let built;
-    const tree = trees.forCell(cell);
+    const tree = trees.forCell(cell, gameType);
     try { built = await buildCell({ tree, project, cell, gameType, provDir, links, sabotage: sabotage ?? null, label, requestedPlacement: placement }); }
     catch (e) {
       const cls = classifyBuildError(sabotage, cell, gameType, e.message);

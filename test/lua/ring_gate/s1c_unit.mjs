@@ -15,7 +15,7 @@ import { analyze, judgeSplit, parseSplitOutput, SPLIT_SABOTAGES, harnessPsb } fr
 import { CONTROLS, controlIds, declaredFor, controlBuilds, controlFlags, controlHasForm, CELL_IDS, MMC3_CELLS, positiveLabel, controlLabel, REQUIRED_ITEMS } from './s1ccontrols.mjs';
 import { validateS1cResult, decodeLabel, recomputeVerdict } from './s1caudit.mjs';
 import zlib from 'node:zlib';
-import { sha256, provenanceFor } from './ringtree.mjs';
+import { sha256, provenanceFor, liftNeeded } from './ringtree.mjs';
 import { auditChain } from './ringhome.mjs';
 import { auditProvenance } from './ringprovindex.mjs';
 import { s1bRowStatus, buildGate, render } from './s1c_gate.mjs';
@@ -24,7 +24,7 @@ import { matrixScripts } from './ringjobs.mjs';
 import { fingerprintGaps, harnessFingerprint } from './ringprov.mjs';
 import { longestPath, nmiBound, maxQSum, certifiedMargin, decode, fixedBank, sweep, ENTRY_DELAY_CYCLES, VBLANK_CYCLES, RTI_CYCLES, OAM_DMA_CYCLES, OPCODES } from './ringwcet.mjs';
 import { buildNmiRing, wcetFor } from './ringnmi.mjs';
-import { makeTree } from './ringtree.mjs';
+import { makeCellTree } from './ringtree.mjs';
 import { sabotageRings } from './ringsabotage.mjs';
 import { CELLS } from './ringworld.mjs';
 
@@ -546,7 +546,7 @@ function certDir(pairs, { raw = true } = {}) {
     const plan = { row: p.result.row, cell: p.result.cell, gameType: p.result.gameType, placement: p.result.placement, control: p.result.control, purpose: `row${p.result.row}-${rowName}`, romSha256: H64, luaSha256: H64b };
     const stamp = {
       schema: 'ring-prov-3', kind: 's1c-run', status: 'built', ...p.stamp, slice: 'S1c', matchingPositive: p.result.control ? positiveLabel(p.result.row, p.result.cell, p.result.gameType, p.result.placement) : null,
-      attempt: { startedAt: 'x' }, harness: fp, head: 'h', ...provenanceFor(p.result.cell.endsWith('-V') ? 1 : 2, p.result.control && controlFlags(p.result.control).sabotage ? [controlFlags(p.result.control).sabotage] : []), nesasm: { sha256: H64 }, host: { kernel: 'k' },
+      attempt: { startedAt: 'x' }, harness: fp, head: 'h', ...provenanceFor(p.result.cell.endsWith('-V') ? 1 : 2, liftNeeded(CELLS.find((c) => c.id === p.result.cell), p.result.gameType), p.result.control && controlFlags(p.result.control).sabotage ? [controlFlags(p.result.control).sabotage] : []), nesasm: { sha256: H64 }, host: { kernel: 'k' },
       projectSha256: H64, plan: { ...plan, sha256: sha256(JSON.stringify(plan)) }, build: { streamRing: p.result.cell.endsWith('-V') ? 1 : 2, placement: { requested: p.result.placement, assembled: p.result.placement === 'banked' ? 'switchable' : 'resident' } },
       userSavesUntouched: true, mesenChain: [{ n: 1, spec: plan.purpose, purpose: plan.purpose, pid: 7, status: p.result.mesenStatus, isolated: true, settingsSha256: 'a', exe: '/m', loadedFiles: ['/x'] }],
       emulators: { mesen: {}, jsnes: { na: 'not measured: this slice has no jsnes timing recorder; Mesen is the authoritative measurement' } },
@@ -1060,7 +1060,7 @@ test('certifiedMargin: the vblank cycles left after the entry delay, the handler
 // the real assembled builds: the three pilot cells
 const wcetBuild = async (cellId, gt, placement) => {
   const cell = CELLS.find((c) => c.id === cellId);
-  const b = await buildNmiRing({ cell, gt, placement, label: `unit-wcet-${cellId}-${gt}-${placement}`, tree: makeTree({ ring: cell.ring }) });
+  const b = await buildNmiRing({ cell, gt, placement, label: `unit-wcet-${cellId}-${gt}-${placement}`, tree: makeCellTree({ cell, gameType: gt }) });
   return b;
 };
 const REAL = [['MMC3-H', 'rpg', 'banked'], ['MMC1-V', 'action', 'resident'], ['U512-H', 'rpg', 'banked']];
@@ -1104,7 +1104,7 @@ for (const [cellId, gt, placement] of REAL) {
 }
 test('ringwcet: a ROM whose chunk differs from the contract has no bound for that mode (the nmi-chunk4 / nmi-mixed3 controls), the other mode keeps its bound', async () => {
   for (const [breakMode, bad, good] of [['chunk4', 'strip', 'mixed'], ['mixed3', 'mixed', 'strip']]) {
-    const b = await buildNmiRing({ cell: CELLS.find((c) => c.id === 'MMC1-V'), gt: 'action', placement: 'resident', breakMode, label: `unit-wcet-${breakMode}`, tree: makeTree({ ring: 1 }) });
+    const b = await buildNmiRing({ cell: CELLS.find((c) => c.id === 'MMC1-V'), gt: 'action', placement: 'resident', breakMode, label: `unit-wcet-${breakMode}`, tree: makeCellTree({ cell: CELLS.find((c) => c.id === 'MMC1-V'), gameType: 'action' }) });
     try {
       assert.equal(b.wcet.error, undefined);
       assert.equal(b.wcet[bad], null);
