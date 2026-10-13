@@ -202,8 +202,9 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   between a streamed build and the same project with every map's `streamed` flag forced off, flat
   at 3449 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
   equality-asserted by `kernelbytes.test.js`. Phase 2 slice 2b's Part D narrowed streaming to UNROM
-  512 (`streamCapableFourScreen`) alone, so this is no longer measured per mapper; MMC1/MMC3 are
-  refused outright by `validateStreamedMaps` regardless of what this would measure there. Re-measured
+  512 (`streamCapableFourScreen`) alone, so this is no longer measured per mapper; MMC1/MMC3 were
+  refused outright by `validateStreamedMaps` regardless of what this would measure there (phase 3b S4a admitted MMC3 action rings; the ring
+  allowances are measured on every board, see "Phase 3b slice S2, commit C2" below). Re-measured
   up from 2050 to 2376 by this same slice's own landing-site resolver and render call sites
   (`sw_resolve_screen`, `sw_render_window`, `sw_locate_current`), then to 2432 by fix round 1's own
   finding 1 (a real 16-bit locator pointer, `sw_resolve_owner_streamed`, replacing an 8-bit multiply
@@ -531,8 +532,8 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     `sta <flat_screen`, so `flat_screen` stays the global id while `ord_screen` adopts the
     newly-crossed-to compacted index too. The helper itself is a fixed 13 bytes; each of its 8 call
     sites (the slide branch and the cut fallback, times all 4 directions) replaces a 2-byte store
-    with a 3-byte `jsr`, +1 byte each, all 8 always assembling since a streamed map is only ever
-    reachable on UNROM 512 with four-screen mirroring, whose `cameraAxes` answers both axes true.
+    with a 3-byte `jsr`, +1 byte each, all 8 always assembling whichever axes a mirroring leaves dead
+    (phase 2 reached only UNROM 512 four-screen, where `cameraAxes` answers both axes true; the S4a MMC3 ring builds assemble the same 8 sites).
   - Phase 2 slice 4b's own three more kernel-lo terms, the movement driver's caller-side glue outside
     `engine/streamworld.asm` itself: `STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE = 7` —
     `engine/player.asm`'s `update_player_knock`, a `lda <map_is_streamed / bne` branch into the

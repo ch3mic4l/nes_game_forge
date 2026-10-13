@@ -308,14 +308,19 @@ refuses the build, and no longer warns either: S3b deleted the warning (`validat
 mapper-switch preflight; project load checks `streamedGridProblems` directly. *Dead axis* (`'deadAxis'`, named for the Map Forge): a board that can stream but whose mirroring
 leaves one axis without a scroll (`cameraAxes` is the single writer of which) holds exactly one screen of ring on that axis, so a
 streamed map must be 1 screen wide when sideways is dead and 1 screen tall when up and down is, and the message says to shrink
-the map or change the mirroring (the two-nametable boards are refused outright today, README, but the check still runs and the
-mapper-switch preflight below asks it). *Grid* (`streamedGridProblems`): each side an integer in 1..`LIMITS.streamedGrid` (255)
+the map or change the mirroring (since phase 3b S4a it is live for MMC3 action rings; MMC1 and UNROM 512 two-nametable boards are still
+refused outright, README, but the check still runs on them and the mapper-switch preflight below asks it). *Board admission*: which
+two-nametable boards a user may build a ring on is one datum per registry entry, `streamRingGameTypes` (`shared/cartridge.js`; MMC3
+`['action']`), read through `streamRingBoardAdmitted` / `streamRingAdmitted`; a board without it gets the `'capability'` refusal "not implemented yet on
+this board" (S4b / S4c are one datum line each). *Ring game type* (`'ringGame'`, named for the Build panel): a board that has a ring but not for
+this project's game type -- today a streamed RPG on MMC3 -- is refused until S5, the same tier as `'capability'` (a property of the board and game
+type, not of the grid). *Grid* (`streamedGridProblems`): each side an integer in 1..`LIMITS.streamedGrid` (255)
 and `gridW * gridH` within `LIMITS.projectScreens` (255), **and a second, separate refusal when the map holds more authored
 screens than `gridW * gridH`** ("holds N screens but is only W x H"); `normalizeProject` throws `StreamedGridError` and project
 load reports it instead of dropping the extra screens. *Mapper-switch preflight* (Build panel): `checkStreamedMapperSwitch`
 (`main/build/generate.js`) works on a `structuredClone`, applies the candidate board and mirroring, runs `reconcileCartridge`,
-and returns the first failing check's plain-language refusals -- the board cannot stream, then the dead axis, then the aggregate
-region count; an empty list means no objection and the real project is never touched. The resize refusal is in
+and returns the first failing check's plain-language refusals -- the board cannot stream or has no ring (`'capability'`), then the board does not
+admit the game type (`'ringGame'`), then the dead axis, then the aggregate region count; an empty list means no objection and the real project is never touched. The resize refusal is in
 `docs/reference-electron-layout.md`. `test/unit/docclaims.test.js` (T4) re-fires every one of these on a minimal project and
 checks the docs still name it.
 
@@ -851,10 +856,9 @@ the original bytes; `streamringidentity.test.js` proves it for the six fixtures 
 | render-window nametable sequence | `SW_RW_NT_STEP` 1, `SW_RW_NT_END` 2 | 1, 4 | `sw_ring_nt_step`, `sw_ring_nt_end` |
 
 The column strip therefore reads one screen (two `switch_prg_bank` calls: one read, one restore) where the torus reads two. The render window
-writes nametables 0 and 1 only, so no PPU write is ever addressed to `$28xx`/`$2Cxx`. **A horizontal ring is not built**: the row-strip forks and
-`player.asm`'s Y handling are slice S3; `generate.js` refuses mode 2 ("Build panel: ... not implemented yet") and `validateProject` still refuses
-every two-nametable streamed board, so the ring is reachable only through the test-only bypass copy of `test/lib/ringbypass.js` (a mkdtemp copy of
-`engine/ main/ shared/` with the one validate refusal neutralized; there is no shipped flag). Tests: `streamring.test.js` (selection, constants,
+writes nametables 0 and 1 only, so no PPU write is ever addressed to `$28xx`/`$2Cxx`. (The horizontal ring followed in S3, below.) Since S4a
+`validateProject` admits this ring for MMC3 action games; on MMC1 and UNROM 512 it is reachable only through the test-only bypass copy of
+`test/lib/ringbypass.js` (a mkdtemp copy of `engine/ main/ shared/` with the one validate refusal neutralized; there is no shipped flag). Tests: `streamring.test.js` (selection, constants,
 refusals), `streamringoracle.test.js` (laps, seam, alias-write trace), `streamringredraw.test.js` and `streamringcontinue.test.js` (every
 full-redraw path), `streamringdialogue.test.js` (both live indices, split close), `streamringstrip.test.js` (one-screen strip),
 `streamringidentity.test.js`, and the named sabotages of `test/lua/run_ring_sabotage.mjs`. The scenes, interpreter and judge are the certified S1
@@ -879,7 +883,7 @@ row strip reads one screen (one `sw_goto`, one restore); nothing is ever address
 on `gridH == 1` and a column strip never on `gridW == 1`, and the camera never moves X. `engine/player.asm`'s `cross_left_cut` tail needs a far branch
 (`bne ring_far1` / `jmp cross_none`) under `.if STREAM_RING` inside `.if !CAMERA_SLIDE_H`, because `cross_none` is out of a plain `beq`'s range on a
 horizontal-camera ring. The close frame is one five-packet structure with `vram_len` 84 (the vertical ring's is split across the seam, 87).
-`validateProject` still refuses every two-nametable streamed board, so this too is reachable only through `test/lib/ringbypass.js`. Tests:
+Since S4a this ring is admitted for MMC3 action games; MMC1 and UNROM 512 are reachable only through `test/lib/ringbypass.js`. Tests:
 `streamringh.test.js` (selection, refusal, assembly on 3 boards x 2 game types, operand readback, allowance), `streamringhstrip.test.js`,
 `streamringhoracle.test.js`, `streamringhredraw.test.js`, `streamringhdialogue.test.js`, `streamringhclose.test.js`, `streamringhfar.test.js` (the far branch's condition, on an ordinary screen of a mixed project), and the `h-*` sabotages of
 `test/lua/run_ring_sabotage.mjs`. Design record: `docs/design-streamed-worlds-phase3b.md`, section 9.

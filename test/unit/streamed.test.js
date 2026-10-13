@@ -290,20 +290,26 @@ test('gating: an unsupported board or mirroring is refused, naming the Build pan
   }
 });
 
-test('Part D item 1: a two-nametable board (MMC1/MMC3/UNROM 512 non-fourscreen) is refused today, only UNROM 512 four-screen is not', () => {
-  // Catches item 1's new restriction never firing at all, or firing on the one board it must not.
+test('Part D item 1 (narrowed by S4a): MMC1 and UNROM 512 non-fourscreen are still "not yet on this board"; MMC3 and UNROM 512 four-screen are not', () => {
+  // Catches item 1's restriction never firing at all, firing on a board S4a admitted (MMC3), or firing on the one board it must not.
+  // The full board x mirroring x game type x grid table is test/unit/streamadmit.test.js.
   const allProblems = (p) => validateProject(p).filter((x) => /stream/i.test(x.message));
-  for (const [mapperId, mirroring] of [[1, 'horizontal'], [4, 'vertical'], [30, 'vertical'], [30, 'horizontal']]) {
+  for (const [mapperId, mirroring] of [[1, 'horizontal'], [1, 'vertical'], [30, 'vertical'], [30, 'horizontal']]) {
     const p = project(mapperId, mirroring);
     p.maps[0].streamed = true;
     const found = allProblems(p).filter((x) => ITEM1_MESSAGE.test(x.message));
     assert.equal(found.length, 1, `${mapperId}/${mirroring}`);
     assert.equal(found[0].severity, 'error');
     assert.equal(found[0].where, 'Build');
+    assert.match(found[0].message, /not implemented yet on this board/);
+    assert.match(found[0].message, /MMC3 with horizontal or vertical mirroring \(action games\)/, 'the message names the board that works');
+    assert.ok(!/UNROM 512 with four-screen mirroring today/.test(found[0].message), 'the pre-S4a "four-screen only" wording is gone');
   }
-  const four = project(30, 'fourscreen');
-  four.maps[0].streamed = true;
-  assert.equal(allProblems(four).filter((x) => ITEM1_MESSAGE.test(x.message)).length, 0);
+  for (const [mapperId, mirroring] of [[4, 'vertical'], [4, 'horizontal'], [30, 'fourscreen']]) {
+    const p = project(mapperId, mirroring);
+    p.maps[0].streamed = true;
+    assert.equal(allProblems(p).filter((x) => ITEM1_MESSAGE.test(x.message)).length, 0, `${mapperId}/${mirroring}`);
+  }
 });
 
 test('an ordinary map on an incapable board raises no streamed problem at all', () => {

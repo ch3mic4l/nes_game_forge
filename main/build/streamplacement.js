@@ -63,8 +63,7 @@ export const BANK_SIZE = 8192;
 // UNROM 512 -- test/unit/kernelbytes.test.js. Phase 2 slice 2b's Part D
 // item 1 narrowed streaming to UNROM 512 (streamCapableFourScreen) alone,
 // so the per-mapper board list this comment used to name (MMC1/MMC3 too)
-// no longer applies; MMC1/MMC3 are refused outright by validateStreamedMaps
-// regardless of what this allowance would measure on them. Re-measured up
+// no longer applied then; phase 3b S4a admitted MMC3 action rings (the ring builds are measured on every board, kernelbytes.test.js). Re-measured up
 // from 2050 by this same slice's own landing-site resolver/render call
 // sites (sw_resolve_screen, sw_render_window, sw_locate_current and the
 // rest of engine/streamworld.asm's phase 2 slice 2b growth) -- the prior

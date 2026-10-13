@@ -1529,10 +1529,10 @@ export const STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE = 8;
 // sites (the slide branch and the cut fallback, times all 4 directions)
 // replaces a 2-byte `sta <flat_screen` with a 3-byte `jsr cross_set_screen`,
 // +1 byte each -- and all 8 always assemble: a streamed map only ever
-// reaches the build on UNROM 512 with four-screen mirroring (the only ring
-// implemented so far, shared/project.js's own streamed-map validation), and
-// cameraAxes answers both axes true under four-screen, so there is no
-// camera-axis-dependent variant to track here.
+// reaches the build on UNROM 512 with four-screen mirroring or, since phase 3b S4a,
+// an action game on MMC3 with a two-nametable ring (streamRingAdmitted, shared/cartridge.js). All 8 sites
+// assemble regardless of which camera axis a mirroring leaves dead, so there is no
+// camera-axis-dependent variant to track here (the ring builds are measured, test/unit/kernelbytes.test.js).
 export const STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8;
 // Fix round 1, finding 3: a streamed landing must not inherit the previous
 // OWNER screen's active bound-tile cache -- both landing-site copies of the
@@ -3150,8 +3150,10 @@ function streamedCapacityProblems(project, mapper, options = {}) {
  * candidate, runs reconcileCartridge (a switch can itself shrink the tileset ceiling or force a
  * mirroring, and the aggregate check must see the post-switch shape), then asks three checks in
  * order and returns the first failing one's plain-language refusals -- (1) the candidate can stream
- * at all, (2) its dead-axis restriction holds for every streamed map's grid, (3) the aggregate
- * region check. An empty list means no objection; the real project is never touched. It lives in
+ * at all (and has a ring for it: `capability`), (2) it admits this project's game type (`ringGame`: a streamed RPG on a
+ * two-nametable board, until S5 -- a property of the candidate board and the game type, like (1), so it is asked beside it:
+ * leaving it out would let the switch through to a project validateProject then refuses), (3) its dead-axis restriction holds
+ * for every streamed map's grid, (4) the aggregate region check. An empty list means no objection; the real project is never touched. It lives in
  * main/build rather than shared/ because check 3 needs assignScreenBanks, so it cannot be called
  * from the renderer without moving that packer.
  */
@@ -3162,7 +3164,7 @@ export function checkStreamedMapperSwitch(project, candidateMapperId, candidateM
   if (candidateMirroring !== undefined) moved.cartridge.mirroring = candidateMirroring;
   reconcileCartridge(moved);
   const board = streamedBoardProblems(moved);
-  for (const kind of ['capability', 'deadAxis']) {
+  for (const kind of ['capability', 'ringGame', 'deadAxis']) {
     const failed = board.filter((problem) => problem.kind === kind);
     if (failed.length) return failed.map((problem) => problem.message);
   }
@@ -4089,8 +4091,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
   const hasStreamed = streamedPlan !== null;
   // Phase 3b S2/S3: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
-  // streamRingMode): 1 vertical, 2 horizontal. validateProject still refuses every two-nametable streamed board (admission is S4's),
-  // so a mode-2 build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
+  // streamRingMode): 1 vertical, 2 horizontal. validateProject admits only MMC3 action games on a ring (S4a, streamRingAdmitted),
+  // so every other two-nametable build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
   const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
   const projA = projectUsesStreamedActors(project);
   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;

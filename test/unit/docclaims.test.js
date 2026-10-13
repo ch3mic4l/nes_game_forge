@@ -58,7 +58,8 @@ import {
 } from '../../shared/project.js';
 import { STREAM_TILE_BOUND, STREAM_TILE_BOUND_WITH_BOUND_TILES } from '../../shared/streambound.js';
 import { moverSpeedNote } from '../../shared/streamlayout.js';
-import { checkStreamedMapperSwitch } from '../../main/build/generate.js';
+import { checkStreamedMapperSwitch, planStreamedRegions } from '../../main/build/generate.js';
+import { resolveMapper } from '../../shared/cartridge.js';
 
 const SELF = 'test/unit/docclaims.test.js';
 const tracked = trackedFiles();
@@ -359,9 +360,12 @@ const STREAMED_WARNINGS = [
   { id: 'board cannot stream (kind capability, error)', pinned: 'streamed.test.js "gating", streamedcapacity.test.js',
     fires: () => streamedBoardProblems(createStreamedProject({ mapper: 0, mirroring: 'horizontal' })).some((p) => p.kind === 'capability' && /cannot stream a world/.test(p.message)),
     docs: [['README.md', /UNROM 512 with four-screen mirroring/]] },
-  { id: 'board only reaches the two-nametable ring (kind capability, error)', pinned: 'streamed.test.js "Part D item 1"',
-    fires: () => validateProject(createStreamedProject({ mapper: 1, mirroring: 'horizontal' })).some((p) => p.severity === 'error' && /two-nametable ring -- not implemented yet/.test(p.message)),
-    docs: [['README.md', /MMC1, MMC3 and UNROM 512 with horizontal or vertical mirroring are refused/]] },
+  { id: 'board has no two-nametable ring yet (kind capability, error): MMC1 and UNROM 512 non-fourscreen', pinned: 'streamed.test.js "Part D item 1", streamadmit.test.js (a)',
+    fires: () => validateProject(createStreamedProject({ mapper: 1, mirroring: 'horizontal' })).some((p) => p.severity === 'error' && /two-nametable ring -- not implemented yet on this board/.test(p.message)),
+    docs: [['README.md', /MMC1 and UNROM 512 with horizontal or vertical mirroring, and a streamed RPG on any two-nametable board, are refused for now/]] },
+  { id: 'a streamed RPG on a two-nametable board (kind ringGame, error): refused until S5', pinned: 'streamadmit.test.js (b)',
+    fires: () => streamedBoardProblems(createStreamedProject({ mapper: 4, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 })).some((p) => p.kind === 'ringGame' && p.where === 'Build' && /streamed RPGs are not implemented there yet/.test(p.message)),
+    docs: [['README.md', /a streamed RPG on any two-nametable board, are refused for now/], ['docs/reference-engine.md', /\*Ring game type\* \(`'ringGame'`/]] },
   { id: 'dead axis (kind deadAxis, error)', pinned: 'streamed.test.js "two-nametable: the dead axis"',
     fires: () => streamedBoardProblems(createStreamedProject({ mapper: 1, mirroring: 'horizontal', gridW: 6, gridH: 1 })).some((p) => p.kind === 'deadAxis'),
     docs: [['docs/reference-engine.md', /\*Dead axis\* \(`'deadAxis'`/]] },
@@ -399,7 +403,7 @@ const STREAMED_WARNINGS = [
 ];
 
 test('T4 every streamed-map warning and refusal still fires on a minimal project', () => {
-  assert.equal(STREAMED_WARNINGS.length, 12);
+  assert.equal(STREAMED_WARNINGS.length, 13);
   for (const w of STREAMED_WARNINGS) assert.equal(w.fires(), true, `${w.id} no longer fires`);
   // and the one deleted by S3b does not: a Move on a streamed map raises nothing (streamedwarning.test.js is the full pin)
   const move = createStreamedProject({ moveCommands: [{ op: 'move', who: 'player', dir: 'right', dist: 100 }] });
@@ -429,6 +433,9 @@ test('README streamed-worlds row: its figures are the ones the code carries', ()
   assert.match(flat, new RegExp(`up to ${LIMITS.projectScreens} screens in the whole project and ${LIMITS.streamedGrid} along a side`));
   assert.match(flat, /dash is ignored/);
   assert.match(flat, /vanish at the seam/);
+  // S4a: the MMC3 ring's two figures -- a row of up to LIMITS.streamedGrid screens under vertical mirroring, and a column of up to the board's 8 KB region count under horizontal
+  const regions = planStreamedRegions(createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 1 }), resolveMapper(4)).usable.length;
+  assert.match(flat, new RegExp(`a single row of up to ${LIMITS.streamedGrid} screens under vertical mirroring, or a single column of up to ${regions} under horizontal`));
 });
 
 test('docs.test.js and this file agree on the doc set: CLAUDE.md pointers are tracked', () => {

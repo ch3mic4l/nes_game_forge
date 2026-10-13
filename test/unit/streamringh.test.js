@@ -36,10 +36,10 @@ test('streamRingMode: horizontal mirroring on every streamable board is mode 2, 
   }
 });
 
-test('validateProject still refuses a streamed horizontal board (the ring is not user-reachable until S4)', () => {
+test('validateProject still refuses a streamed horizontal MMC1 / UNROM 512 board; MMC3 action is admitted (S4a)', () => {
   for (const id of BOARDS) {
     const errors = validateProject(horizontal(id)).filter((p) => p.severity === 'error');
-    assert.ok(errors.some((p) => /two-nametable ring -- not implemented yet/.test(p.message)), `${resolveMapper(id).name}: ${errors.map((p) => p.message).join(' | ') || 'no error'}`);
+    assert.equal(errors.some((p) => /two-nametable ring -- not implemented yet/.test(p.message)), id !== 4, `${resolveMapper(id).name}: ${errors.map((p) => p.message).join(' | ') || 'no error'}`);
   }
 });
 
