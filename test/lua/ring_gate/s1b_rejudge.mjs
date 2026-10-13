@@ -21,7 +21,7 @@ if (!logDir || !provDir || !outDir) { console.error('usage: s1b_rejudge.mjs <ori
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const shaFile = (f) => sha(fs.readFileSync(f));
 // The historical waiver of the tree-provenance audit is for the pre-C2 S1b certificate and nothing else: a provenance directory holding any stamp that is not one of its (baseline 5138c1f,
-// kinds the old certificate contains) is refused BEFORE anything is written -- a current-baseline (cd7a9f8) stamp must go through the full audit (ringprovindex.mjs), never through this tool.
+// kinds the old certificate contains) is refused BEFORE anything is written -- a current-baseline stamp must go through the full audit (ringprovindex.mjs), never through this tool.
 const foreign = fs.readdirSync(provDir).filter((x) => x.endsWith('.json') && x !== 'INDEX.json').sort()
   .map((x) => ({ x, st: JSON.parse(fs.readFileSync(path.join(provDir, x), 'utf8')) })).filter(({ st }) => !isHistoricalStamp(st));
 if (foreign.length) {

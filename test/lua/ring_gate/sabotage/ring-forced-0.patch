@@ -1,13 +1,13 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 7b910e3..9f24a08 100644
+index ad91ac1..a8d782b 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4085,7 +4085,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
-   // Phase 3b S2: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
-   // streamRingMode). Mode 2 (horizontal) is the S3 row fork, which this engine does not carry: refuse it here even though
-   // validateProject already does, so a caller that reaches the generator another way never assembles a half-forked ROM.
+@@ -4091,7 +4091,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+   // Phase 3b S2/S3: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
+   // streamRingMode): 1 vertical, 2 horizontal. validateProject still refuses every two-nametable streamed board (admission is S4's),
+   // so a mode-2 build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
 -  const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
 +  const ringMode = 0;
-   // Phase 3b ring prototype (gate-only): mode 2 builds, with the row fork of 02-ring-engine.patch.
    const projA = projectUsesStreamedActors(project);
    const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
+ 

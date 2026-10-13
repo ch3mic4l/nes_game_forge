@@ -1,5 +1,5 @@
 // Which world lengths N the build admits for each ring cell, game type and resource shape -- asked of the real capacity check
-// (`checkCapacity`, main/build/generate.js) on the ring-prototype tree, never assumed. The PRG demand of a streamed map is
+// (`checkCapacity`, main/build/generate.js) on the ring's production tree, never assumed. The PRG demand of a streamed map is
 // `gridH * ceil(gridW / 24)` regions (shared/streamlayout.js `streamRegionsPerRow`, STREAM_SCREENS_PER_REGION = 24) and a streamed screen pays NO
 // per-screen kernel-lo column (main/build/generate.js, `kernelTableBytes`: the 13 bytes/screen term charges ordinary screens only), so a
 // vertical N x 1 world needs ceil(N/24) regions and a horizontal 1 x N world needs N.
@@ -42,7 +42,7 @@ export async function maxAdmitted(tree, spec) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree (vertical = production code, horizontal = prototype)
+  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree (both are production code since S3 C2)
   const rows = [];
   for (const cell of CELLS) for (const gameType of GAME_TYPES) for (const talkers of RESOURCE_SHAPES) for (const bulk of gameType === 'rpg' && talkers === 'landing' ? [false, true] : [false]) {
     const r = await maxAdmitted(trees.forCell(cell), { cell, gameType, talkers, bulk });

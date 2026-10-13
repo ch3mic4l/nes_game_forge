@@ -3,17 +3,17 @@
 //   node test/lua/ring_gate/run_identity.mjs [--json=<file>] [--sabotage=<name>] [--ring=1|2] [--prov-dir=<dir>] [--log=<path>]
 // Exit 0 = every cell's outcome is the declared one; 1 = a declared outcome was not met; 2 = an unexpected build error or a bad invocation (errors
 // take precedence over every other verdict).
-// --sabotage=<name> layers sabotage/<name>.patch on top of the complete prototype. Each cell's outcome (catch / pass) is DECLARED per sabotage in
+// --sabotage=<name> layers the ring's form of sabotage/<name>.patch on top of the production ring tree. Each cell's outcome (catch / pass) is DECLARED per sabotage in
 // ringsabotage.mjs and compared with the actual one; combinations proven unbuildable from source are predeclared witnesses (the build is still
 // attempted and must fail with the declared message). --log=<path> only links the log file the caller redirects this run to into the stamps.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { makeTree, makeTreeSet, loadTree, ROOT, sha256 } from './ringtree.mjs';
+import { makeTree, makeTreeSet, loadTree, ROOT, sha256, refreshProof, verifyBuildDir, consumedSnapshot } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject, buildCell } from './ringworld.mjs';
 import { identityFailures } from './ringidentity.mjs';
 import { harnessFingerprint, stampResult, writeAttempt, finishAttempt, nesasmStamp, hostStamp, fileStamp } from './ringprov.mjs';
-import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError, sabotageRings } from './ringsabotage.mjs';
+import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError, sabotageRings, noFormReason } from './ringsabotage.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
@@ -44,10 +44,14 @@ async function fixtureRom(tree, name, kind) {
     stampPath = writeAttempt(provDir, `ring0-${name}-${kind}`, {
       kind: 'ring0-build', fixture: name, tree: kind, links: { result: links.result, log: links.log, comparison: provDir ? path.join(provDir, `ring0-${name}.json`) : null },
       head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches,
+      // the patched side is a build through the production-horizontal tree and carries what every ring-2 build does (the pristine side has no tree kind, proof or evidence)
+      ...(tree.ring ? { treeKind: tree.kind, productionProof: loaded.proof } : {}),
       mapper: project.cartridge?.mapper ?? null, mirroring: project.cartridge?.mirroring ?? null, projectSha256: sha256(JSON.stringify(canonical(project))),
       harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp(), builtFrom: 'mkdtemp copy of the fixture; the fixture is never mutated'
     });
     const built = await loaded.buildProject({ dir, project, log: (l) => lines.push(l) });
+    // bound to the bytes this build CONSUMED (ringtree.mjs, the consumed-input guard); null for the pristine copy, which has no guard
+    const consumed = verifyBuildDir(tree, dir, project);
     const rom = fs.readFileSync(path.join(dir, 'build/game.nes'));
     const cfgText = fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8');
     const num = (n) => Number(new RegExp(`^${n}\\s*=\\s*(\\d+)`, 'm').exec(cfgText)?.[1] ?? NaN);
@@ -55,6 +59,7 @@ async function fixtureRom(tree, name, kind) {
     for (const l of lines) { const m = l.match(/^BANK\s+(\d+)\s+(\d+)\/\s*(\d+)\s*$/); if (m) banks[m[1]] = { used: +m[2], free: +m[3] }; }
     const romSha = sha256(rom);
     finishAttempt(stampPath, 'built', {
+      ...(tree.ring ? { productionProof: refreshProof(tree), consumed } : {}),
       romSha256: romSha, header: { mapper: (rom[6] >> 4) | (rom[7] & 0xf0), flags6: rom[6], fourScreen: (rom[6] & 8) !== 0 },
       streamRing: num('STREAM_RING'), streamingEnabled: num('STREAMING_ENABLED'),
       placement: Number.isFinite(num('SW_DLG_BANKED')) ? { generatedFlag: num('SW_DLG_BANKED') } : 'n/a (no streamed dialogue overlay in this fixture)',
@@ -62,7 +67,7 @@ async function fixtureRom(tree, name, kind) {
     });
     return { sha: romSha, stampPath };
   } catch (e) {
-    finishAttempt(stampPath, 'error', { error: { firstLine: String(e.message).split('\n')[0], message: String(e.message).slice(0, 4000) }, resources: { buildLogTail: lines.slice(-12) } });
+    finishAttempt(stampPath, 'error', { ...(tree.ring ? { consumed: consumedSnapshot(tree) } : {}), error: { firstLine: String(e.message).split('\n')[0], message: String(e.message).slice(0, 4000) }, resources: { buildLogTail: lines.slice(-12) } });
     throw e;
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
@@ -79,11 +84,11 @@ function record(row) {
   if (row.error) errors++; else if (row.mismatch || row.fails.length && !sabotage) failures++;
 }
 
-// One tree per orientation: a vertical cell is built through the production-vertical tree (C2's shipped forks + the refusal lift), a horizontal cell through the prototype tree.
+// One tree per orientation: a vertical cell is built through the production-vertical tree (C2's shipped forks + the refusal lift), a horizontal cell through the production-horizontal tree (C1's shipped forks + the refusal lift).
 const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 
 // ---- STREAM_RING=0: the six fixtures through the patched tree are byte-identical to the unpatched tree (every constituent build stamped). The patched tree is the
-// horizontal PROTOTYPE tree: it carries every patch there is, so it is the one a leak into a four-screen build could come from (the vertical tree is production + one validate edit).
+// horizontal production tree: it carries the most ring code (the row fork and the far branch as well), so it is the one a leak into a four-screen build could come from.
 if (!sabotage) {
   const tree = trees.forRing(2);
   const pristine = makeTree({ ring: false });
@@ -97,7 +102,7 @@ if (!sabotage) {
       const cmpPath = path.join(provDir, `ring0-${name}.json`);
       for (const st of [a.stampPath, b.stampPath]) stampResult(st, { row: 'ring0-identity', comparison: cmpPath, equal: a.sha === b.sha });
       fs.writeFileSync(cmpPath, JSON.stringify({ schema: 'ring-prov-3', kind: 'ring0-identity-comparison', status: 'built', fixture: name, baseline: tree.baseline, head: tree.head, trackedStatus: tree.status,
-        patches: tree.patches, pristineRomSha256: a.sha, patchedRomSha256: b.sha, equal: a.sha === b.sha,
+        treeKind: tree.kind, productionProof: refreshProof(tree), patches: tree.patches, pristineRomSha256: a.sha, patchedRomSha256: b.sha, equal: a.sha === b.sha,
         constituents: { pristine: { stamp: a.stampPath, sha256: sha256(fs.readFileSync(a.stampPath)) }, patched: { stamp: b.stampPath, sha256: sha256(fs.readFileSync(b.stampPath)) } },
         links: { result: links.result, log: links.log }, harness: harnessFingerprint(), results: [{ row: 'ring0-identity', equal: a.sha === b.sha }] }, null, 1));
     }
@@ -113,8 +118,8 @@ for (const cell of CELLS.filter((c) => !flag('ring') || c.ring === Number(flag('
       const placement = banked ? 'banked' : 'resident';
       const declared = sabotage ? IDENTITY_OUTCOME[sabotage](cell, gameType, banked) : 'pass';
       if (sabotage && !sabotageRings(sabotage).includes(cell.ring)) {
-        // no form of this sabotage exists for this ring: the vertical production tree does not carry the code it targets (ringsabotage.mjs SABOTAGE_RINGS)
-        witnessed++; results.push({ row: 'identity', cell: cell.id, gameType, placement, fails: [], witnessed: `sabotage ${sabotage} has no ring-${cell.ring} form: the ${cell.ring === 1 ? 'vertical production' : 'horizontal'} tree does not carry the code it targets` });
+        // no form of this sabotage exists for this ring: it would be an equivalent mutant there (ringsabotage.mjs SABOTAGE_RINGS, NO_FORM_REASON)
+        witnessed++; results.push({ row: 'identity', cell: cell.id, gameType, placement, fails: [], witnessed: `sabotage ${sabotage} has no ring-${cell.ring} form: ${noFormReason(sabotage, cell.ring)}` });
         continue;
       }
       const tree = trees.forCell(cell);

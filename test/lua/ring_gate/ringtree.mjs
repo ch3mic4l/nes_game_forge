@@ -3,15 +3,15 @@
 // (buildProject). It fails loudly if a patch does not apply and never falls back to the unpatched tree: a silent four-screen
 // fallback counted as a ring pass is the exact defect the row-1 identity cell exists to catch.
 //
-// Two kinds of ring tree, by STREAM_RING mode (phase 3b S2 rebaselined the gate onto C2's production vertical ring):
-//   ring 1 (vertical)   = BASELINE + 00-refusal-lift.patch (+ the sabotage's vertical form). The vertical ring's forks are C2's SHIPPED
-//                         code, byte for byte: `verifyProductionVertical` rebuilds the EXACT expected content (BASELINE's blobs with the
-//                         canonical, hashed patches applied in order) and requires every file of the tree to equal it by git blob hash -- an
-//                         edit inside a file a sabotage already declares is a mismatch too. `loadTree` re-proves it at every build.
-//   ring 2 (horizontal) = the same, plus the S1 prototype's horizontal half (01-ring-select, 02-ring-engine, 03-player-far-branch), which
-//                         S3 will productionize.
-// A vertical cell therefore can never be built through a prototype-patched tree: makeTree gives it a tree of its own, and buildCell refuses a
-// tree whose ring is not the cell's.
+// Two kinds of ring tree, by STREAM_RING mode. Phase 3b S2 rebaselined the gate onto C2's production vertical ring, S3 C2 onto C1's production horizontal ring;
+// BOTH are now production code and the gate patches in only what production does not ship:
+//   ring 1 (vertical)   = BASELINE + 00-refusal-lift.patch (+ the sabotage's ring-1 form). The vertical ring's forks are C2's SHIPPED code, byte for byte.
+//   ring 2 (horizontal) = BASELINE + 00-refusal-lift.patch (+ the sabotage's ring-2 form). The horizontal ring's forks are C1's SHIPPED code, byte for byte
+//                         (the S1 prototype's 01-ring-select / 02-ring-engine / 03-player-far-branch are RETIRED: see RETIRED_PATCHES).
+// `verifyProduction` rebuilds the EXACT expected content of a tree (BASELINE's blobs with the canonical, hashed patches applied in order) and requires every file of
+// the tree to equal it by git blob hash -- an edit inside a file a sabotage already declares is a mismatch too. `loadTree` re-proves it at every build, and the
+// consumed-input guard (below) binds the bytes a build actually read. Both rings get the SAME proof; only the forks the baseline must carry differ (SHIPPED_FORKS).
+// A cell is built only through its own ring's tree: makeTree gives each ring a tree of its own, and buildCell refuses a tree whose ring is not the cell's.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,29 +23,48 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const PATCH_DIR = path.join(ROOT, 'test/lua/ring_gate');
-/** The patches each ring mode's tree carries, in application order. Mode 1 is production + the refusal lift only. */
+/** The patches each ring mode's tree carries, in application order. Both rings are production + the refusal lift only (S3 C2: the horizontal ring is production too). */
 export const RING_PATCH_SETS = {
   1: ['00-refusal-lift.patch'],
-  2: ['00-refusal-lift.patch', '01-ring-select.patch', '02-ring-engine.patch', '03-player-far-branch.patch']
+  2: ['00-refusal-lift.patch']
 };
 export const RING_PATCHES = RING_PATCH_SETS[2];
+/** The treeKind a stamp of each ring must carry. A ring-2 stamp of kind 'prototype-horizontal' belongs to a certificate built before S3 C2 and is refused at this baseline. */
+export const TREE_KIND = { 1: 'production-vertical', 2: 'production-horizontal' };
+export const PROTOTYPE_TREE_KIND = 'prototype-horizontal';
+/**
+ * The S1 prototype's horizontal patches, RETIRED at S3 C2: C1 (aaa678a) ships all of their effect as production code, so at this baseline each would be empty. A retired
+ * patch is never applied, hashed or listed again: patchFile() refuses its name, no ring's patch set holds it, and no file of that name exists (prov_unit.mjs pins all three).
+ * `sha256` identifies the retired file (the bytes at aaa678a's parent, 803a252); `shipped` are needles the baseline's own sources must still carry, so a baseline that
+ * lost the code a retired patch used to add fails loudly (checkRetiredShipped, run by regen_patches.mjs and the unit tests).
+ */
+export const RETIRED_PATCHES = {
+  '01-ring-select.patch': { sha256: '187251bd580b86fa47d3c0de75d915b1c80b31da3b058a916c358e28603bd165', reason: 'the generated constants SW_RING_ROW_LEN and the mode-2 render step, and the lift of generate.js\'s mode-2 refusal, are production code since S3 C1',
+    shipped: [['main/build/generate.js', ['`SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`', '`SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`']]], absent: [['main/build/generate.js', ['not implemented yet']]] },
+  '02-ring-engine.patch': { sha256: '212ec1cc1c43e57107de2d8fb22f47e67cf75b47b79775524e7cc600a896c70f', reason: 'the row-strip fork (compare, length load) and the row wrap in engine/streamworld.asm are production code since S3 C1',
+    shipped: [['engine/streamworld.asm', ['sw_ring_row_cmp:', 'sw_ring_row_len:', 'sw_ring_wrap_row:']]], absent: [] },
+  '03-player-far-branch.patch': { sha256: 'c41944ec72108164d3548974a733cf4e1516e60f6bf598a9d77fb1401383800e', reason: 'the far branch around cross_none in engine/player.asm is production code since S3 C1 (ring_far1)',
+    shipped: [['engine/player.asm', ['ring_far1:', 'bne ring_far1']]], absent: [] }
+};
 const COPIED = ['engine', 'main', 'shared'];
-/** The certification baseline: the tree makeTree copies must equal it (S2 commit C2, the production vertical ring). */
-export const BASELINE = 'cd7a9f825aa8c71a36fa53f31064e3d2f78c20b8';
+/** The certification baseline: the tree makeTree copies must equal it (S3 commit C1, aaa678a: the production vertical AND horizontal rings). */
+export const BASELINE = 'aaa678a1a9c627a2306e083ca3ac298c349cb1fa';
 /** The baseline the S1b certificate (rounds 1-3) was built at, before the rebaseline onto C2: the only baseline a historical re-judgment (s1b_rejudge.mjs) may carry. */
 export const PRE_C2_BASELINE = '5138c1f0c33107016a90423da17dcbb33d8697ca';
 
+import { noFormReason } from './ringsabotage.mjs';
 export const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
-/** Resolves a patch name ('00-...patch' or a sabotage name) to its file; a sabotage has a vertical form (sabotage/vertical/) and a horizontal one. */
+/** Resolves a patch name ('00-...patch' or a sabotage name) to its file; a sabotage has a ring-1 form (sabotage/vertical/) and a ring-2 one (sabotage/). A retired patch resolves to nothing. */
 export function patchFile(name, ring = 2) {
+  if (RETIRED_PATCHES[name]) throw new Error(`ring patch ${name} is retired (${RETIRED_PATCHES[name].reason}); no ring tree carries it`);
   const rel = name.endsWith('.patch') ? name : ring === 1 ? `sabotage/vertical/${name}.patch` : `sabotage/${name}.patch`;
   const p = path.join(PATCH_DIR, rel);
-  if (!fs.existsSync(p)) throw new Error(`ring patch not found${name.endsWith('.patch') ? '' : ` (sabotage ${name} has no ring-${ring} form)`}: ${p}`);
+  if (!fs.existsSync(p)) throw new Error(`ring patch not found${name.endsWith('.patch') ? '' : ` (sabotage ${name} has no ring-${ring} form: ${noFormReason(name, ring)})`}: ${p}`);
   return p;
 }
 
-/** Does sabotage `name` have a form for ring `ring`? (The vertical production tree has no row fork, so a row-fork sabotage has no vertical form.) */
+/** Does sabotage `name` have a form for ring `ring`? (A ring whose form would be an equivalent mutant has none: SABOTAGE_RINGS in ringsabotage.mjs names them.) */
 export function sabotageHasRing(name, ring) {
   return fs.existsSync(path.join(PATCH_DIR, ring === 1 ? `sabotage/vertical/${name}.patch` : `sabotage/${name}.patch`));
 }
@@ -96,24 +115,36 @@ export function filesDifferingFromBaseline(root) {
   return [...new Set(diff)].sort();
 }
 
-/** The forks C2 ships (the ring-only labels and the config lines); their presence in BASELINE's own sources is asserted so a baseline that is not C2 fails here. */
-const SHIPPED_FORKS = [
-  ['engine/streamworld.asm', ['sw_ring_col_cmp:', 'sw_ring_col_len:', 'sw_ring_wrap_col:', 'sw_ring_nt_step:', 'sw_ring_nt_end:', '.if STREAM_RING']],
-  ['main/build/generate.js', ['`STREAM_RING = ${ringMode}`', '`SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`', '`SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`']],
-  ['shared/cartridge.js', ['export function streamRingMode(']]
+/** The retired prototype patches (RETIRED_PATCHES): refused in every ring's patch list. */
+const RETIRED_NAMES = Object.keys(RETIRED_PATCHES);
+
+/**
+ * The forks the baseline must carry in its own sources, per ring: [file, needles that must be present, needles that must be absent]. A ring-2 baseline carries ring 1's forks AND the
+ * horizontal ones (C1), and neither ring's generator may still refuse mode 2. Asserted so a baseline that is not the production ring would make "unmodified" meaningless.
+ */
+const VERTICAL_FORKS = [
+  ['engine/streamworld.asm', ['sw_ring_col_cmp:', 'sw_ring_col_len:', 'sw_ring_wrap_col:', 'sw_ring_nt_step:', 'sw_ring_nt_end:', '.if STREAM_RING'], []],
+  ['main/build/generate.js', ['`STREAM_RING = ${ringMode}`', '`SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`', '`SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`'], ['horizontal two-nametable ring -- not implemented yet']],
+  ['shared/cartridge.js', ['export function streamRingMode('], []]
 ];
+const HORIZONTAL_FORKS = [
+  ['engine/streamworld.asm', ['sw_ring_row_cmp:', 'sw_ring_row_len:', 'sw_ring_wrap_row:', 'cmp #SW_RING_ROW_LEN'], []],
+  ['engine/player.asm', ['ring_far1:', 'bne ring_far1', '.if STREAM_RING'], []],
+  ['main/build/generate.js', ['`SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`', '`SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`'], []]
+];
+const shippedForksOf = (ring) => (ring === 1 ? VERTICAL_FORKS : [...VERTICAL_FORKS, ...HORIZONTAL_FORKS]);
 
-const PROTOTYPE_PATCHES = ['01-ring-select.patch', '02-ring-engine.patch', '03-player-far-branch.patch'];
-
-/** Checks that `applied` ([{name, file, sha256?}]) is a canonical ring-1 patch list: the required set in order, then only sabotage forms from sabotage/vertical/. Returns [{name, file, sha256, bytes}]: each canonical file is read ONCE, and the hash, the parse and the `git apply` all use those same bytes. */
-function canonicalVerticalPatches(applied) {
-  const base = RING_PATCH_SETS[1];
-  if (applied.some(({ name }) => PROTOTYPE_PATCHES.includes(name))) throw new Error('a vertical (ring 1) tree carries a horizontal-prototype patch: the vertical ring must run on C2\'s shipped code, not be re-patched into the prototype');
+/** Checks that `applied` ([{name, file, sha256?}]) is a canonical patch list for ring `ring`: the required set in order, then only sabotage forms of that ring (sabotage/ for ring 2, sabotage/vertical/ for ring 1). Returns [{name, file, sha256, bytes}]: each canonical file is read ONCE, and the hash, the parse and the `git apply` all use those same bytes. */
+function canonicalPatches(applied, ring) {
+  const base = RING_PATCH_SETS[ring];
+  const word = ring === 1 ? 'vertical (ring 1)' : 'horizontal (ring 2)';
+  const retired = applied.find(({ name }) => RETIRED_NAMES.includes(name));
+  if (retired) throw new Error(`a ${word} tree carries the retired prototype patch ${retired.name}: both rings run on the shipped code, a retired patch is never applied again`);
   const names = applied.map(({ name }) => name);
-  base.forEach((n, i) => { if (names[i] !== n) throw new Error(`a vertical (ring 1) tree's patch list must start ${base.join(', ')} in that order, got ${names.join(', ') || '(none)'}`); });
+  base.forEach((n, i) => { if (names[i] !== n) throw new Error(`a ${word} tree's patch list must start ${base.join(', ')} in that order, got ${names.join(', ') || '(none)'}`); });
   return applied.map(({ name, file, sha256: claimed }, i) => {
-    if (i >= base.length && name.endsWith('.patch')) throw new Error(`a vertical (ring 1) tree may carry only sabotage forms after the required set, not ${name}`);
-    const canonical = patchFile(name, 1);
+    if (i >= base.length && name.endsWith('.patch')) throw new Error(`a ${word} tree may carry only sabotage forms after the required set, not ${name}`);
+    const canonical = patchFile(name, ring);
     if (path.resolve(file) !== path.resolve(canonical)) throw new Error(`ring patch ${name} was applied from ${file}, not the canonical ${canonical}`);
     const bytes = fs.readFileSync(canonical);
     const actual = sha256(bytes);
@@ -126,12 +157,13 @@ const expectedCache = new Map();
 /** Test hook: forgets the cached expected contents, so the next derivation applies the patches again. */
 export const resetExpectedCache = () => expectedCache.clear();
 /**
- * The exact content a ring-1 tree must have, built from nothing but BASELINE and the patch files: every file the patches declare is written to a scratch dir as
- * BASELINE's blob, then the patches are applied in order with `git apply -p2`. Returns { patches, declared, expected: {file -> git blob sha1} }; cached by the patch hashes.
+ * The exact content a ring `ring` tree must have, built from nothing but BASELINE and the patch files: every file the patches declare is written to a scratch dir as
+ * BASELINE's blob, then the patches are applied in order with `git apply -p2`. Returns { patches, declared, expected: {file -> git blob sha1} }; cached by ring and patch hashes.
  */
-export function expectedVerticalContent(applied) {
-  const patches = canonicalVerticalPatches(applied);
-  const key = patches.map((p) => `${p.name}:${p.sha256}`).join('|');
+export function expectedContent(applied, ring) {
+  if (ring !== 1 && ring !== 2) throw new Error(`expectedContent: ring must be 1 or 2, got ${JSON.stringify(ring)}`);
+  const patches = canonicalPatches(applied, ring);
+  const key = `${ring}|${patches.map((p) => `${p.name}:${p.sha256}`).join('|')}`;
   if (!expectedCache.has(key)) {
     const declared = new Set();
     for (const { bytes } of patches) for (const f of patchedFiles(bytes.toString('utf8'))) declared.add(f);
@@ -154,74 +186,85 @@ export function expectedVerticalContent(applied) {
   return { patches: patches.map(({ name, sha256: h }) => ({ name, sha256: h })), declared: [...declared], expected: { ...expected } };
 }
 
-let shippedForksChecked = null;
-/** The baseline itself must carry the shipped forks (a baseline that is not C2 would make "unmodified" meaningless). Returns the number of needles found. */
-function checkShippedForks() {
-  if (shippedForksChecked !== null) return shippedForksChecked;
+const shippedForksChecked = new Map();
+/** The baseline itself must carry the shipped forks of ring `ring` (a baseline that is not the production ring would make "unmodified" meaningless). Returns the number of needles checked. */
+function checkShippedForks(ring) {
+  if (shippedForksChecked.has(ring)) return shippedForksChecked.get(ring);
   const base = baselineBlobMap();
   let n = 0;
-  for (const [file, needles] of SHIPPED_FORKS) {
-    const text = execFileSync('git', ['show', `${BASELINE}:${file}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
-    for (const needle of needles) { if (!text.includes(needle)) throw new Error(`${BASELINE}:${file} does not contain the shipped ring fork ${JSON.stringify(needle)}: BASELINE is not the production vertical ring`); n += 1; }
+  for (const [file, present, absent] of shippedForksOf(ring)) {
     if (!base.has(file)) throw new Error(`${file} is not in ${BASELINE}`);
+    const text = execFileSync('git', ['show', `${BASELINE}:${file}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
+    for (const needle of present) { if (!text.includes(needle)) throw new Error(`${BASELINE}:${file} does not contain the shipped ring fork ${JSON.stringify(needle)}: BASELINE is not the production ${ring === 1 ? 'vertical' : 'horizontal'} ring`); n += 1; }
+    for (const needle of absent) { if (text.includes(needle)) throw new Error(`${BASELINE}:${file} still contains ${JSON.stringify(needle)}: BASELINE is not the production ${ring === 1 ? 'vertical' : 'horizontal'} ring`); n += 1; }
   }
-  return (shippedForksChecked = n);
+  shippedForksChecked.set(ring, n);
+  return n;
 }
 
 /**
- * The production-vertical proof. Throws unless `root` (a ring-1 tree) is EXACTLY BASELINE plus the canonical patches `applied` (in order, hashed): every file differing
- * from BASELINE is a declared one, every declared file's git blob hash equals the one expected from applying the patches to BASELINE, and no declared file is unchanged.
- * An undeclared edit in an undeclared file, an extra edit in a declared file (a prototype fork applied into a sabotage's file, a second hunk in shared/project.js), a
- * prototype patch and a patch changed on disk since the tree was made are all refused. Returns the proof the stamps carry:
- * { exact: true, baseline, patches, declared, changed, expected, forksChecked, unmodifiedShippedFiles }.
+ * Each retired prototype patch's effect must be in the baseline already (RETIRED_PATCHES[..].shipped present, .absent absent), and its file must be gone. Returns the number of needles checked;
+ * throws naming the first violation. regen_patches.mjs runs it, and so do the unit tests: a retirement is a recorded, checked fact, never a silent drop.
  */
-export function verifyProductionVertical(root, applied) {
-  const { patches, declared, expected } = expectedVerticalContent(applied);
+export function checkRetiredShipped() {
+  const read = (file) => execFileSync('git', ['show', `${BASELINE}:${file}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
+  let n = 0;
+  for (const [name, r] of Object.entries(RETIRED_PATCHES)) {
+    if (fs.existsSync(path.join(PATCH_DIR, name))) throw new Error(`retired patch ${name} still exists on disk (${PATCH_DIR})`);
+    for (const [file, needles] of r.shipped) for (const needle of needles) { if (!read(file).includes(needle)) throw new Error(`retired ${name}: ${BASELINE}:${file} does not carry ${JSON.stringify(needle)}, which production must ship now`); n += 1; }
+    for (const [file, needles] of r.absent) for (const needle of needles) { if (read(file).includes(needle)) throw new Error(`retired ${name}: ${BASELINE}:${file} still carries ${JSON.stringify(needle)}`); n += 1; }
+  }
+  return n;
+}
+
+/**
+ * The production proof. Throws unless `root` (a ring `ring` tree) is EXACTLY BASELINE plus the canonical patches `applied` (in order, hashed): every file differing
+ * from BASELINE is a declared one, every declared file's git blob hash equals the one expected from applying the patches to BASELINE, and no declared file is unchanged.
+ * An undeclared edit in an undeclared file, an extra edit in a declared file (a retired prototype fork applied into a sabotage's file, a second hunk in shared/project.js), a
+ * retired patch and a patch changed on disk since the tree was made are all refused. Returns the proof the stamps carry:
+ * { exact: true, ring, baseline, patches, declared, changed, expected, forksChecked, unmodifiedShippedFiles }.
+ */
+export function verifyProduction(root, applied, ring) {
+  const word = ring === 1 ? 'vertical (ring 1)' : 'horizontal (ring 2)';
+  const { patches, declared, expected } = expectedContent(applied, ring);
   const changed = filesDifferingFromBaseline(root);
   const extra = changed.filter((f) => !declared.includes(f));
-  if (extra.length) throw new Error(`a vertical (ring 1) tree differs from ${BASELINE} in files no applied patch declares (the shipped vertical forks must be unmodified): ${extra.join(', ')}`);
+  if (extra.length) throw new Error(`a ${word} tree differs from ${BASELINE} in files no applied patch declares (the shipped forks must be unmodified): ${extra.join(', ')}`);
   const unchanged = declared.filter((f) => !changed.includes(f));
-  if (unchanged.length) throw new Error(`a vertical (ring 1) tree's patches declare ${unchanged.join(', ')} but the tree equals ${BASELINE} there: the patch did nothing`);
+  if (unchanged.length) throw new Error(`a ${word} tree's patches declare ${unchanged.join(', ')} but the tree equals ${BASELINE} there: the patch did nothing`);
   for (const f of declared) {
     const actual = gitBlobSha1(fs.readFileSync(path.join(root, f)));
-    if (actual !== expected[f]) throw new Error(`a vertical (ring 1) tree's ${f} is not ${BASELINE} plus its applied patches (git blob ${actual.slice(0, 12)}, expected ${expected[f].slice(0, 12)}): an undeclared edit inside a declared file`);
+    if (actual !== expected[f]) throw new Error(`a ${word} tree's ${f} is not ${BASELINE} plus its applied patches (git blob ${actual.slice(0, 12)}, expected ${expected[f].slice(0, 12)}): an undeclared edit inside a declared file`);
   }
-  if (!patches.some(({ name }) => name === '00-refusal-lift.patch')) throw new Error('a vertical (ring 1) tree is missing 00-refusal-lift.patch');
-  return proofOf(patches, declared, changed, expected);
+  if (!patches.some(({ name }) => name === '00-refusal-lift.patch')) throw new Error(`a ${word} tree is missing 00-refusal-lift.patch`);
+  return proofOf(patches, declared, changed, expected, ring);
 }
 
-function proofOf(patches, declared, changed, expected) {
-  return { exact: true, baseline: BASELINE, patches, declared: [...declared].sort(), changed: [...changed].sort(), expected, forksChecked: checkShippedForks(), unmodifiedShippedFiles: SHIPPED_FORKS.map(([f]) => f).filter((f) => !changed.includes(f)) };
+function proofOf(patches, declared, changed, expected, ring) {
+  return { exact: true, ring, baseline: BASELINE, patches, declared: [...declared].sort(), changed: [...changed].sort(), expected, forksChecked: checkShippedForks(ring), unmodifiedShippedFiles: shippedForksOf(ring).map(([f]) => f).filter((f, i, a) => a.indexOf(f) === i && !changed.includes(f)) };
 }
 
 /**
- * The tree-provenance fields ({ baseline, patches, treeKind, productionVertical, consumed }) a stamp for ring `ring` (1|2) with the sabotage forms `extras` must carry, computed from BASELINE and
+ * The tree-provenance fields ({ baseline, patches, treeKind, productionProof, consumed }) a stamp for ring `ring` (1|2) with the sabotage forms `extras` must carry, computed from BASELINE and
  * the canonical patch files alone -- no tree is made. What the audit (ringprovindex.mjs `auditTreeProvenance`) accepts; the controls start from it.
  */
 export function provenanceFor(ring, extras = []) {
   if (ring !== 1 && ring !== 2) throw new Error(`provenanceFor: ring must be 1 or 2, got ${ring}`);
   const names = [...RING_PATCH_SETS[ring], ...extras];
-  let patches, productionVertical = null;
-  if (ring === 1) {
-    const exp = expectedVerticalContent(names.map((name) => ({ name, file: patchFile(name, 1) })));
-    patches = exp.patches;
-    productionVertical = proofOf(exp.patches, exp.declared, exp.declared, exp.expected);
-  } else patches = names.map((name) => ({ name, sha256: sha256(fs.readFileSync(patchFile(name, ring))) }));
-  let consumed = null;
-  if (ring === 1) {
-    const blobs = expectedTreeBlobs(productionVertical.expected);
-    consumed = { mechanism: CONSUMED_MECHANISM, baseline: BASELINE, engine: { builds: 1, files: Object.fromEntries(expectedEngineNames(blobs).map((n) => [n, blobs.get(`engine/${n}`)])) }, js: { files: Object.fromEntries(REQUIRED_JS.map((m) => [m, blobs.get(m)])) } };
-  }
-  return { baseline: BASELINE, patches, treeKind: ring === 1 ? 'production-vertical' : 'prototype-horizontal', productionVertical, consumed };
+  const exp = expectedContent(names.map((name) => ({ name, file: patchFile(name, ring) })), ring);
+  const productionProof = proofOf(exp.patches, exp.declared, exp.declared, exp.expected, ring);
+  const blobs = expectedTreeBlobs(productionProof.expected);
+  const consumed = { mechanism: CONSUMED_MECHANISM, baseline: BASELINE, engine: { builds: 1, files: Object.fromEntries(expectedEngineNames(blobs).map((n) => [n, blobs.get(`engine/${n}`)])) }, js: { files: Object.fromEntries(REQUIRED_JS.map((m) => [m, blobs.get(m)])) } };
+  return { baseline: BASELINE, patches: exp.patches, treeKind: TREE_KIND[ring], productionProof, consumed };
 }
 
 /**
- * makeTree({ ring: 1|2|false, extra: ['strip-len-30-vertical'] }) -> { root, ring, kind, patches: [{name, sha256}], head, status, production? }.
- * ring 1 = the vertical production tree, ring 2 = the horizontal prototype tree, ring false = the pristine copy (the control for the STREAM_RING=0
+ * makeTree({ ring: 1|2|false, extra: ['strip-len-30-vertical'] }) -> { root, ring, kind, patches: [{name, sha256}], head, status, production }.
+ * ring 1 = the vertical production tree, ring 2 = the horizontal production tree, ring false = the pristine copy (the control for the STREAM_RING=0
  * identity proof). `ring: true` is refused: which ring a tree is for is never a default. Sabotages apply in their form for that ring.
  */
 export function makeTree({ ring, extra = [] } = {}) {
-  if (ring !== false && ring !== 1 && ring !== 2) throw new Error(`makeTree: ring must be 1 (vertical production), 2 (horizontal prototype) or false (pristine), got ${JSON.stringify(ring)}`);
+  if (ring !== false && ring !== 1 && ring !== 2) throw new Error(`makeTree: ring must be 1 (vertical production), 2 (horizontal production) or false (pristine), got ${JSON.stringify(ring)}`);
   verifyBaseline();
   if (!ring && extra.length) throw new Error('extra patches need a ring tree');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `ring-tree-${ring || 0}-`));
@@ -244,15 +287,15 @@ export function makeTree({ ring, extra = [] } = {}) {
       applied.push({ name, file, sha256: sha256(bytes) });
     }
     const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8' }).trim();
-    const tree = { root, ring: ring || 0, kind: !ring ? 'pristine' : ring === 1 ? 'production-vertical' : 'prototype-horizontal', patches, applied, baseline: BASELINE, head: git('rev-parse', 'HEAD'), status: git('status', '--short', '--', 'engine', 'main', 'shared', 'renderer', 'docs') || 'clean' };
-    if (ring === 1) { tree.production = verifyProductionVertical(root, applied); registerConsumedGuard(tree); }
+    const tree = { root, ring: ring || 0, kind: !ring ? 'pristine' : TREE_KIND[ring], patches, applied, baseline: BASELINE, head: git('rev-parse', 'HEAD'), status: git('status', '--short', '--', 'engine', 'main', 'shared', 'renderer', 'docs') || 'clean' };
+    if (ring) { tree.production = verifyProduction(root, applied, ring); registerConsumedGuard(tree); }
     return tree;
   } catch (e) { fs.rmSync(root, { recursive: true, force: true }); throw e; }
 }
 
 /**
  * One tree per STREAM_RING mode, made lazily, for a runner that builds both orientations in one process. `forCell(cell)` is the only way a cell gets
- * its tree: a vertical cell gets the production-vertical tree, a horizontal one the prototype tree, never the other.
+ * its tree: a vertical cell gets the production-vertical tree, a horizontal one the production-horizontal tree, never the other.
  */
 export function makeTreeSet({ extra = [] } = {}) {
   const trees = new Map();
@@ -265,7 +308,7 @@ export function makeTreeSet({ extra = [] } = {}) {
 }
 
 // ---- the consumed-input guard (C3 fix 2) ----------------------------------------------------------------------------------------------------------
-// The exact-content proof above describes the tree at CHECK time. What matters is the bytes a build CONSUMED. A ring-1 tree is therefore registered here, and two process-wide interposers
+// The exact-content proof above describes the tree at CHECK time. What matters is the bytes a build CONSUMED. A production tree (ring 1 or 2) is therefore registered here, and two process-wide interposers
 // act only on paths under a registered root (anything else passes through untouched):
 //   verified COPY  generate.js copies engine/*.asm into the build directory with `fs/promises.copyFile`; the assembler reads those copies. The wrapper reads the source ONCE, hashes THOSE
 //                  bytes, refuses unless they are the expected blob (BASELINE's, or BASELINE plus the declared patches), and writes THOSE bytes to the destination. A source edited only
@@ -275,14 +318,14 @@ export function makeTreeSet({ extra = [] } = {}) {
 //                  the load-time check binds every JS byte the build executed -- including a sabotage's declared edit to generate.js, which is expected to be the PATCHED blob.
 // Both record what they verified; `consumedEvidence` turns that into the stamp's evidence, which the audit re-derives from BASELINE and the patch files.
 export const CONSUMED_MECHANISM = 'verified-copy+verified-load';
-/** The modules every ring-1 build executes; the evidence of a finished build must list them. */
+/** The modules every production-tree build executes; the evidence of a finished build must list them. */
 export const REQUIRED_JS = ['main/build/generate.js', 'main/build/pipeline.js', 'main/build/nesasm.js', 'shared/project.js'];
 const guards = new Map(); // root (and its realpath) -> record
 const guardOf = (p) => { for (const [root, rec] of guards) if (String(p).startsWith(root + path.sep)) return { rec, rel: String(p).slice(root.length + 1).split(path.sep).join('/') }; return null; };
 
-/** The git blob every file of engine/ main/ shared/ must have in a ring-1 tree: BASELINE's, with the proof's expected blobs over the declared files. */
+/** The git blob every file of engine/ main/ shared/ must have in a production tree: BASELINE's, with the proof's expected blobs over the declared files. */
 export function expectedTreeBlobs(expected) { return new Map([...baselineBlobMap(), ...Object.entries(expected)]); }
-/** The engine source names a ring-1 build must copy: BASELINE's engine/*.asm (plus any declared engine file). */
+/** The engine source names a production build must copy: BASELINE's engine/*.asm (plus any declared engine file). */
 export const expectedEngineNames = (blobs) => [...blobs.keys()].filter((k) => /^engine\/[^/]+\.asm$/.test(k)).map((k) => k.slice('engine/'.length)).sort();
 
 function registerConsumedGuard(tree) {
@@ -302,7 +345,7 @@ function installConsumedGuards() {
     const hit = guardOf(src);
     if (!hit) return copyFile.call(this, src, dest, ...rest);
     const { rec, rel } = hit;
-    if (!/^engine\/[^/]+\.asm$/.test(rel)) throw new Error(`consumed-input guard: a build copied ${rel} out of a ring-1 tree; only engine/*.asm is a copied source`);
+    if (!/^engine\/[^/]+\.asm$/.test(rel)) throw new Error(`consumed-input guard: a build copied ${rel} out of a production ring tree; only engine/*.asm is a copied source`);
     const bytes = await readFile(src);
     const blob = gitBlobSha1(bytes);
     const want = rec.blobs.get(rel);
@@ -320,7 +363,7 @@ function installConsumedGuards() {
       const hit = guardOf(fileURLToPath(url));
       if (!hit) return r;
       const { rec, rel } = hit;
-      if (r.source === null || r.source === undefined) throw new Error(`consumed-input guard: ${rel} was loaded as ${r.format} without a source the guard can hash (a ring-1 tree's modules must be ES modules)`);
+      if (r.source === null || r.source === undefined) throw new Error(`consumed-input guard: ${rel} was loaded as ${r.format} without a source the guard can hash (a production ring tree's modules must be ES modules)`);
       const blob = gitBlobSha1(Buffer.from(r.source));
       const want = rec.blobs.get(rel);
       if (want === undefined) throw new Error(`consumed-input guard: ${rel} is not a source of ${BASELINE} plus the tree's patches`);
@@ -334,7 +377,7 @@ function installConsumedGuards() {
 const sortedObject = (map) => Object.fromEntries([...map.entries()].sort(([a], [b]) => (a < b ? -1 : 1)));
 
 /**
- * The stamp's consumed-input evidence for a ring-1 tree (null for any other tree): every build the guard saw copied exactly the expected engine set with the expected blobs, and every module
+ * The stamp's consumed-input evidence for a production ring tree (null for the pristine tree): every build the guard saw copied exactly the expected engine set with the expected blobs, and every module
  * the loader read had its expected blob. `min` is the number of builds the caller requires (a finished run needs >= 1; an error snapshot needs none). Throws on an incomplete or divergent build.
  */
 export function consumedEvidence(tree, { min = 1, only = null } = {}) {
@@ -360,7 +403,7 @@ export function consumedSnapshot(tree) {
 }
 
 /**
- * After a build into `dir` (a ring-1 tree): hashes the engine sources the assembler actually read -- the copies in `dir/build` -- and requires each to equal the expected blob (or, for a name the
+ * After a build into `dir` (a production ring tree): hashes the engine sources the assembler actually read -- the copies in `dir/build` -- and requires each to equal the expected blob (or, for a name the
  * project's Code Forge declares, the declared override text), and the set of copies to be exactly the expected set. Returns the stamp evidence (the guard's own record of that one build,
  * plus the override names).
  */
@@ -384,7 +427,7 @@ export function verifyBuildDir(tree, dir, project) {
 }
 
 /**
- * Reads `rel` (e.g. 'engine/text.asm') out of a ring-1 tree for a harness that derives an override from it. A ring-1 tree's file must be the expected blob; the text returned is the verified
+ * Reads `rel` (e.g. 'engine/text.asm') out of a production ring tree for a harness that derives an override from it. Its file must be the expected blob; the text returned is the verified
  * bytes. A tree of any other ring is read as it is.
  */
 export function readTreeText(tree, rel) {
@@ -396,28 +439,28 @@ export function readTreeText(tree, rel) {
   return bytes.toString('utf8');
 }
 
-/** Throws unless `tree` is the tree of cell `cell`'s ring (a vertical cell is built only through the production-vertical tree, a horizontal one only through the prototype tree). */
+/** Throws unless `tree` is the tree of cell `cell`'s ring (a vertical cell is built only through the production-vertical tree, a horizontal one only through the production-horizontal tree). */
 export function assertCellRing(tree, cell) {
   if (!cell || cell.ring === undefined) return;
-  if (tree.ring !== cell.ring) throw new Error(`cell ${cell.id ?? '?'} is ring ${cell.ring} but the tree is ${tree.kind} (ring ${tree.ring}): a vertical cell is built only through the production-vertical tree, a horizontal one only through the prototype tree`);
+  if (tree.ring !== cell.ring) throw new Error(`cell ${cell.id ?? '?'} is ring ${cell.ring} but the tree is ${tree.kind} (ring ${tree.ring}): a vertical cell is built only through the production-vertical tree, a horizontal one only through the production-horizontal tree`);
 }
 
-/** The ring check plus, for a ring-1 tree, the production-vertical proof re-run NOW from the files on disk. Returns that proof (also stored as `tree.production`), or null for any other tree. */
+/** The ring check plus, for a production ring tree, the exact-content proof re-run NOW from the files on disk. Returns that proof (also stored as `tree.production`), or null for the pristine tree. */
 export function assertTreeForCell(tree, cell) {
   assertCellRing(tree, cell);
   return refreshProof(tree);
 }
 
-/** Re-runs the production-vertical proof for a ring-1 tree and stores it as `tree.production`; null for a tree of any other ring. A stamp carries the proof of the check that gated ITS build, never the one from tree creation. */
+/** Re-runs the exact-content proof for a production ring tree and stores it as `tree.production`; null for the pristine tree. A stamp carries the proof of the check that gated ITS build, never the one from tree creation. */
 export function refreshProof(tree) {
-  if (tree.ring !== 1) return null;
-  tree.production = verifyProductionVertical(tree.root, tree.applied);
+  if (tree.ring !== 1 && tree.ring !== 2) return null;
+  tree.production = verifyProduction(tree.root, tree.applied, tree.ring);
   return tree.production;
 }
 
 /**
- * Imports the patched copy's own modules (a distinct file URL per tree, so module caches never alias the real tree). A ring-1 tree is re-proved first: every build path goes through here.
- * A ring-1 tree's modules also load through the consumed-input guard (below): the source the loader actually read is hashed and must be the expected blob, so the proof above and the
+ * Imports the patched copy's own modules (a distinct file URL per tree, so module caches never alias the real tree). A production ring tree is re-proved first: every build path goes through here.
+ * A production ring tree's modules also load through the consumed-input guard (below): the source the loader actually read is hashed and must be the expected blob, so the proof above and the
  * bytes the modules were compiled from cannot differ.
  */
 export async function loadTree(tree) {

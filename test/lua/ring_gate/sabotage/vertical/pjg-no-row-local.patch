@@ -1,8 +1,8 @@
 diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
-index 3c194bc..418b11c 100644
+index 24c538e..567e214 100644
 --- a/a/engine/streamworld.asm
 +++ b/b/engine/streamworld.asm
-@@ -3106,7 +3106,7 @@ sw_position_jump_guard:
+@@ -3121,7 +3121,7 @@ sw_position_jump_guard:
    lda sw_fc_desr
    sta win_row_screen
    lda sw_fc_desrl

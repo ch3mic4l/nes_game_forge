@@ -5,10 +5,13 @@
 import path from 'node:path';
 import { CONTROLS, CELL_IDS as S1C_CELLS, MMC3_CELLS, BUILDS, controlBuilds, controlHasForm, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
 
-// Tracked inputs a job reads that are not scripts. The no-flag baselines are the artifact hashes the two deadline/G-gate builders produced at cd7a9f8 (S2 commit C2, the
-// tree that already carried the --ring flags), recorded by the recorders' own `record` mode from a detached cd7a9f8 worktree: the check proves the tree under test, flag
-// ABSENT, still emits byte-for-byte what C2 emitted. (That the flags were inert when first added was proved against the 5138c1f recordings, kept in handoff-next as evidence.)
-export const NOFLAG_BASELINES = { s1c: 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json', s1b: 'test/lua/ring_gate/noflag/s1b-cd7a9f8.json' };
+// Tracked inputs a job reads that are not scripts. The no-flag baselines are the artifact hashes the two deadline/G-gate builders produced, recorded by the recorders' own `record` mode from a clean
+// `git archive` of the named commit: s1c at cd7a9f8 (S2 commit C2, the tree that already carried the --ring flags; C1 and the door commit kept its mode-0 bytes, which `run_matrix --only='^(s1c|s1b)-noflag$'` proves by running)
+// and s1b at aaa678a (S3 commit C1: RULE-A re-record, because C1's generator adds the geometry equate SW_RING_ROW_LEN = 32 to the scene's symbols.json of every ring mode; the S1b ROM, Lua and project hashes are unchanged,
+// see NOFLAG_HISTORY). The check proves the tree under test, flag ABSENT, still emits byte-for-byte what that commit emitted (S1b: C1 production output, so it cannot detect a regression already in C1). (That the flags were inert when first added was proved against the 5138c1f recordings, kept in handoff-next as evidence.)
+export const NOFLAG_BASELINES = { s1c: 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json', s1b: 'test/lua/ring_gate/noflag/s1b-aaa678a.json' };
+// The superseded S1b baseline, kept byte-for-byte as history; prov_unit.mjs reads it for the continuity check (the project/rom/scene.nes/manifest.lua hashes of every configuration must equal the active baseline's), so it is a required, fingerprinted input.
+export const NOFLAG_HISTORY = { s1b: 'test/lua/ring_gate/noflag/s1b-cd7a9f8.json' };
 // The authentic S1b round-3 record the re-judge regression (s1b_unit.mjs, "real record, real command") runs the real CLI over: MMC1-V action resident, 107 UNACCEPTED
 // mismatches. logs/ is the result, its retained bodies and sweeps gzip (the re-judge reads both) and its log (the stamp links it; the audit requires it to exist); prov/ is the
 // ONE matching historical stamp (the audit reads exactly one). Original bytes, never regenerated.
@@ -18,7 +21,7 @@ export const S1B_R3_REAL = {
   prov: ['s1b-MMC1-V-action-resident.json']
 };
 /** Repo-relative paths of every tracked non-script input the matrix's jobs and units read; the fingerprint hashes each and REFUSES to build when one is missing. */
-export const REQUIRED_DATA = [...Object.values(NOFLAG_BASELINES), ...S1B_R3_REAL.logs.map((f) => `${S1B_R3_REAL.dir}/logs/${f}`), ...S1B_R3_REAL.prov.map((f) => `${S1B_R3_REAL.dir}/prov/${f}`)];
+export const REQUIRED_DATA = [...Object.values(NOFLAG_BASELINES), ...Object.values(NOFLAG_HISTORY), ...S1B_R3_REAL.logs.map((f) => `${S1B_R3_REAL.dir}/logs/${f}`), ...S1B_R3_REAL.prov.map((f) => `${S1B_R3_REAL.dir}/prov/${f}`)];
 
 const O = 'test/lua/ring_gate/run_oracle.mjs';
 const I = 'test/lua/ring_gate/run_identity.mjs';
@@ -147,7 +150,7 @@ export function jobs(P, L) {
         { exit: 0, log: new RegExp(`^control ${id} \\(${c} ${gt} ${pl}\\): ${d.outcome === 'caught' ? 'CAUGHT as declared' : 'PASS as declared'}`, 'm') }, 3);
     }
   }
-  // the no-flag proof: both deadline builders, flag absent, are byte-identical (ROM and rendered Lua) to the output the C2 baseline (cd7a9f8) recorded in the tracked NOFLAG_BASELINES file; and the S1c unit tests
+  // the no-flag proof: both deadline builders, flag absent, are byte-identical (ROM and rendered Lua) to the output the tracked NOFLAG_BASELINES file recorded (s1c: C2 cd7a9f8; s1b: C1 aaa678a); and the S1c unit tests
   out.push({ name: 's1c-noflag', argv: ['test/lua/ring_gate/s1c_noflag.mjs', 'check', NOFLAG_BASELINES.s1c], expect: { exit: 0, log: /no-flag output byte-identical/ }, group: 3, raw: true, stamps: false });
   out.push({ name: 's1c-unit', argv: ['--test', 'test/lua/ring_gate/s1c_unit.mjs'], expect: { exit: 0, log: /^# fail 0$/m }, group: 3, raw: true, stamps: false });
   // selection errors of the new runner stay errors
@@ -161,7 +164,7 @@ export function jobs(P, L) {
   test('prov-unit', 'test/lua/ring_gate/prov_unit.mjs');
   test('s1b-unit', 'test/lua/ring_gate/s1b_unit.mjs');
   test('iso-unit', 'test/lua/ring_gate/iso_unit.mjs');
-  // the builder-identity proof (flag-absent output of the two G-gate builders equals the tracked C2 (cd7a9f8) baseline) and the report tables are certificate evidence: executed by the matrix, so fingerprinted
+  // the builder-identity proof (flag-absent output of the two G-gate builders equals the tracked NOFLAG_BASELINES files: s1c at C2 cd7a9f8, s1b at C1 aaa678a) and the report tables are certificate evidence: executed by the matrix, so fingerprinted
   out.push({ name: 's1b-noflag', argv: ['test/lua/ring_gate/s1b_noflag.mjs', 'check', NOFLAG_BASELINES.s1b], expect: { exit: 0, log: /no-flag output byte-identical/ }, group: 3, raw: true, stamps: false });
   out.push({ name: 's1b-tables', argv: ['test/lua/ring_gate/s1b_tables.mjs', L], expect: { exit: 0, log: /^## Verdicts per cell/m }, group: 6, raw: true, stamps: false });
   out.push({ name: 's1b-coverage', argv: ['test/lua/ring_gate/s1b_coverage.mjs', L], expect: { exit: 0, log: /^# S1b round 3: coverage, agreement, class estimate and seam evidence/m }, group: 6, raw: true, stamps: false });

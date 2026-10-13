@@ -8,20 +8,29 @@
 // the declaration (exit 1) and a different error is an unexpected error (exit 2).
 
 /**
- * The rings a sabotage has a patch for (sabotage/<name>.patch = ring 2, sabotage/vertical/<name>.patch = ring 1). Since S2 the vertical ring runs on C2's shipped code, which has
- * no row-strip fork, so a sabotage of that fork has no vertical form: a (sabotage, vertical cell) combination for it is N/A, proved by the vertical tree not carrying the code
- * (prov_unit.mjs pins this table against the patch files).
+ * The rings a sabotage has a patch for (sabotage/<name>.patch = ring 2, sabotage/vertical/<name>.patch = ring 1) -- THE single source of which rings a sabotage runs on. Both rings run on
+ * shipped code (S2 C2 the vertical fork, S3 C1 the horizontal one), so a (sabotage, cell) combination is N/A only when the sabotage has no meaningful form for that ring:
+ * 'wrap-row-32' on a vertical ring is an EQUIVALENT MUTANT, because the vertical ring's SW_RING_ROW_LEN is the torus literal 32; 'strip-len-30-vertical' and 'wrap-col-30' on a
+ * horizontal ring are the mirror images, because the horizontal ring's SW_RING_COL_LEN is already 30 (NO_FORM_REASON; prov_unit.mjs builds each pair of ROMs and compares them: with the
+ * mutation and without it they are byte for byte the same). The table is pinned against the patch files (prov_unit.mjs) and every excluded ring must carry a reason.
  */
-export const SABOTAGE_RINGS = { 'wrap-row-32': [2] };
+export const SABOTAGE_RINGS = { 'strip-len-30-vertical': [1], 'wrap-col-30': [1], 'wrap-row-32': [2] };
 export const sabotageRings = (name) => SABOTAGE_RINGS[name] ?? [1, 2];
+/** Why a sabotage has no form on a ring SABOTAGE_RINGS leaves out: the printed source proof of the control-level N/A (run_identity / run_oracle / run_campaign / the gate). */
+export const NO_FORM_REASON = {
+  'strip-len-30-vertical': { 2: 'a horizontal ring\'s SW_RING_COL_LEN is already 30 (generate.js emits `ringMode === 1 ? 15 : 30`), so the mutation `SW_RING_COL_LEN = 30` generates the very constant it replaces: an equivalent mutant (an identical ROM) that no row can catch' },
+  'wrap-col-30': { 2: 'a horizontal ring\'s SW_RING_COL_LEN is already 30, so `cmp #30` assembles to the very bytes `cmp #SW_RING_COL_LEN` already is: the mutation is an equivalent mutant (an identical ROM) that no row can catch' },
+  'wrap-row-32': { 1: 'a vertical ring\'s SW_RING_ROW_LEN is the torus literal 32, so `cmp #32` assembles to the very bytes `cmp #SW_RING_ROW_LEN` already is: the mutation is an equivalent mutant (an identical ROM) that no row can catch' }
+};
+export const noFormReason = (name, ring) => NO_FORM_REASON[name]?.[ring] ?? `sabotage ${name} has no meaningful ring-${ring} form`;
 
 /** identity[name](cell, gameType, banked) -> 'catch' | 'pass' */
 export const IDENTITY_OUTCOME = {
-  // SW_RING_COL_LEN = 30 on every ring: wrong for the vertical ring (wants 15), the horizontal ring's own value
-  'strip-len-30-vertical': (cell) => (cell.ring === 1 ? 'catch' : 'pass'),
-  // the wrap compare operands are literals: wrap-col-30 equals the horizontal geometry (30), wrap-row-32 equals the vertical geometry (32)
-  'wrap-col-30': (cell) => (cell.ring === 1 ? 'catch' : 'pass'),
-  'wrap-row-32': (cell) => (cell.ring === 2 ? 'catch' : 'pass'), // the vertical form does not exist (SABOTAGE_RINGS): that cell is N/A, never built
+  // SW_RING_COL_LEN = 30: wrong for the vertical ring (wants 15). The horizontal ring's own value is 30, so the form is an equivalent mutant there (SABOTAGE_RINGS: ring 1 only, never built on ring 2)
+  'strip-len-30-vertical': () => 'catch',
+  // the wrap compare operands: wrap-col-30 equals the horizontal geometry (30) -- ring 1 only, like the strip length; wrap-row-32 equals the vertical geometry (32) -- ring 2 only
+  'wrap-col-30': () => 'catch',
+  'wrap-row-32': () => 'catch', // ring 2 only: the vertical form is an equivalent mutant (SABOTAGE_RINGS, NO_FORM_REASON), that cell is N/A and never built
   // a destination-byte change: not an operand row 1 reads
   'dest-plus08-vertical': () => 'pass',
   // STEP 1 / END 4 differ from both geometries (vertical 1/2, horizontal 2/4)
@@ -73,8 +82,8 @@ export function buildErrorWitness(name, cell, gameType) {
   if (name === 'ring-forced-0' && cell.ring === 2) {
     return {
       match: /Branch address out of range/,
-      proof: 'STREAM_RING=0 removes the ring far-branch of 03-player-far-branch.patch (the `.if STREAM_RING` jmp at player.asm:339); the pristine `beq cross_none` is '
-        + 'out of range on every horizontal streamed build (the branch-site audit of round 1: only that site fails, on all three mappers)'
+      proof: 'STREAM_RING=0 removes the horizontal ring\'s far branch (production since S3 C1: the `.if STREAM_RING` bne ring_far1 / jmp cross_none in engine/player.asm\'s cross_left_cut); '
+        + 'the plain `beq cross_none` is out of range on every horizontal streamed build (the branch-site audit of round 1: only that site fails, on all three mappers)'
     };
   }
   return null;

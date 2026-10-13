@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // S1b part C: the two G-gate builders (sw_manifest_scene.mjs / run_sw_manifest.mjs and run_sw_move_manifest.mjs) gained ring selection flags. With the flag
 // ABSENT each must produce byte-identical output to what it produced before: this records, then checks, the SHA-256 of every artifact a set of no-flag
-// configurations emits (the scene ROM, the symbol file, the RENDERED Lua script, the normalized project). The baseline is the C2 tree's output, so a pass proves flag-absent
-// output is unchanged since C2; it does not re-prove the flags' original inertness (that was checked against the 5138c1f recording, kept as evidence).
-//   node test/lua/ring_gate/s1b_noflag.mjs record <file.json>     (the tracked baseline, test/lua/ring_gate/noflag/s1b-cd7a9f8.json, was recorded from a detached cd7a9f8 (S2 commit C2) worktree)
+// configurations emits (the scene ROM, the symbol file, the RENDERED Lua script, the normalized project). The active baseline is the S3 C1 tree's output (aaa678a), so a pass proves flag-absent
+// output is unchanged since C1; it cannot detect a regression already present in aaa678a, and it does not re-prove the flags' original inertness (that was checked against the 5138c1f recording, kept as evidence).
+// Continuity back to S2 C2: noflag/s1b-cd7a9f8.json (kept as history) has identical project/rom/scene.nes/manifest.lua hashes in all 11 configurations (prov_unit.mjs pins this); the symbol files differ by exactly
+// the entry ram.SW_RING_ROW_LEN = 32, which C1's generator writes into config.inc for every ring mode (proof: handoff-next/s3-c2/noflag-rerecord/).
+//   node test/lua/ring_gate/s1b_noflag.mjs record <file.json>     (the tracked baseline, test/lua/ring_gate/noflag/s1b-aaa678a.json, was recorded from a clean `git archive` of aaa678a (S3 commit C1))
 //   node test/lua/ring_gate/s1b_noflag.mjs check <file.json>      exit 0 = every artifact equals the recorded hash, 1 = a difference, 2 = usage
 import fs from 'node:fs';
 import os from 'node:os';

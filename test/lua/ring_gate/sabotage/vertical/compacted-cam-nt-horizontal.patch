@@ -1,8 +1,8 @@
 diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
-index 3c194bc..b76878d 100644
+index 24c538e..86dea13 100644
 --- a/a/engine/streamworld.asm
 +++ b/b/engine/streamworld.asm
-@@ -2353,9 +2353,9 @@ sw_rwa_fill_row:
+@@ -2368,9 +2368,9 @@ sw_rwa_fill_row:
    sta sw_last_screen_row
    rts
  
@@ -15,7 +15,7 @@ index 3c194bc..b76878d 100644
  
  ; ==========================================================================
  ; sw_resolve_screen -- phase 2 slice 2b. The runtime counterpart of
-@@ -2926,7 +2926,6 @@ sw_fcw_yo_done:
+@@ -2941,7 +2941,6 @@ sw_fcw_yo_done:
  
    lda sw_fc_scr
    and #1
@@ -24,13 +24,13 @@ index 3c194bc..b76878d 100644
    sta <cam_nt
    dec <cam_dirty
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index a2d256a..23749f6 100644
+index ad91ac1..f010c9c 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4338,7 +4338,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
-     `STREAM_RING = ${ringMode}`,
+@@ -4340,7 +4340,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
      `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
-     `SW_RW_NT_STEP = 1`,
+     `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,
+     `SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`,
 -    `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
 +    `SW_RW_NT_END = ${ringMode ? 2 : 4}`,
      // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on

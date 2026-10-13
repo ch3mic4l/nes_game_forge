@@ -296,12 +296,21 @@ test('controls: each row-8 control declares exactly the items its sabotage decla
   for (const k of ['prg-r7-wrong', 'prg-transient', 'split-r0', 'split-wrong-r1', 'no-sei', 'no-lock', 'arm-while-locked', 'irq-left-armed']) assert.ok(k in SPLIT_SABOTAGES, k);
 });
 test('controls: each patch control names a real sabotage patch and each horizontal-only/vertical-only declaration flips with the ring', () => {
-  for (const id of Object.keys(CONTROLS)) if (CONTROLS[id].kind === 'patch') assert.ok(fs.existsSync(path.join(HERE, 'sabotage', `${CONTROLS[id].arg}.patch`)), id);
+  // a patch control's file exists exactly on the rings its sabotage has a form for (SABOTAGE_RINGS), in that ring's directory
+  for (const id of Object.keys(CONTROLS)) if (CONTROLS[id].kind === 'patch') for (const ring of [1, 2]) assert.equal(fs.existsSync(path.join(HERE, 'sabotage', ring === 1 ? 'vertical' : '', `${CONTROLS[id].arg}.patch`)), sabotageRings(CONTROLS[id].arg).includes(ring), `${id} ring ${ring}`);
   assert.equal(declaredFor('close-expect-87', 1).outcome, 'pass');
   assert.equal(declaredFor('close-expect-87', 2).outcome, 'caught');
   assert.equal(declaredFor('nmi-wrap-row-32', 1).outcome, 'na');
   assert.equal(controlHasForm('nmi-wrap-row-32', 1), false);
   assert.equal(declaredFor('nmi-wrap-row-32', 2).outcome, 'caught');
+  // the mirror-image equivalent mutants: caught on the vertical ring, control-level N/A (no form) on the horizontal one
+  for (const id of ['nmi-strip-len-30-vertical', 'nmi-wrap-col-30']) {
+    assert.equal(declaredFor(id, 1).outcome, 'caught', id);
+    assert.equal(declaredFor(id, 2).outcome, 'na', id);
+    assert.match(declaredFor(id, 2).why, /equivalent mutant/, id);
+    assert.equal(controlHasForm(id, 1), true, id);
+    assert.equal(controlHasForm(id, 2), false, id);
+  }
 });
 test('the matrix names every control on every cell it is declared for, each beside its matching positive', () => {
   const names = new Set(jobs('/p', '/l').map((j) => j.name));
@@ -337,6 +346,10 @@ test('no scheduled job names a sabotage absent from its cell\'s ring (every job 
   for (const k of ['run_oracle', 'run_campaign', 'run_s1b', 'run_s1c']) assert.ok([...kinds].some((f) => f.endsWith(`${k}.mjs`)), `${k} carries no checked job`);
   const names = jobs('/p', '/l').map((j) => j.name);
   assert.ok(names.includes('s1c-r5-ctl-nmi-wrap-row-32-MMC3-H-action-resident'));
+  for (const id of ['nmi-strip-len-30-vertical', 'nmi-wrap-col-30']) {
+    assert.ok(names.includes(`s1c-r5-ctl-${id}-MMC3-V-action-resident`), id);
+    for (const c of ['MMC1-H', 'MMC3-H', 'U512-H']) assert.ok(!names.includes(`s1c-r5-ctl-${id}-${c}-action-resident`), `${id} ${c}`);
+  }
   for (const c of ['MMC1-V', 'MMC3-V', 'U512-V']) assert.ok(!names.includes(`s1c-r5-ctl-nmi-wrap-row-32-${c}-action-resident`), c);
 });
 test('the harness fingerprint covers every S1c module and template, and every script the matrix executes', () => {

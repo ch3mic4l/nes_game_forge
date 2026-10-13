@@ -78,7 +78,7 @@ const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null, raw: flag('json') ? path.resolve(flag('json')).replace(/\.json$/, '.raw.gz') : null };
 const provPath = writeAttempt(provDir, label, {
   kind: 's1c-run', row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, declared, links,
-  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionVertical: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
+  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionProof: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
 });
 const PURPOSE = { 5: 'row5-nmi', 6: 'row6-close', 8: 'row8-split' }[row];
 let built = null, items = [], run = null, parsed = null;
@@ -149,7 +149,7 @@ if (provPath) {
   const stamps = mesenStamp(MESEN, [...loaded], [...loaded].sort().map((p) => fileStamp(p)).filter(Boolean).map((f) => ({ ...f, path: f.path.startsWith(home) ? `<isolated-HOME>${f.path.slice(home.length)}` : f.path })));
   const planned = { row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, purpose: PURPOSE, romSha256: built.romSha256, luaSha256: built.luaSha256 };
   finishAttempt(provPath, 'built', {
-    productionVertical: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
+    productionProof: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
     consumed: consumedEvidence(tree), // what every build of this run CONSUMED: each engine copy and each loaded module verified as it was read (ringtree.mjs, the consumed-input guard); throws if no build went through the guard
     romSha256: built.romSha256, luaSha256: built.luaSha256, projectSha256: projectSha256(built.built.project), plan: { ...planned, sha256: sha256(JSON.stringify(planned)) },
     build: { streamRing: built.built.prov.streamRing, placement: built.built.prov.placement, resources: built.built.prov.resources, header: built.built.prov.header },

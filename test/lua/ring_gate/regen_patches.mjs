@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Regenerates test/lua/ring_gate/*.patch (what production does NOT ship: the refusal lift and the horizontal half of the phase 3b ring prototype),
-// test/lua/ring_gate/sabotage/*.patch (each on top of the horizontal prototype tree) and test/lua/ring_gate/sabotage/vertical/*.patch (each on top of the
-// vertical production tree = BASELINE + 00-refusal-lift) from the CURRENT engine/ main/ shared/, which must equal ringtree.mjs's BASELINE. The patches are the
+// Regenerates test/lua/ring_gate/00-refusal-lift.patch (what production does NOT ship: the validateProject refusal lift),
+// test/lua/ring_gate/sabotage/*.patch (each on top of the horizontal production tree = BASELINE + 00-refusal-lift) and test/lua/ring_gate/sabotage/vertical/*.patch (each on top
+// of the vertical production tree = BASELINE + 00-refusal-lift) from the CURRENT engine/ main/ shared/, which must equal ringtree.mjs's BASELINE. The patches are the
 // artifact the gate applies (ringtree.mjs); this script is only how they were made, kept so a
 // rebase onto a moved HEAD is a re-run, not a hand edit. Each edit asserts that its anchor text is
 // found exactly once, so a moved site fails here, loudly, not as a silently shorter patch.
@@ -12,7 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { verifyBaseline, RING_PATCH_SETS } from './ringtree.mjs';
+import { verifyBaseline, RING_PATCH_SETS, RETIRED_PATCHES, checkRetiredShipped } from './ringtree.mjs';
+import { sabotageRings } from './ringsabotage.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const HERE = path.join(ROOT, 'test/lua/ring_gate');
@@ -55,13 +56,12 @@ function diffTrees(base, work, out, files) {
   fs.writeFileSync(out, text);
 }
 
-// ---------------------------------------------------------------- the patches (BASELINE = C2: the vertical ring is production code)
-// What production (C2) does NOT ship, and the gate therefore still patches in:
-//   00  the validateProject refusal of every two-nametable streamed board (both rings; this is the whole vertical tree's patch set);
-//   01  the horizontal half of the generated constants: SW_RING_ROW_LEN, the mode-2 render step, and the lift of generate.js's mode-2 refusal;
-//   02  the horizontal row-strip fork and the row wrap (the vertical column fork and the render index are C2's, in BASELINE already);
-//   03  player.asm's far branch (a horizontal streamed build's `beq cross_none` is out of range).
-// 01-03 are the S1 prototype's horizontal half, which S3 productionizes. The vertical ring runs on C2's shipped code with 00 alone.
+// ---------------------------------------------------------------- the patches (BASELINE = S3 C1: BOTH rings are production code)
+// What production (S3 C1) does NOT ship, and the gate therefore still patches in:
+//   00  the validateProject refusal of every two-nametable streamed board (both rings; this is the whole of each ring's patch set).
+// The S1 prototype's horizontal half -- 01-ring-select (SW_RING_ROW_LEN, the mode-2 render step, the lift of generate.js's mode-2 refusal), 02-ring-engine (the row-strip
+// fork and the row wrap) and 03-player-far-branch -- is RETIRED: C1 ships all of it, line for line, so at this baseline each would be an empty patch. Their stage recipes are
+// deleted, not kept dead; main() proves the retirement instead (ringtree.mjs checkRetiredShipped: the production sources carry what each used to add, and the files are gone).
 const stages = [
   {
     name: '00-refusal-lift.patch',
@@ -76,103 +76,15 @@ const stages = [
       s = s.slice(0, a) + '    }\n' + s.slice(b);
       fs.writeFileSync(p, s);
     }
-  },
-  {
-    name: '01-ring-select.patch',
-    files: ['main/build/generate.js'],
-    apply(t) {
-      const g = 'main/build/generate.js';
-      // C2's generator refuses mode 2 (the S3 row fork): the horizontal tree carries the fork (02), so the refusal goes
-      edit(t, g, `  if (ringMode === 2) {
-    throw new Error(
-      'Build panel: this project streams a map on a board with horizontal mirroring, which needs the horizontal two-nametable ' +
-        'ring -- not implemented yet. Streamed maps need UNROM 512 with four-screen mirroring today; change the board and ' +
-        'mirroring in the Build panel, or remove "streamed" for this map.'
-    );
-  }
-`, `  // Phase 3b ring prototype (gate-only): mode 2 builds, with the row fork of 02-ring-engine.patch.
-`);
-      edit(t, g, `    \`SW_RW_NT_STEP = 1\`,`,
-`    \`SW_RING_ROW_LEN = \${ringMode === 2 ? 16 : 32}\`,
-    // vertical 0,1 (end 2), horizontal 0,2 (end 4)
-    \`SW_RW_NT_STEP = \${ringMode === 2 ? 2 : 1}\`,`);
-    }
-  },
-  {
-    name: '02-ring-engine.patch',
-    files: ['engine/streamworld.asm'],
-    apply(t) {
-      const f = 'engine/streamworld.asm';
-      // row strip: 32 -> SW_RING_ROW_LEN (loop end + st_len)
-      edit(t, f, `  lda ss_i
-  cmp #32
-  bne sw_ssr_loop
-  jsr sw_locate_current
-  lda #32
-  sta st_len`,
-`  lda ss_i
-  .if STREAM_RING
-sw_ring_row_cmp:
-  cmp #SW_RING_ROW_LEN
-  .else
-  cmp #32
-  .endif
-  bne sw_ssr_loop
-  jsr sw_locate_current
-  .if STREAM_RING
-sw_ring_row_len:
-  lda #SW_RING_ROW_LEN
-  .else
-  lda #32
-  .endif
-  sta st_len`);
-      // sw_nmi_stream row wrap modulus (the column wrap is C2's)
-      edit(t, f, `sw_ns_wrap32:
-  lda st_vary
-  cmp #32
-  bne sw_ns_wrapdone`,
-`sw_ns_wrap32:
-  lda st_vary
-  .if STREAM_RING
-sw_ring_wrap_row:
-  cmp #SW_RING_ROW_LEN
-  .else
-  cmp #32
-  .endif
-  bne sw_ns_wrapdone`);
-    }
-  },
-  {
-    name: '03-player-far-branch.patch',
-    files: ['engine/player.asm'],
-    apply(t) {
-      // Filled in by the branch-site audit (FAR_SITES below): every site that fails a horizontal streamed build.
-      const f = 'engine/player.asm';
-      const text = fs.readFileSync(path.join(t, f), 'utf8').split('\n');
-      let k = 0;
-      const out = [];
-      text.forEach((line, i) => {
-        const site = i + 1;
-        if (FAR_SITES.includes(site) && /^\s+beq cross_none\s*$/.test(line)) {
-          k += 1;
-          out.push(`  .if STREAM_RING`, `  bne ring_far${k}`, `  jmp cross_none`, `ring_far${k}:`, `  .else`, line, `  .endif`);
-        } else out.push(line);
-      });
-      if (k !== FAR_SITES.length) throw new Error(`player.asm: expected ${FAR_SITES.length} far-branch sites, rewrote ${k}`);
-      fs.writeFileSync(path.join(t, f), out.join('\n'));
-    }
   }
 ];
 /** The stages each ring's tree carries (ringtree.mjs RING_PATCH_SETS says the same; regen asserts the two agree). */
-const STAGES_OF_RING = { 1: ['00-refusal-lift.patch'], 2: stages.map((s) => s.name) };
+const STAGES_OF_RING = { 1: ['00-refusal-lift.patch'], 2: ['00-refusal-lift.patch'] };
 
-// Source lines of the `beq cross_none` sites that fail a horizontal streamed build at the pristine HEAD (see the S1a report).
-const FAR_SITES = JSON.parse(process.env.RING_FAR_SITES ?? '[339]');
-
-// ---------------------------------------------------------------- sabotage patches (each on top of the complete prototype)
+// ---------------------------------------------------------------- sabotage patches (each on top of its ring's production tree)
 const sabotages = {
-  'strip-len-30-vertical': { files: ['main/build/generate.js'], apply: (t) => edit(t, 'main/build/generate.js', 'SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}', 'SW_RING_COL_LEN = 30') },
-  'wrap-col-30': { files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `sw_ring_wrap_col:
+  'strip-len-30-vertical': { rings: [1], files: ['main/build/generate.js'], apply: (t) => edit(t, 'main/build/generate.js', 'SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}', 'SW_RING_COL_LEN = 30') },
+  'wrap-col-30': { rings: [1], files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `sw_ring_wrap_col:
   cmp #SW_RING_COL_LEN`, `sw_ring_wrap_col:
   cmp #30`) },
   'wrap-row-32': { rings: [2], files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `sw_ring_wrap_row:
@@ -186,7 +98,7 @@ const sabotages = {
   sta st_fnt                  ; nt-hi contribution = (screenCol&1)*4`) },
   // The render loop visits 0,1,2,3 on BOTH orientations: step 1, end 4. (Round 1's version set only END = 4, which on horizontal is already the
   // value, so it visited 0,2 and was a no-op there -- phase3b-s1a-review1.md finding 4.)
-  // (The vertical production generator emits the literal STEP = 1, so only END changes there; the horizontal prototype's STEP expression is 01-ring-select's.)
+  // (S3 C1: the generator's STEP is `${ringMode === 2 ? 2 : 1}` on both rings; on a vertical ring it is already 1, so only END changes there and the STEP edit is the horizontal form's.)
   'render-four-nts': { files: ['main/build/generate.js'], apply: (t, ring) => {
     if (ring === 2) edit(t, 'main/build/generate.js', 'SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}', 'SW_RW_NT_STEP = 1');
     edit(t, 'main/build/generate.js', 'SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}', 'SW_RW_NT_END = 4');
@@ -302,6 +214,8 @@ sw_rw_nty:    .db 0, 15, 15, 15`);
 
 function main() {
   verifyBaseline(); // the patches are made against, and only against, BASELINE (ringtree.mjs)
+  const retired = checkRetiredShipped(); // every retired prototype patch's effect is in BASELINE already and its file is gone; a violation throws
+  console.log(`retired ${Object.keys(RETIRED_PATCHES).join(', ')}: ${retired} shipped/absent needles verified at BASELINE`);
   for (const ring of [1, 2]) {
     if (JSON.stringify(RING_PATCH_SETS[ring]) !== JSON.stringify(STAGES_OF_RING[ring])) throw new Error(`ringtree.mjs RING_PATCH_SETS[${ring}] disagrees with this script's stages`);
   }
@@ -330,6 +244,9 @@ function main() {
   snaps[2] = before;
   fs.mkdirSync(path.join(HERE, 'sabotage', 'vertical'), { recursive: true });
   for (const [name, s] of Object.entries(sabotages)) {
+    // the rings a sabotage is cut for ARE the rings ringsabotage.mjs SABOTAGE_RINGS declares (the single writer); a form for any other ring would be an equivalent mutant, so a stale file is removed
+    if (JSON.stringify(s.rings ?? [1, 2]) !== JSON.stringify(sabotageRings(name))) throw new Error(`regen_patches.mjs cuts ${name} for rings [${(s.rings ?? [1, 2]).join(', ')}] but SABOTAGE_RINGS says [${sabotageRings(name).join(', ')}]`);
+    for (const ring of [1, 2]) if (!sabotageRings(name).includes(ring)) fs.rmSync(path.join(HERE, ring === 1 ? path.join('sabotage', 'vertical') : 'sabotage', `${name}.patch`), { force: true });
     for (const ring of s.rings ?? [1, 2]) {
       const pair = path.join(tmp, `sab-${ring}-${name}`);
       fs.mkdirSync(pair, { recursive: true });

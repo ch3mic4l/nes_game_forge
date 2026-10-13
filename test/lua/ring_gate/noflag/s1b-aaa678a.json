@@ -1,0 +1,79 @@
+{
+ "manifest-action-walk": {
+  "project": "d9921fd6d73bb30c51ee43992d11746bf1859f58faf2f74afdfbb3223eb48ecd",
+  "rom": "f84522aba3b412abb731ed0ce6bb7700f209048b8eeb681977f2bba4c352ecb1",
+  "scene.nes": "f84522aba3b412abb731ed0ce6bb7700f209048b8eeb681977f2bba4c352ecb1",
+  "symbols.json": "c928daf1362895d7f1621f0cb6db4b9dc6de69bdce4089962a26cd3201e5fd0a",
+  "manifest.lua": "91867dfda9907171ea55649208ee40416916c60f47a7bb364764c83065e36f22"
+ },
+ "manifest-action-walk-wide": {
+  "project": "801314fbb2d67feeb7dfbcac8dfd5ed3283614f17c6b127e8ddc6ae73434289e",
+  "rom": "4ea69af0770e0f5aa9caf922425cd0433489c48cf3062b6c00501b54987690c4",
+  "scene.nes": "4ea69af0770e0f5aa9caf922425cd0433489c48cf3062b6c00501b54987690c4",
+  "symbols.json": "e21b5cd912a461252ab46afe27fb790198abd67a0a0a09ace8a003140c75dd2a",
+  "manifest.lua": "911f7f74e627f3ad30582ff09e15fabacb96f205c900da17aa9db091c741fbfd"
+ },
+ "manifest-rpg-walk": {
+  "project": "8edfb3bd2aa2e55c692b549c5d79b9c6b85120e58ecfa25bad9cc78eb98fbda0",
+  "rom": "c01654b78c9494caeab9381a326ba83b691dabb30624e570a0637f48da25ec62",
+  "scene.nes": "c01654b78c9494caeab9381a326ba83b691dabb30624e570a0637f48da25ec62",
+  "symbols.json": "92553c01fc92957339d43b593111d516841fccf4342953174ae704bdbe8af3c4",
+  "manifest.lua": "e072321b0086d4642212581249b2f50aab2bfdd6839dd0f499d25d924d646aba"
+ },
+ "manifest-action-say": {
+  "project": "edb9757bf66cfd2d266ec4dc672ce6f43e8bffb67a8bb782d023a6c2aef5f703",
+  "rom": "d06ddda9e342efc786e4f0fad3b2b0dfe60dd8acf2fe45365e40416422df981d",
+  "scene.nes": "d06ddda9e342efc786e4f0fad3b2b0dfe60dd8acf2fe45365e40416422df981d",
+  "symbols.json": "11520c90e5b2d084dc9b6f62c62c9a5c967a248743cb2080891ea08e73ef3193",
+  "manifest.lua": "335a9ba27668f0c869ba8849814e922f06f49eeb5d8a94bd396c229a7e91d62f"
+ },
+ "manifest-action-stand": {
+  "project": "5ca3a4e34239db77329cfd1e15c60e968ae6ab69969fd52a0ff9028546628c26",
+  "rom": "3164bbd8a0bf210b992e909837349cacddfd130055494f24c4c304815c952d49",
+  "scene.nes": "3164bbd8a0bf210b992e909837349cacddfd130055494f24c4c304815c952d49",
+  "symbols.json": "b691f358ec600f19cccb80186db8613b51c6d9bcefece10596110c8633468401",
+  "manifest.lua": "93d3f9b8b04a685fbad116619763ae0d8f5440a25280657d3ec3c8b96989004b"
+ },
+ "manifest-rpg-name": {
+  "project": "b564c97771ab5db4f32f91bd7344c65994fdecc4cc5fbb951350900d9becec86",
+  "rom": "36ab19f43d1ed15df8dd34d6d1672751a42afcb2f5dd9dddc88e4e3b87070852",
+  "scene.nes": "36ab19f43d1ed15df8dd34d6d1672751a42afcb2f5dd9dddc88e4e3b87070852",
+  "symbols.json": "8bdfa5c381e6eb308330e03c5ac4f40b79b0968ce318379130e6c3d40c365c44",
+  "manifest.lua": "426885e535b52c213cb11128d7a7b6b62af8aeb47bad36872204f253b0230fb0"
+ },
+ "manifest-action-ord": {
+  "project": "904af66e9b3c37ec5e68aaf0672dff6990b0922f6835857812b99801a1d4ba82",
+  "rom": "6dc2ee2fd38b06198ec1ab44da3a08cb4f01a65634e4331fb55f87c6741df4c8",
+  "scene.nes": "6dc2ee2fd38b06198ec1ab44da3a08cb4f01a65634e4331fb55f87c6741df4c8",
+  "symbols.json": "842fa2faf7ee8bb73b195195f016ebe010b0462c3b709cd51342e0c3c5caac21",
+  "manifest.lua": "b5d3bed9ff9ff5f1c9c903204a515b9655a15ed93fee66ae90c13d08f7e31adb"
+ },
+ "manifest-action-nosizes": {
+  "project": "beeece7a24e3fe37ce0361bcff0ed6ec73ac02e91a963a7c5e1d158f04f783d9",
+  "rom": "0f3239c6124ab834955729bd24bb15a1744880d8024692f80f538fee5ff938db",
+  "scene.nes": "0f3239c6124ab834955729bd24bb15a1744880d8024692f80f538fee5ff938db",
+  "symbols.json": "6ad34d421e9a40a515b65296f32f0162854d57b86af7467c18b23382be1dc944",
+  "manifest.lua": "985df74156d79002cb35c3f125cdae5ed1d2ef990ac39085d1dc5eb829b28800"
+ },
+ "move-action-say-say": {
+  "project": "da08a75a406ac9e504322538605c1c9939242ef70c9c73a8baf1ed70c55d1327",
+  "rom": "9e69acd5aa06f6f7ef1b2ecf147d9100bcc19e300b09d3b658d1ec95d6be926f",
+  "scene.nes": "9e69acd5aa06f6f7ef1b2ecf147d9100bcc19e300b09d3b658d1ec95d6be926f",
+  "symbols.json": "c60959bed4a1ca3855d195b0a6c7cc08444bd30ab78c92b702ce84b1453cc72f",
+  "manifest.lua": "81aa5f180366cd52b7d6c01adfb6d736c1ae53d7ac467842cf7bee643b70f68e"
+ },
+ "move-rpg-flash-flash": {
+  "project": "36ecac3c7c6a3747ca5bf93d4c24eff9eae299d85b4124db961b7975c59e2f78",
+  "rom": "94cf1366310a66f3a6d91e760a45ae5f083e7a1e25a306883c48c42b1ea0e14f",
+  "scene.nes": "94cf1366310a66f3a6d91e760a45ae5f083e7a1e25a306883c48c42b1ea0e14f",
+  "symbols.json": "5825e0027df019a681cacd245c2e71dfa43e5cef43e80c0c64d3896747b55c15",
+  "manifest.lua": "d83c7adf5a5e0a411df9063b573ddfbc974eb68696a889eed3d33eed5bf9ac63"
+ },
+ "move-action-bound": {
+  "project": "27c3fedff35f60f5142868f1b0b035c8a61ad094895f717669512e2ee55b16d9",
+  "rom": "589afa848885f56c58e1a8dd7d5b5979982a470280120beac737ecfcf5a8e0e8",
+  "scene.nes": "589afa848885f56c58e1a8dd7d5b5979982a470280120beac737ecfcf5a8e0e8",
+  "symbols.json": "77f018a67e41cf25fdd2c6231cb57fd7926320c2861c4396db876fa516ff28bb",
+  "manifest.lua": "4e69667a9ebd987644200769779c3f75b1e20e0f5a8ca99cca496c30e7fc6554"
+ }
+}

@@ -3,13 +3,13 @@
 //   - the iNES header's mapper and mirroring bit equal the cell's;
 //   - STREAM_RING equals the cell's ring and the four generated constants equal the geometry's lengths;
 //   - the dialogue placement equals the one the cell was built to get;
-//   - the forked instructions are PRESENT IN THE ROM with the right operand: each ring-only label of 02-ring-engine.patch is read at
+//   - the forked instructions are PRESENT IN THE ROM with the right operand: each ring-only label of engine/streamworld.asm (assembled under `.if STREAM_RING`) is read at
 //     its file offset and must be the expected opcode followed by the geometry's own number. A four-screen or unforked fallback has
 //     no such label (ring forced 0), or has the wrong operand (a length-30 strip), and fails here.
 // The expected numbers come from the geometry (plan 1.1), written down here, not read back from the build.
-// Since S2 the vertical ring is C2's shipped code, which forks the column strip, the column wrap and the render index only: it has no row-strip fork and emits no
-// SW_RING_ROW_LEN. For ring 1 `row` is therefore `null` = ABSENT, and the row labels and constant must not exist -- a vertical ROM that carries them was built from the
-// horizontal prototype, which is the defect "a vertical cell is never re-patched into the prototype" exists to exclude.
+// Since S3 C1 BOTH rings are shipped code, and engine/streamworld.asm forks the row strip (compare, length load, wrap) under every `.if STREAM_RING`, not only mode 2. The vertical ring's
+// SW_RING_ROW_LEN is therefore the torus literal 32 (emitted by the generator for mode 1) and the row labels exist in a vertical ROM with operand 32: byte-identical to the unforked `cmp #32`.
+// There is no prototype build any more, so there is nothing a vertical ROM could be mistaken for by carrying the row labels; what discriminates a ring is its operands.
 import { RING_FORK_LABELS } from './ringlabels.mjs';
 
 // STATIC assembly checks, not behaviour: the wrap-modulus forks and the OPPOSITE-axis strip-length forks (the row length on a vertical ring, the
@@ -28,7 +28,7 @@ const isStaticLabel = (label, field, ring) => /wrap/.test(label) || (ring === 1 
 
 /** What each ring mode must assemble: column strip len, row strip len, render-window NT step and end. */
 export const RING_GEOMETRY = {
-  1: { col: 15, row: null, step: 1, end: 2 }, // vertical mirroring: 32 x 15 blocks, NTs 0,1; the row strip is dead code, left unforked (C2 ships no row fork)
+  1: { col: 15, row: 32, step: 1, end: 2 }, // vertical mirroring: 32 x 15 blocks, NTs 0,1; the row strip keeps the torus length 32 (the fork exists, its operand is the literal it replaced)
   2: { col: 30, row: 16, step: 2, end: 4 } // horizontal mirroring: 16 x 30 blocks, NTs 0,2; the column strip is dead code, left at its four-screen length
 };
 export const MIRROR_BIT = { vertical: 1, horizontal: 0 };
@@ -55,15 +55,11 @@ export function identityFailures(built, cell, { expectBanked, expectRing = cell.
   else {
     const c = p.ringConsts;
     if (c.SW_RING_COL_LEN !== geo.col) fails.push(`SW_RING_COL_LEN = ${c.SW_RING_COL_LEN}, want ${geo.col}`);
-    if (geo.row === null ? c.SW_RING_ROW_LEN != null : c.SW_RING_ROW_LEN !== geo.row) fails.push(`SW_RING_ROW_LEN = ${c.SW_RING_ROW_LEN}, want ${geo.row === null ? 'absent (the vertical production ring has no row fork)' : geo.row}`);
+    if (c.SW_RING_ROW_LEN !== geo.row) fails.push(`SW_RING_ROW_LEN = ${c.SW_RING_ROW_LEN}, want ${geo.row}`);
     if (c.SW_RW_NT_STEP !== geo.step) fails.push(`SW_RW_NT_STEP = ${c.SW_RW_NT_STEP}, want ${geo.step}`);
     if (c.SW_RW_NT_END !== geo.end) fails.push(`SW_RW_NT_END = ${c.SW_RW_NT_END}, want ${geo.end}`);
     for (const [label, { opcode, field }] of Object.entries(RING_FORK_LABELS)) {
       const addr = built.fns[label];
-      if (geo[field] === null) {
-        if (Number.isFinite(addr)) fails.push(`${label} is in game.fns: a vertical build carries a row-fork symbol, so it was built from the horizontal prototype, not C2's shipped code`);
-        continue;
-      }
       const tag = isStaticLabel(label, field, expectRing) ? 'static assembly check: ' : '';
       if (!Number.isFinite(addr)) { fails.push(`${tag}ring-only symbol ${label} is not in game.fns -- the ring fork was not assembled`); continue; }
       const off = fileOffsetOfKernelAddr(rom, addr);

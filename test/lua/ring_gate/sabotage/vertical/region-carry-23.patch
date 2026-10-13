@@ -1,5 +1,5 @@
 diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
-index 3c194bc..c4e7646 100644
+index 24c538e..3332e25 100644
 --- a/a/engine/streamworld.asm
 +++ b/b/engine/streamworld.asm
 @@ -70,7 +70,7 @@ sw_goto:

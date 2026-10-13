@@ -7,7 +7,9 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { makeTree, makeTreeSet, PATCH_DIR, sha256, BASELINE, RING_PATCH_SETS, patchFile, sabotageHasRing, patchedFiles, verifyProductionVertical, assertTreeForCell, filesDifferingFromBaseline, loadTree, provenanceFor, refreshProof, PRE_C2_BASELINE, expectedVerticalContent, resetExpectedCache, consumedEvidence, verifyBuildDir, readTreeText } from './ringtree.mjs';
+import { makeTree, makeTreeSet, PATCH_DIR, sha256, BASELINE, RING_PATCH_SETS, patchFile, sabotageHasRing, patchedFiles, verifyProduction, assertTreeForCell, filesDifferingFromBaseline, loadTree, provenanceFor, refreshProof, PRE_C2_BASELINE, expectedContent, resetExpectedCache, consumedEvidence, verifyBuildDir, readTreeText, RETIRED_PATCHES, TREE_KIND, PROTOTYPE_TREE_KIND, checkRetiredShipped } from './ringtree.mjs';
+import { makeBypassTree, loadBypassTree, buildThrough } from '../../lib/ringbypass.js';
+import { fileOffsetOfKernelAddr } from './ringidentity.mjs';
 import fsp from 'node:fs/promises';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -15,15 +17,15 @@ import { buildScene } from '../sw_manifest_scene.mjs';
 import { locateBlock } from './regen_patches.mjs';
 import { cellById, ringProject, buildCell } from './ringworld.mjs';
 import { mesenStamp, fileStamp, stampResult, harnessFingerprint, fingerprintGaps, writeAttempt, finishAttempt, EVIDENCE_ENTRIES, EXTRA_ROOT } from './ringprov.mjs';
-import { matrixScripts, NOFLAG_BASELINES, S1B_R3_REAL, REQUIRED_DATA } from './ringjobs.mjs';
+import { matrixScripts, NOFLAG_BASELINES, NOFLAG_HISTORY, S1B_R3_REAL, REQUIRED_DATA } from './ringjobs.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { RING_ADDR, checkAddresses } from './ringaddr.mjs';
 import { scanEquates, resolveEquates } from '../../lib/equates.js';
 import { MESEN, MESEN_ERROR, resolveMesen } from './ringrun_mesen.mjs';
-import { auditStamp, auditProvenance, auditTreeProvenance, isHistoricalStamp } from './ringprovindex.mjs';
+import { auditStamp, auditProvenance, auditTreeProvenance, isHistoricalStamp, HISTORICAL_KINDS } from './ringprovindex.mjs';
 import { jobs, runMatrix, judgeJob, matrixReport } from './run_matrix.mjs';
-import { IDENTITY_OUTCOME, SABOTAGE_RINGS, sabotageRings, buildErrorWitness, classifyBuildError } from './ringsabotage.mjs';
+import { IDENTITY_OUTCOME, SABOTAGE_RINGS, NO_FORM_REASON, noFormReason, sabotageRings, buildErrorWitness, classifyBuildError } from './ringsabotage.mjs';
 import { identityFailures } from './ringidentity.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -90,7 +92,7 @@ test('an installed Mesen release, when one resolves, stamps as itself with its o
 test('harnessFingerprint covers the matrix, the fixture-hash script and every patch file', () => {
   const fp = Object.keys(harnessFingerprint());
   for (const must of ['test/lua/ring_gate/run_matrix.mjs', 'test/lua/ring_gate/ringprovindex.mjs', 'test/lua/ring_gate/judge_unit.mjs', 'test/lua/ring_gate/fixture-hashes.mjs', 'test/lua/ring_gate/fixture-hashes-before.txt', 'test/lua/ring_gate/fixture-hashes-r4-before.txt',
-    'test/lua/ring_gate/ring_oracle.lua.template', 'test/lua/ring_gate/00-refusal-lift.patch', 'test/lua/ring_gate/01-ring-select.patch', 'test/lua/ring_gate/sabotage/instant-text.patch', 'test/lua/ring_gate/sabotage/vertical/instant-text.patch']) assert.ok(fp.includes(must), `${must} is not in the harness fingerprint`);
+    'test/lua/ring_gate/ring_oracle.lua.template', 'test/lua/ring_gate/00-refusal-lift.patch', 'test/lua/ring_gate/sabotage/instant-text.patch', 'test/lua/ring_gate/sabotage/vertical/instant-text.patch']) assert.ok(fp.includes(must), `${must} is not in the harness fingerprint`);
 });
 
 // ---- attempt stamps: written before the build, completed with the outcome, an errored build leaves one
@@ -106,7 +108,7 @@ test('a failing build leaves an error stamp that was written as an attempt first
     const st = JSON.parse(fs.readFileSync(path.join(dir, 'doomed.json'), 'utf8'));
     assert.equal(st.status, 'error');
     assert.ok(st.attempt.startedAt && st.finishedAt && st.error.firstLine, 'attempt time, finish time and the error text are recorded');
-    assert.ok(st.projectSha256 && st.patches.length === 1 && st.treeKind === 'production-vertical' && st.productionVertical.changed.join() === 'shared/project.js' && Object.keys(st.harness).length > 20 && st.nesasm?.sha256, 'inputs were stamped BEFORE the build');
+    assert.ok(st.projectSha256 && st.patches.length === 1 && st.treeKind === 'production-vertical' && st.productionProof.changed.join() === 'shared/project.js' && Object.keys(st.harness).length > 20 && st.nesasm?.sha256, 'inputs were stamped BEFORE the build');
     assert.equal(err.provPath, path.join(dir, 'doomed.json'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
 });
@@ -171,8 +173,9 @@ test('the matrix flags a job whose exit status or log differs from its declarati
 });
 test('the real job list: every sabotage patch is run by identity, every selection-error job is declared exit 2, every positive exit 0', () => {
   const list = jobs('/p', '/l');
-  const patches = fs.readdirSync(path.join(PATCH_DIR, 'sabotage')).filter((f) => f.endsWith('.patch')).map((f) => f.replace(/\.patch$/, '')).sort();
-  assert.deepEqual(patches, Object.keys(IDENTITY_OUTCOME).sort(), 'every sabotage patch has a declared identity outcome, and no declaration lacks its patch');
+  const dirOf = (d) => fs.readdirSync(path.join(PATCH_DIR, 'sabotage', d)).filter((f) => f.endsWith('.patch')).map((f) => f.replace(/\.patch$/, ''));
+  const patches = [...new Set([...dirOf(''), ...dirOf('vertical')])].sort();
+  assert.deepEqual(patches, Object.keys(IDENTITY_OUTCOME).sort(), 'every sabotage patch (of either ring) has a declared identity outcome, and no declaration lacks its patch');
   for (const s of patches) assert.ok(list.some((j) => j.name === `identity-${s}`), `no identity job for ${s}`);
   for (const j of list.filter((x) => x.name.startsWith('selection-'))) assert.equal(j.expect.exit, 2, j.name);
   for (const j of list.filter((x) => /-positive/.test(x.name))) assert.equal(j.expect.exit, 0, j.name);
@@ -222,21 +225,36 @@ test('harnessFingerprint covers EVERY script the matrix executes (argv[0] of eac
 });
 
 // ---- C3 fix 4 (review 4, item 3): every non-script input the certificate reads is TRACKED, fingerprinted and required ------------------------------------------------------
-test('the two no-flag jobs read the tracked cd7a9f8 baselines (never handoff-next), and both baselines and every S1b real-record fixture file are hashed into the fingerprint', () => {
+test('the two no-flag jobs read the tracked baselines (s1c cd7a9f8, s1b aaa678a; never handoff-next), and both baselines, the historical s1b file and every S1b real-record fixture file are hashed into the fingerprint', () => {
   const noflag = Object.fromEntries(jobs('/p', '/l').filter((j) => /^s1[bc]-noflag$/.test(j.name)).map((j) => [j.name, j.argv]));
   assert.deepEqual(Object.keys(noflag).sort(), ['s1b-noflag', 's1c-noflag']);
   assert.deepEqual(noflag['s1c-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json']);
-  assert.deepEqual(noflag['s1b-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1b-cd7a9f8.json']);
-  assert.deepEqual(Object.values(NOFLAG_BASELINES).sort(), ['test/lua/ring_gate/noflag/s1b-cd7a9f8.json', 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json']);
+  assert.deepEqual(noflag['s1b-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1b-aaa678a.json']);
+  assert.deepEqual(Object.values(NOFLAG_BASELINES).sort(), ['test/lua/ring_gate/noflag/s1b-aaa678a.json', 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json']);
   const fp = harnessFingerprint();
-  const want = [...Object.values(NOFLAG_BASELINES), ...S1B_R3_REAL.logs.map((f) => `${S1B_R3_REAL.dir}/logs/${f}`), ...S1B_R3_REAL.prov.map((f) => `${S1B_R3_REAL.dir}/prov/${f}`)];
-  assert.deepEqual([...want].sort(), [...REQUIRED_DATA].sort(), 'REQUIRED_DATA is exactly the baselines plus the fixture files');
-  assert.equal(want.length, 2 + 4 + 1);
+  const want = [...Object.values(NOFLAG_BASELINES), ...Object.values(NOFLAG_HISTORY), ...S1B_R3_REAL.logs.map((f) => `${S1B_R3_REAL.dir}/logs/${f}`), ...S1B_R3_REAL.prov.map((f) => `${S1B_R3_REAL.dir}/prov/${f}`)];
+  assert.deepEqual([...want].sort(), [...REQUIRED_DATA].sort(), 'REQUIRED_DATA is exactly the baselines, the historical s1b file and the fixture files');
+  assert.equal(want.length, 2 + 1 + 4 + 1);
   for (const f of want) {
     assert.ok(!/handoff-/.test(f), `${f} must not live under an ignored handoff directory`);
     assert.ok(EXTRA_ROOT.includes(f), `${f} is a required root input`);
     assert.equal(fp[f], sha256(fs.readFileSync(path.join(REPO, f))), `${f} is hashed into the fingerprint with its own content hash`);
   }
+});
+const HISTORICAL_S1B_SHA = 'ac88beeb60fb4c730ceeac03d805e8611aa868a2bc2d7f6c3f61ab7b9dbec251'; // noflag/s1b-cd7a9f8.json as recorded at cd7a9f8 (reproduced byte for byte at RULE-A)
+test('RULE-A continuity: the active S1b no-flag baseline (aaa678a) keeps every project/rom/scene.nes/manifest.lua hash of the superseded cd7a9f8 file; only symbols.json differs, in every configuration', () => {
+  const o = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1b), 'utf8')), n = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_BASELINES.s1b), 'utf8'));
+  assert.deepEqual(Object.keys(n), Object.keys(o), 'same configurations in the same order');
+  assert.equal(Object.keys(o).length, 11);
+  for (const c of Object.keys(o)) {
+    assert.deepEqual(Object.keys(n[c]), Object.keys(o[c]), `${c}: same artifact keys`);
+    for (const k of Object.keys(o[c])) {
+      if (k === 'symbols.json') assert.notEqual(n[c][k], o[c][k], `${c}: the symbol file gained ram.SW_RING_ROW_LEN, so its hash differs`);
+      else assert.equal(n[c][k], o[c][k], `${c}/${k} must keep its cd7a9f8 hash`);
+    }
+  }
+  // the historical file itself is pinned to its recorded bytes (it is evidence, never edited)
+  assert.equal(sha256(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1b))), HISTORICAL_S1B_SHA);
 });
 test('SABOTAGE of the required-input rule: a required input that is missing REFUSES the fingerprint (it is never silently omitted), with or without the gap check', () => {
   for (const f of REQUIRED_DATA) {
@@ -428,36 +446,115 @@ test('auditCampaignResult: an oracle Mesen row without userSavesUntouched or its
   assert.equal(probs({ cell: 'MMC1-V', emu: 'jsnes', vramOk: true, emulatorStamp: { emulator: 'jsnes (vendored core)' } }), '');
 });
 
-// ---- S2 C3: the gate certifies C2's PRODUCTION vertical ring; a vertical cell is never re-patched into the prototype
-const HORIZONTAL_ONLY_PATCHES = ['01-ring-select.patch', '02-ring-engine.patch', '03-player-far-branch.patch'];
+// ---- S3 C2: the gate certifies the PRODUCTION vertical AND horizontal rings; neither cell kind is ever re-patched into the S1 prototype
+const RETIRED = Object.keys(RETIRED_PATCHES);
+const PROTO_BASE = 'cd7a9f8'; // the last baseline whose ring-2 tree was the S1 prototype: its three patches (and the prototype's 00) are in git history at 803a252
 const gitHead = (...a) => execFileSync('git', a, { cwd: REPO, encoding: 'utf8' }).trim();
-test('BASELINE is a real commit whose engine/main/shared the working tree equals, and the patch sets are the declared ones', () => {
+const gitShow = (spec) => execFileSync('git', ['show', spec], { cwd: REPO, maxBuffer: 64 << 20 });
+const blobSha1 = (bytes) => crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
+let protoCache = null;
+/** The S1 prototype tree's ring files ({file -> Buffer}): PROTO_BASE's sources with the prototype's 00 and the three retired patches (read from git history) applied -- what a ring-2 cell used to be built from. */
+function prototypeFiles() {
+  if (protoCache) return protoCache;
+  const scratch = tmp();
+  try {
+    const patches = ['00-refusal-lift.patch', ...RETIRED].map((n) => gitShow(`803a252:test/lua/ring_gate/${n}`));
+    const files = new Set(patches.flatMap((b) => patchedFiles(b.toString('utf8'))));
+    for (const f of files) { fs.mkdirSync(path.dirname(path.join(scratch, f)), { recursive: true }); fs.writeFileSync(path.join(scratch, f), gitShow(`${PROTO_BASE}:${f}`)); }
+    for (const b of patches) execFileSync('git', ['apply', '-p2', '--whitespace=nowarn', '-'], { cwd: scratch, input: b, stdio: ['pipe', 'pipe', 'pipe'] });
+    protoCache = Object.fromEntries([...files].sort().map((f) => [f, fs.readFileSync(path.join(scratch, f))]));
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  return protoCache;
+}
+/** Re-patches a production ring tree into the S1 prototype: the prototype's ring files replace the tree's. */
+const repatchIntoPrototype = (root) => { for (const [f, bytes] of Object.entries(prototypeFiles())) fs.writeFileSync(path.join(root, f), bytes); };
+const RING_CELL = { 1: 'MMC1-V', 2: 'MMC1-H' };
+test('BASELINE is a real commit whose engine/main/shared the working tree equals, and BOTH rings carry exactly the refusal lift', () => {
   assert.match(BASELINE, /^[0-9a-f]{40}$/);
   assert.equal(gitHead('cat-file', '-t', BASELINE), 'commit');
   assert.deepEqual(RING_PATCH_SETS[1], ['00-refusal-lift.patch']);
-  assert.deepEqual(RING_PATCH_SETS[2], ['00-refusal-lift.patch', ...HORIZONTAL_ONLY_PATCHES]);
+  assert.deepEqual(RING_PATCH_SETS[2], ['00-refusal-lift.patch']);
   for (const n of RING_PATCH_SETS[2]) assert.ok(fs.statSync(patchFile(n)).size > 0, `${n} is empty`);
 });
-test('the declared rings of each sabotage equal the patch files that exist (a horizontal-only sabotage has no vertical form, and only that one)', () => {
+test('the S1 prototype patches are RETIRED: in no ring\'s patch set, not on disk, not in the fingerprint, refused by name, and production ships what each one added (none still applies to BASELINE)', () => {
+  assert.deepEqual(RETIRED, ['01-ring-select.patch', '02-ring-engine.patch', '03-player-far-branch.patch']);
+  const fp = Object.keys(harnessFingerprint());
+  for (const n of RETIRED) {
+    for (const ring of [1, 2]) assert.ok(!RING_PATCH_SETS[ring].includes(n), `${n} is in ring ${ring}'s patch set`);
+    assert.ok(!fs.existsSync(path.join(PATCH_DIR, n)), `${n} still exists on disk`);
+    assert.ok(!fp.includes(`test/lua/ring_gate/${n}`), `${n} is in the harness fingerprint`);
+    assert.ok(RETIRED_PATCHES[n].reason.length > 20, `${n}: a retirement records its reason`);
+    assert.throws(() => patchFile(n), /is retired/);
+    assert.throws(() => patchFile(n, 1), /is retired/);
+    assert.throws(() => makeTree({ ring: 2, extra: [n] }), /is retired/);
+    assert.throws(() => makeTree({ ring: 1, extra: [n] }), /is retired/);
+    // the retired file is identified by its bytes in git history, and it can no longer be applied to BASELINE (its effect is shipped: checkRetiredShipped below names the needles)
+    const bytes = gitShow(`803a252:test/lua/ring_gate/${n}`);
+    assert.equal(sha256(bytes), RETIRED_PATCHES[n].sha256, `${n}: the recorded hash is the file's at 803a252`);
+    const scratch = tmp();
+    try {
+      for (const f of patchedFiles(bytes.toString('utf8'))) { fs.mkdirSync(path.dirname(path.join(scratch, f)), { recursive: true }); fs.writeFileSync(path.join(scratch, f), gitShow(`${BASELINE}:${f}`)); }
+      assert.throws(() => execFileSync('git', ['apply', '--check', '-p2', '--whitespace=nowarn', '-'], { cwd: scratch, input: bytes, stdio: ['pipe', 'pipe', 'pipe'] }), `${n} would still change ${BASELINE}`);
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  }
+  assert.ok(checkRetiredShipped() >= 8, 'the needles of every retirement are in BASELINE');
+});
+test('the declared rings of each sabotage equal the patch files that exist (a ring with no meaningful form has none and a printed proof: wrap-row-32 on ring 1, strip-len-30-vertical and wrap-col-30 on ring 2)', () => {
   const horizontal = fs.readdirSync(path.join(PATCH_DIR, 'sabotage')).filter((f) => f.endsWith('.patch')).map((f) => f.slice(0, -6)).sort();
   const vertical = fs.readdirSync(path.join(PATCH_DIR, 'sabotage', 'vertical')).filter((f) => f.endsWith('.patch')).map((f) => f.slice(0, -6)).sort();
-  assert.deepEqual(horizontal, Object.keys(IDENTITY_OUTCOME).sort());
-  for (const n of horizontal) {
+  const names = Object.keys(IDENTITY_OUTCOME).sort();
+  for (const n of names) {
     assert.equal(sabotageHasRing(n, 2), sabotageRings(n).includes(2), `${n}: ring 2`);
     assert.equal(sabotageHasRing(n, 1), sabotageRings(n).includes(1), `${n}: ring 1`);
   }
-  assert.deepEqual(vertical, horizontal.filter((n) => sabotageRings(n).includes(1)));
-  assert.deepEqual(Object.keys(SABOTAGE_RINGS), ['wrap-row-32']);
-  assert.throws(() => makeTree({ ring: 1, extra: ['wrap-row-32'] }), /no ring-1 form/);
+  assert.deepEqual(horizontal, names.filter((n) => sabotageRings(n).includes(2)));
+  assert.deepEqual(vertical, names.filter((n) => sabotageRings(n).includes(1)));
+  // the exclusions are exactly these three equivalent mutants; every one carries its own reason and nothing else is excluded
+  const EXCLUDED = { 'strip-len-30-vertical': [1], 'wrap-col-30': [1], 'wrap-row-32': [2] };
+  assert.deepEqual(SABOTAGE_RINGS, EXCLUDED);
+  assert.deepEqual(names.filter((n) => sabotageRings(n).length !== 2), Object.keys(EXCLUDED).sort());
+  assert.deepEqual(Object.keys(NO_FORM_REASON).sort(), Object.keys(EXCLUDED).sort());
+  for (const [n, rings] of Object.entries(EXCLUDED)) {
+    const gone = 3 - rings[0];
+    assert.deepEqual(Object.keys(NO_FORM_REASON[n]).map(Number), [gone], `${n}: the reason names the ring that has no form`);
+    assert.match(noFormReason(n, gone), /equivalent mutant/);
+    assert.throws(() => makeTree({ ring: gone, extra: [n] }), new RegExp(`no ring-${gone} form: .*equivalent mutant`));
+  }
 });
-test('every patch of the shipped set and every sabotage form applies to its own ring\'s tree and changes something; the vertical tree changes only what its patches declare', () => {
+// The three equivalent mutants, each shown by building both rings' ROMs with and without the mutation (the edit is the one regen_patches.mjs cuts for the ring that keeps the form).
+const EQUIVALENT_MUTANTS = {
+  'wrap-row-32': { noFormRing: 1, edit: { file: 'engine/streamworld.asm', from: 'sw_ring_wrap_row:\n  cmp #SW_RING_ROW_LEN', to: 'sw_ring_wrap_row:\n  cmp #32' }, why: '`cmp #32` assembles to the bytes `cmp #SW_RING_ROW_LEN` (= 32) already is' },
+  'wrap-col-30': { noFormRing: 2, edit: { file: 'engine/streamworld.asm', from: 'sw_ring_wrap_col:\n  cmp #SW_RING_COL_LEN', to: 'sw_ring_wrap_col:\n  cmp #30' }, why: '`cmp #30` assembles to the bytes `cmp #SW_RING_COL_LEN` (= 30) already is' },
+  'strip-len-30-vertical': { noFormRing: 2, edit: { file: 'main/build/generate.js', from: 'SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}', to: 'SW_RING_COL_LEN = 30' }, why: 'the generator already emits SW_RING_COL_LEN = 30' }
+};
+test('wrap-row-32 on ring 1, wrap-col-30 and strip-len-30-vertical on ring 2 are EQUIVALENT MUTANTS, shown by building: the ROM with the mutation is byte-identical to the one without it on the excluded ring, while on the other ring the same mutation changes the ROM', async () => {
+  const rom = async (cell, edits) => {
+    const tree = makeBypassTree({ edits });
+    try {
+      const loaded = await loadBypassTree(tree);
+      const b = await buildThrough(loaded, ringProject({ cell, gameType: 'action' }).project);
+      try { return fs.readFileSync(b.romPath); } finally { fs.rmSync(b.dir, { recursive: true, force: true }); }
+    } finally { tree.dispose(); }
+  };
+  const cells = { 1: cellById('MMC1-V'), 2: cellById('MMC1-H') };
+  const base = { 1: await rom(cells[1], []), 2: await rom(cells[2], []) };
+  assert.ok(base[1].length > 16 && base[2].length > 16);
+  assert.deepEqual(Object.keys(EQUIVALENT_MUTANTS).sort(), Object.keys(SABOTAGE_RINGS).sort(), 'every excluded sabotage has its evidence');
+  for (const [name, m] of Object.entries(EQUIVALENT_MUTANTS)) {
+    const dead = m.noFormRing, live = 3 - dead;
+    assert.deepEqual(sabotageRings(name), [live], `${name}: SABOTAGE_RINGS keeps exactly the ring where the mutation is real`);
+    const mutated = { [dead]: await rom(cells[dead], [m.edit]), [live]: await rom(cells[live], [m.edit]) };
+    assert.ok(base[dead].equals(mutated[dead]), `${name} on ring ${dead}: ${m.why}, so the ROM is unchanged`);
+    assert.ok(!base[live].equals(mutated[live]), `${name} on ring ${live}: the mutation is real`);
+  }
+});
+test('every patch of the shipped set and every sabotage form applies to its own ring\'s tree and changes something; each tree changes only what its patches declare', () => {
   for (const ring of [1, 2]) {
     const t = makeTree({ ring });
     try {
-      assert.equal(t.kind, ring === 1 ? 'production-vertical' : 'prototype-horizontal');
+      assert.equal(t.kind, TREE_KIND[ring]);
       assert.deepEqual(t.patches.map((p) => p.name), RING_PATCH_SETS[ring]);
-      const changed = filesDifferingFromBaseline(t.root);
-      assert.deepEqual(changed, ring === 1 ? ['shared/project.js'] : ['engine/player.asm', 'engine/streamworld.asm', 'main/build/generate.js', 'shared/project.js'], `ring ${ring}: the files that differ from ${BASELINE}`);
+      assert.deepEqual(filesDifferingFromBaseline(t.root), ['shared/project.js'], `ring ${ring}: the files that differ from ${BASELINE}`);
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
     for (const n of Object.keys(IDENTITY_OUTCOME)) {
       if (!sabotageRings(n).includes(ring)) continue;
@@ -472,218 +569,270 @@ test('every patch of the shipped set and every sabotage form applies to its own 
     }
   }
 });
-test('a vertical tree is C2\'s shipped forks unmodified: only shared/project.js differs from BASELINE, and the shipped fork text is in the tree\'s own files', () => {
-  const t = makeTree({ ring: 1 });
-  try {
-    assert.deepEqual(t.production.changed, ['shared/project.js']);
-    assert.deepEqual(t.production.unmodifiedShippedFiles.sort(), ['engine/streamworld.asm', 'main/build/generate.js', 'shared/cartridge.js']);
-    const asm = fs.readFileSync(path.join(t.root, 'engine/streamworld.asm'), 'utf8');
-    for (const l of ['sw_ring_col_cmp:', 'sw_ring_col_len:', 'sw_ring_wrap_col:', 'sw_ring_nt_step:', 'sw_ring_nt_end:']) assert.ok(asm.includes(l), l);
-    for (const l of ['sw_ring_row_cmp:', 'sw_ring_row_len:', 'sw_ring_wrap_row:']) assert.ok(!asm.includes(l), `the vertical tree must NOT carry ${l} (a horizontal-prototype label)`);
-    assert.ok(!fs.readFileSync(path.join(t.root, 'main/build/generate.js'), 'utf8').includes('SW_RING_ROW_LEN'));
-    assert.doesNotThrow(() => verifyProductionVertical(t.root, t.applied));
-  } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-});
-test('SABOTAGE of the production-vertical assertion: a vertical tree re-patched into the prototype, or edited by hand, FAILS it (and a vertical cell will not build through it)', () => {
-  for (const proto of HORIZONTAL_ONLY_PATCHES) {
-    const t = makeTree({ ring: 1 });
+test('a ring tree is the shipped forks unmodified: only shared/project.js differs from BASELINE, the shipped fork text is in the tree\'s own files, and the proof names the ring it was made for', () => {
+  for (const ring of [1, 2]) {
+    const t = makeTree({ ring });
     try {
-      // the prototype patch applies to the vertical tree cleanly (C2's text is its context) -- that is exactly why the assertion must exist
-      execFileSync('git', ['apply', '-p2', '--whitespace=nowarn', patchFile(proto)], { cwd: t.root, stdio: 'pipe' });
-      assert.throws(() => verifyProductionVertical(t.root, t.applied), /differs from .* in files no applied patch declares/, proto);
-      assert.throws(() => assertTreeForCell(t, cellById('MMC1-V')), /differs from/, proto);
+      assert.deepEqual(t.production.changed, ['shared/project.js']);
+      assert.equal(t.production.ring, ring);
+      assert.equal(t.production.exact, true);
+      assert.deepEqual(t.production.unmodifiedShippedFiles.sort(), ring === 1 ? ['engine/streamworld.asm', 'main/build/generate.js', 'shared/cartridge.js'] : ['engine/player.asm', 'engine/streamworld.asm', 'main/build/generate.js', 'shared/cartridge.js']);
+      const asm = fs.readFileSync(path.join(t.root, 'engine/streamworld.asm'), 'utf8');
+      for (const l of ['sw_ring_col_cmp:', 'sw_ring_col_len:', 'sw_ring_wrap_col:', 'sw_ring_nt_step:', 'sw_ring_nt_end:', 'sw_ring_row_cmp:', 'sw_ring_row_len:', 'sw_ring_wrap_row:']) assert.ok(asm.includes(l), `ring ${ring}: ${l}`);
+      assert.ok(fs.readFileSync(path.join(t.root, 'main/build/generate.js'), 'utf8').includes('SW_RING_ROW_LEN'));
+      assert.ok(fs.readFileSync(path.join(t.root, 'engine/player.asm'), 'utf8').includes('bne ring_far1'));
+      assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring));
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
   }
-  // the prototype patch NAMED among a vertical tree's applied patches is refused by name too
-  const t = makeTree({ ring: 1 });
-  try {
-    assert.throws(() => verifyProductionVertical(t.root, [...t.applied, { name: '02-ring-engine.patch', file: patchFile('02-ring-engine.patch') }]), /horizontal-prototype patch/);
-    // a hand edit of one shipped fork operand (what a partial re-patch would do)
-    const f = path.join(t.root, 'engine/streamworld.asm');
-    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('cmp #SW_RING_COL_LEN\n  .else', 'cmp #30\n  .else'));
-    assert.throws(() => verifyProductionVertical(t.root, t.applied), /engine\/streamworld\.asm/);
-    // a tree that equals BASELINE where the refusal lift should be: the patch did nothing
-    const t2 = makeTree({ ring: 1 });
-    try {
-      fs.writeFileSync(path.join(t2.root, 'shared/project.js'), execFileSync('git', ['show', `${BASELINE}:shared/project.js`], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 << 20 }));
-      assert.throws(() => verifyProductionVertical(t2.root, t2.applied), /the patch did nothing/);
-    } finally { fs.rmSync(t2.root, { recursive: true, force: true }); }
-  } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
 });
-test('a cell is built only through its own ring\'s tree: a vertical cell refuses the prototype tree and a horizontal cell refuses the production tree', () => {
+test('SABOTAGE of the production assertion: a ring tree re-patched into the S1 prototype, or edited by hand, FAILS it (and a cell will not build through it); a retired patch named among the applied ones is refused', async () => {
+  for (const ring of [1, 2]) {
+    const cell = cellById(RING_CELL[ring]);
+    const t = makeTree({ ring });
+    try {
+      repatchIntoPrototype(t.root);
+      assert.ok(filesDifferingFromBaseline(t.root).includes('engine/player.asm'), 'the prototype really differs from the shipped ring');
+      assert.throws(() => verifyProduction(t.root, t.applied, ring), /differs from .* in files no applied patch declares/, `ring ${ring}`);
+      assert.throws(() => assertTreeForCell(t, cell), /differs from/, `ring ${ring}`);
+      await assert.rejects(loadTree(t), /differs from/);
+    } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
+    const u = makeTree({ ring });
+    try {
+      for (const n of RETIRED) assert.throws(() => verifyProduction(u.root, [...u.applied, { name: n, file: path.join(PATCH_DIR, n) }], ring), /retired prototype patch/, n);
+      // a hand edit of one shipped fork operand (what a partial re-patch would do)
+      const f = path.join(u.root, 'engine/streamworld.asm');
+      fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('cmp #SW_RING_COL_LEN\n  .else', 'cmp #30\n  .else'));
+      assert.throws(() => verifyProduction(u.root, u.applied, ring), /engine\/streamworld\.asm/);
+      // a tree that equals BASELINE where the refusal lift should be: the patch did nothing
+      const u2 = makeTree({ ring });
+      try {
+        fs.writeFileSync(path.join(u2.root, 'shared/project.js'), gitShow(`${BASELINE}:shared/project.js`));
+        assert.throws(() => verifyProduction(u2.root, u2.applied, ring), /the patch did nothing/);
+      } finally { fs.rmSync(u2.root, { recursive: true, force: true }); }
+    } finally { fs.rmSync(u.root, { recursive: true, force: true }); }
+  }
+  // the prototype fixture is what the harness used to build: it carries the row fork as a PATCH, which the shipped tree now ships (so a re-patch is a real change, not a no-op)
+  // (engine/streamworld.asm itself is line-for-line the shipped file, which is why C1 could retire patch 02: the files that differ are the player, the generator and the refusal lift)
+  assert.ok(prototypeFiles()['engine/streamworld.asm'].equals(fs.readFileSync(path.join(REPO, 'engine/streamworld.asm'))));
+  for (const f of ['engine/player.asm', 'main/build/generate.js']) assert.ok(!prototypeFiles()[f].equals(fs.readFileSync(path.join(REPO, f))), `${f}: the prototype's text is not the shipped text`);
+});
+test('a cell is built only through its own ring\'s tree: a vertical cell refuses the horizontal tree and a horizontal cell refuses the vertical one', () => {
   const set = makeTreeSet();
   try {
     assert.doesNotThrow(() => assertTreeForCell(set.forCell(cellById('MMC3-V')), cellById('MMC3-V')));
     assert.doesNotThrow(() => assertTreeForCell(set.forCell(cellById('MMC3-H')), cellById('MMC3-H')));
     assert.notEqual(set.forRing(1).root, set.forRing(2).root);
+    assert.equal(set.forRing(1).kind, 'production-vertical');
+    assert.equal(set.forRing(2).kind, 'production-horizontal');
     assert.throws(() => assertTreeForCell(set.forRing(2), cellById('MMC3-V')), /vertical cell is built only through the production-vertical tree/);
-    assert.throws(() => assertTreeForCell(set.forRing(1), cellById('MMC3-H')), /horizontal one only through the prototype tree/);
+    assert.throws(() => assertTreeForCell(set.forRing(1), cellById('MMC3-H')), /horizontal one only through the production-horizontal tree/);
   } finally { set.dispose(); }
   assert.throws(() => makeTree({ ring: true }), /ring must be 1/);
   assert.throws(() => makeTree({}), /ring must be 1/);
 });
-test('row 1 on a vertical production build: the row fork must be ABSENT, and a build that carries it (or lacks the shipped column fork) fails identity', async () => {
-  const cell = cellById('MMC1-V');
-  const tree = makeTree({ ring: 1 });
-  const { project } = ringProject({ cell, gameType: 'action' });
-  let built;
-  try {
-    built = await buildCell({ tree, project, cell, gameType: 'action', label: 'unit-vertical-identity' });
-    assert.deepEqual(identityFailures(built, cell, { expectBanked: false }), [], 'the production vertical ROM passes row 1');
-    assert.equal(built.prov.treeKind, 'production-vertical');
-    assert.deepEqual(built.prov.productionVertical, provenanceFor(1).productionVertical, 'the build\'s stamp carries the exact proof of the check that gated it');
-    assert.equal(built.prov.ringConsts.SW_RING_ROW_LEN, null, 'the vertical production generator emits no SW_RING_ROW_LEN');
-    assert.equal(built.fns.sw_ring_row_cmp, undefined);
-    // a vertical ROM that carries the row fork was built from the prototype: forge the symbol and the constant in a copy of the record
-    const forged = { ...built, fns: { ...built.fns, sw_ring_row_cmp: built.fns.sw_ring_col_cmp }, prov: { ...built.prov, ringConsts: { ...built.prov.ringConsts, SW_RING_ROW_LEN: 32 } } };
-    const fails = identityFailures(forged, cell, { expectBanked: false });
-    assert.ok(fails.some((f) => /sw_ring_row_cmp is in game\.fns.*horizontal prototype/.test(f)), fails.join('\n'));
-    assert.ok(fails.some((f) => /SW_RING_ROW_LEN = 32, want absent/.test(f)), fails.join('\n'));
-    const noFork = { ...built, fns: Object.fromEntries(Object.entries(built.fns).filter(([k]) => k !== 'sw_ring_col_cmp')) };
-    assert.ok(identityFailures(noFork, cell, { expectBanked: false }).some((f) => /sw_ring_col_cmp is not in game\.fns/.test(f)));
-  } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
+test('row 1 on a production build of EACH ring: the shipped fork operands pass identity; a forged record or ROM (a missing fork, a wrong constant, a flipped operand, the other ring\'s geometry) fails it; the stamp carries the exact proof and the consumed evidence', async () => {
+  for (const ring of [1, 2]) {
+    const cell = cellById(RING_CELL[ring]);
+    const tree = makeTree({ ring });
+    const { project } = ringProject({ cell, gameType: 'action' });
+    let built;
+    try {
+      built = await buildCell({ tree, project, cell, gameType: 'action', label: `unit-identity-${cell.id}` });
+      assert.deepEqual(identityFailures(built, cell, { expectBanked: false }), [], `the production ring-${ring} ROM passes row 1`);
+      assert.equal(built.prov.treeKind, TREE_KIND[ring]);
+      assert.deepEqual(built.prov.productionProof, provenanceFor(ring).productionProof, 'the build\'s stamp carries the exact proof of the check that gated it');
+      assert.equal(built.prov.consumed.engine.builds, 1, 'and the consumed-input evidence of its verified build');
+      assert.equal(built.prov.ringConsts.SW_RING_ROW_LEN, ring === 1 ? 32 : 16, 'the generator emits the ring\'s own row length');
+      assert.ok(Number.isFinite(built.fns.sw_ring_row_cmp), 'the row fork is assembled on every ring');
+      const without = (label) => ({ ...built, fns: Object.fromEntries(Object.entries(built.fns).filter(([k]) => k !== label)) });
+      assert.ok(identityFailures(without('sw_ring_col_cmp'), cell, { expectBanked: false }).some((f) => /sw_ring_col_cmp is not in game\.fns/.test(f)));
+      assert.ok(identityFailures(without('sw_ring_row_cmp'), cell, { expectBanked: false }).some((f) => /sw_ring_row_cmp is not in game\.fns/.test(f)));
+      const wrongLen = { ...built, prov: { ...built.prov, ringConsts: { ...built.prov.ringConsts, SW_RING_ROW_LEN: ring === 1 ? 16 : 32 } } };
+      assert.ok(identityFailures(wrongLen, cell, { expectBanked: false }).some((f) => /SW_RING_ROW_LEN = /.test(f)));
+      const rom = Buffer.from(built.rom);
+      rom[fileOffsetOfKernelAddr(rom, built.fns.sw_ring_row_cmp) + 1] ^= 1;
+      assert.ok(identityFailures({ ...built, rom }, cell, { expectBanked: false }).some((f) => /sw_ring_row_cmp.*operand/.test(f)), 'a flipped operand in the ROM');
+      assert.ok(identityFailures(built, cell, { expectBanked: false, expectRing: 3 - ring }).length > 0, 'the other ring\'s geometry does not hold');
+    } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
+  }
 });
 
-// ---- C3 fix 1, finding 1: the production-vertical proof compares EXACT content (BASELINE + the canonical hashed patches), not the set of changed file names
-test('SABOTAGE of the exact-content proof: a prototype fork applied into a file a sabotage already declares (the review\'s repro), its #32 build variant, and a second edit in shared/project.js are all refused', async () => {
-  const cell = cellById('MMC1-V');
-  // (1) the reviewer's exact repro: dest-plus08-vertical declares engine/streamworld.asm, then 02-ring-engine.patch is applied UNDECLARED into it
-  const t = makeTree({ ring: 1, extra: ['dest-plus08-vertical'] });
-  try {
-    assert.doesNotThrow(() => verifyProductionVertical(t.root, t.applied), 'the legitimate sabotage form is accepted');
-    execFileSync('git', ['apply', '-p2', '--whitespace=nowarn', patchFile('02-ring-engine.patch')], { cwd: t.root, stdio: 'pipe' });
-    assert.deepEqual(filesDifferingFromBaseline(t.root), patchedFiles(fs.readFileSync(patchFile('dest-plus08-vertical', 1), 'utf8')).concat('shared/project.js').sort(), 'the file NAMES are exactly the declared ones, which is why a name-set comparison passed this');
-    assert.throws(() => verifyProductionVertical(t.root, t.applied), /engine\/streamworld\.asm is not .* plus its applied patches/);
-    assert.throws(() => assertTreeForCell(t, cell), /plus its applied patches/);
-    // (2) the #32 build variant: the new SW_RING_ROW_LEN operands replaced by #32, so the build would complete -- the proof, run by loadTree at every build, refuses it first
-    const f = path.join(t.root, 'engine/streamworld.asm');
-    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replaceAll('#SW_RING_ROW_LEN', '#32'));
-    assert.throws(() => assertTreeForCell(t, cell), /plus its applied patches/);
-    await assert.rejects(loadTree(t), /plus its applied patches/);
-    const { project } = ringProject({ cell, gameType: 'action' });
+// ---- C3 fix 1, finding 1 (now for BOTH rings): the production proof compares EXACT content (BASELINE + the canonical hashed patches), not the set of changed file names
+test('SABOTAGE of the exact-content proof, on BOTH rings: an edit inside a file a sabotage already declares (the review\'s repro shape), its #32 build variant, a second edit in shared/project.js and in a sabotage\'s other file are all refused', async () => {
+  for (const ring of [1, 2]) {
+    const cell = cellById(RING_CELL[ring]);
+    // (1) dest-plus08-vertical declares engine/streamworld.asm; an UNDECLARED edit inside it keeps the changed-file NAMES exactly the declared ones
+    const t = makeTree({ ring, extra: ['dest-plus08-vertical'] });
+    try {
+      assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring), 'the legitimate sabotage form is accepted');
+      const f = path.join(t.root, 'engine/streamworld.asm');
+      fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replaceAll('#SW_RING_ROW_LEN', '#32'));
+      assert.deepEqual(filesDifferingFromBaseline(t.root), patchedFiles(fs.readFileSync(patchFile('dest-plus08-vertical', ring), 'utf8')).concat('shared/project.js').sort(), 'the file NAMES are exactly the declared ones, which is why a name-set comparison passed this');
+      assert.throws(() => verifyProduction(t.root, t.applied, ring), /engine\/streamworld\.asm is not .* plus its applied patches/);
+      assert.throws(() => assertTreeForCell(t, cell), /plus its applied patches/);
+      // (2) the #32 build variant: the build would complete -- the proof, run by loadTree at every build, refuses it first
+      await assert.rejects(loadTree(t), /plus its applied patches/);
+      const { project } = ringProject({ cell, gameType: 'action' });
+      const dir = tmp();
+      try { await assert.rejects(buildCell({ tree: t, project, cell, gameType: 'action', provDir: dir, label: 'forged-row-fork' }), /plus its applied patches/); assert.deepEqual(fs.readdirSync(dir), [], 'no stamp is written for a build the proof refused'); }
+      finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
+    // (3) an extra edit in shared/project.js beyond the exact refusal lift, and one inside a sabotage's other declared file
+    const a = makeTree({ ring });
+    try {
+      fs.appendFileSync(path.join(a.root, 'shared/project.js'), '\n// unauthorized additional source edit\n');
+      assert.throws(() => assertTreeForCell(a, cell), /shared\/project\.js is not .* plus its applied patches/);
+    } finally { fs.rmSync(a.root, { recursive: true, force: true }); }
+    const b = makeTree({ ring, extra: ['render-four-nts'] });
+    try {
+      fs.appendFileSync(path.join(b.root, 'main/build/generate.js'), '\n// a second edit in a file the sabotage declares\n');
+      assert.throws(() => verifyProduction(b.root, b.applied, ring), /generate\.js is not .* plus its applied patches/);
+    } finally { fs.rmSync(b.root, { recursive: true, force: true }); }
+  }
+});
+test('the exact-content proof pins the patch list too, on both rings: non-canonical files, a hash changed since the tree was made, a non-sabotage name, a reordered or missing required patch, a retired patch', () => {
+  for (const ring of [1, 2]) {
+    const t = makeTree({ ring, extra: ['render-four-nts'] });
+    try {
+      const [lift, sab] = t.applied;
+      const copy = path.join(t.root, 'copy-of-lift.patch');
+      fs.copyFileSync(lift.file, copy);
+      assert.throws(() => verifyProduction(t.root, [{ ...lift, file: copy }, sab], ring), /not the canonical/);
+      assert.throws(() => verifyProduction(t.root, [{ ...lift, sha256: '0'.repeat(64) }, sab], ring), /changed on disk since the tree was made/);
+      assert.throws(() => verifyProduction(t.root, [lift, sab, { name: 'not-a-sabotage.patch', file: lift.file }], ring), /only sabotage forms/);
+      assert.throws(() => verifyProduction(t.root, [sab, lift], ring), /must start 00-refusal-lift\.patch/);
+      assert.throws(() => verifyProduction(t.root, [sab], ring), /must start 00-refusal-lift\.patch/);
+      assert.throws(() => verifyProduction(t.root, [], ring), /must start 00-refusal-lift\.patch/);
+      for (const n of RETIRED) assert.throws(() => verifyProduction(t.root, [lift, { name: n, file: lift.file }], ring), /retired prototype patch/);
+      if (ring === 1) assert.throws(() => verifyProduction(t.root, [lift, { name: 'wrap-row-32', file: sab.file }], ring), /no ring-1 form/);
+      else for (const n of ['strip-len-30-vertical', 'wrap-col-30']) assert.throws(() => verifyProduction(t.root, [lift, { name: n, file: sab.file }], ring), /no ring-2 form/);
+    } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
+  }
+});
+test('every build check re-proves the tree, on both rings: loadTree and assertTreeForCell return the CURRENT proof, not the one cached at tree creation; a pristine tree has none', async () => {
+  for (const ring of [1, 2]) {
+    const cell = cellById(RING_CELL[ring]);
+    const t = makeTree({ ring, extra: ['dest-plus08-vertical'] });
+    try {
+      const made = t.production;
+      const checked = assertTreeForCell(t, cell);
+      assert.deepEqual(checked, made);
+      assert.notEqual(checked, made, 'a fresh proof object, computed from the files on disk now');
+      assert.equal(t.production, checked, 'the tree keeps the latest check');
+      assert.deepEqual((await loadTree(t)).proof, provenanceFor(ring, ['dest-plus08-vertical']).productionProof, 'loadTree returns the proof of ITS check, equal to the one computed from the patches alone');
+      // the tree is edited AFTER it was made: the next check refuses, and the stale cached proof is not what a stamp would carry
+      fs.appendFileSync(path.join(t.root, 'engine/streamworld.asm'), '\n; late edit\n');
+      assert.throws(() => refreshProof(t), /plus its applied patches/);
+      await assert.rejects(loadTree(t), /plus its applied patches/);
+    } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
+  }
+  const p = makeTree({ ring: false });
+  try { assert.equal(refreshProof(p), null, 'the pristine tree has no production proof'); } finally { fs.rmSync(p.root, { recursive: true, force: true }); }
+});
+
+// ---- C3 fix 1, finding 2 (now for BOTH rings): the certificate audit validates the tree provenance of every build / run stamp
+test('SABOTAGE of the audit, on BOTH rings: a REAL build stamp with missing or contradictory tree provenance is refused (baseline, treeKind, patch names/order/hashes, the exact proof, the declared sabotage, a retired patch, the other ring\'s proof)', async () => {
+  for (const ring of [1, 2]) {
+    const cell = cellById(RING_CELL[ring]);
+    const tree = makeTree({ ring });
     const dir = tmp();
-    try { await assert.rejects(buildCell({ tree: t, project, cell, gameType: 'action', provDir: dir, label: 'forged-row-fork' }), /plus its applied patches/); assert.deepEqual(fs.readdirSync(dir), [], 'no stamp is written for a build the proof refused'); }
-    finally { fs.rmSync(dir, { recursive: true, force: true }); }
-  } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-  // (3) an extra edit in shared/project.js beyond the exact refusal lift (the refusal-only tree), and one inside a sabotage's other declared file
-  const a = makeTree({ ring: 1 });
-  try {
-    fs.appendFileSync(path.join(a.root, 'shared/project.js'), '\n// unauthorized additional source edit\n');
-    assert.throws(() => assertTreeForCell(a, cell), /shared\/project\.js is not .* plus its applied patches/);
-  } finally { fs.rmSync(a.root, { recursive: true, force: true }); }
-  const b = makeTree({ ring: 1, extra: ['strip-len-30-vertical'] });
-  try {
-    fs.appendFileSync(path.join(b.root, 'main/build/generate.js'), '\n// a second edit in a file the sabotage declares\n');
-    assert.throws(() => verifyProductionVertical(b.root, b.applied), /generate\.js is not .* plus its applied patches/);
-  } finally { fs.rmSync(b.root, { recursive: true, force: true }); }
+    let built;
+    try {
+      const { project } = ringProject({ cell, gameType: 'action' });
+      built = await buildCell({ tree, project, cell, gameType: 'action', provDir: dir, label: 'real-stamp', links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } });
+      const real = JSON.parse(fs.readFileSync(path.join(dir, 'real-stamp.json'), 'utf8'));
+      assert.equal(real.status, 'built');
+      assert.equal(real.treeKind, TREE_KIND[ring]);
+      const prov = (s) => auditTreeProvenance(s, 'x.json');
+      assert.deepEqual(prov(real), [], `the real ring-${ring} stamp passes`);
+      assert.equal(auditStamp(real, 'x.json', () => true).filter((b) => /tree provenance/.test(b)).length, 0);
+      const refuse = (mut, re, label, stamp = real) => {
+        const s = structuredClone(stamp); mut(s);
+        const direct = prov(s), via = auditStamp(s, 'x.json', () => true).filter((b) => /tree provenance/.test(b));
+        assert.ok(direct.some((b) => re.test(b)), `ring ${ring} ${label}: direct ${direct.join('|') || '(accepted)'}`);
+        assert.ok(via.some((b) => re.test(b)), `ring ${ring} ${label}: auditStamp ${via.join('|') || '(accepted)'}`);
+      };
+      const want = TREE_KIND[ring], other = TREE_KIND[3 - ring];
+      refuse((s) => { s.treeKind = PROTOTYPE_TREE_KIND; s.productionProof = null; }, new RegExp(`treeKind .*needs ${want}`), 'prototype-horizontal with no proof');
+      refuse((s) => { s.treeKind = PROTOTYPE_TREE_KIND; }, new RegExp(`treeKind .*needs ${want}`), 'prototype-horizontal WITH the proof (contradictory)');
+      refuse((s) => { s.treeKind = other; }, new RegExp(`treeKind .*needs ${want}`), 'the other ring\'s production kind');
+      refuse((s) => { delete s.treeKind; delete s.productionProof; }, /treeKind undefined|carries no exact production proof/, 'both fields omitted');
+      refuse((s) => { s.baseline = 'wrong-baseline'; s.patches = []; }, /baseline "wrong-baseline"/, 'wrong baseline and no patches');
+      refuse((s) => { s.baseline = PRE_C2_BASELINE; }, /certification baseline/, 'the pre-C2 baseline on a current stamp');
+      refuse((s) => { s.patches = []; }, new RegExp(`do not start with the ring-${ring} required set`), 'no patches');
+      refuse((s) => { s.patches[0].sha256 = '0'.repeat(64); }, new RegExp(`is not the canonical ring-${ring} patch file's`), 'a patch hash that is not the canonical file\'s');
+      for (const n of RETIRED) refuse((s) => { s.patches = [s.patches[0], { name: n, sha256: RETIRED_PATCHES[n].sha256 }]; }, new RegExp(`not a ring-${ring} sabotage form|canonical ring-${ring}`), `the retired ${n} listed`);
+      refuse((s) => { s.patches.push({ name: 'dest-plus08-vertical', sha256: sha256(fs.readFileSync(patchFile('dest-plus08-vertical', ring))) }); }, /not exactly its declared sabotage/, 'an extra patch with no declared sabotage');
+      refuse((s) => { s.sabotage = 'dest-plus08-vertical'; }, /not exactly its declared sabotage/, 'a declared sabotage with no patch');
+      refuse((s) => { s.productionProof.expected['shared/project.js'] = '0'.repeat(40); }, /expected file contents are not BASELINE plus/, 'a proof whose expected content is altered');
+      refuse((s) => { s.productionProof.exact = false; }, /carries no exact production proof/, 'a proof that is not marked exact');
+      refuse((s) => { s.productionProof.ring = 3 - ring; }, new RegExp(`carries no exact production proof for ring ${ring}`), 'a proof made for the other ring');
+      refuse((s) => { s.productionProof.changed = ['shared/project.js', 'engine/streamworld.asm']; }, /changed files are not exactly/, 'a proof listing a changed file the patches do not declare');
+      refuse((s) => { s.productionProof.patches = []; }, /different patches than the stamp lists/, 'a proof made for other patches');
+      refuse((s) => { s.productionVertical = s.productionProof; }, /legacy productionVertical/, 'the legacy field name');
+      refuse((s) => { delete s.consumed; }, /carries none/, 'a stamp lacking consumed-input evidence');
+      // the whole other ring's provenance on this ring's cell
+      refuse((s) => { Object.assign(s, provenanceFor(3 - ring)); }, new RegExp(`needs ${want}|required set`), 'the other ring\'s whole provenance');
+      assert.ok(prov({ ...real, cell: 'MMC1-X' }).some((b) => /no tree can be derived/.test(b)));
+      if (ring === 2) {
+        // a ring-2 cell RE-PATCHED INTO THE PROTOTYPE: the stamp such a tree would honestly produce (prototype kind, the three retired patches with their hashes, no proof, no evidence) is refused, with or without the historical option
+        const proto = { ...real, treeKind: PROTOTYPE_TREE_KIND, patches: [real.patches[0], ...RETIRED.map((n) => ({ name: n, sha256: RETIRED_PATCHES[n].sha256 }))], productionProof: null, consumed: null };
+        const bad = prov(proto);
+        for (const re of [/needs production-horizontal/, /not a ring-2 sabotage form/, /carries no exact production proof/]) assert.ok(bad.some((b) => re.test(b)), `${re}: ${bad.join('|')}`);
+        assert.ok(auditStamp(proto, 'x.json', () => true, undefined, { historicalTree: true }).some((b) => /tree provenance/.test(b)), 'and the historical option does not admit it at the current baseline');
+        // a SWAPPED CONSUMED FILE: the evidence names the prototype's bytes for a file the production ring ships
+        for (const [section, key, re] of [['engine', 'player.asm', /engine\/player\.asm was consumed as git blob/], ['js', 'main/build/generate.js', /main\/build\/generate\.js was loaded as git blob/], ['js', 'shared/project.js', /shared\/project\.js was loaded as git blob/]]) {
+          const protoFile = section === 'engine' ? `engine/${key}` : key;
+          const swapped = blobSha1(prototypeFiles()[protoFile] ?? gitShow(`${PROTO_BASE}:${protoFile}`));
+          assert.notEqual(swapped, real.consumed[section].files[key], `${protoFile}: the prototype's bytes differ from the shipped ones`);
+          refuse((s) => { s.consumed[section].files[key] = swapped; }, re, `consumed ${protoFile} swapped for the prototype's`);
+        }
+      }
+    } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
+  }
 });
-test('the exact-content proof pins the patch list too: non-canonical files, a hash changed since the tree was made, a non-sabotage name, a reordered or missing required patch', () => {
-  const t = makeTree({ ring: 1, extra: ['strip-len-30-vertical'] });
-  try {
-    const [lift, sab] = t.applied;
-    const copy = path.join(t.root, 'copy-of-lift.patch');
-    fs.copyFileSync(lift.file, copy);
-    assert.throws(() => verifyProductionVertical(t.root, [{ ...lift, file: copy }, sab]), /not the canonical/);
-    assert.throws(() => verifyProductionVertical(t.root, [{ ...lift, sha256: '0'.repeat(64) }, sab]), /changed on disk since the tree was made/);
-    assert.throws(() => verifyProductionVertical(t.root, [lift, sab, { name: 'not-a-sabotage.patch', file: lift.file }]), /only sabotage forms/);
-    assert.throws(() => verifyProductionVertical(t.root, [sab, lift]), /must start 00-refusal-lift\.patch/);
-    assert.throws(() => verifyProductionVertical(t.root, [sab]), /must start 00-refusal-lift\.patch/);
-    assert.throws(() => verifyProductionVertical(t.root, []), /must start 00-refusal-lift\.patch/);
-    assert.throws(() => verifyProductionVertical(t.root, [lift, { name: 'wrap-row-32', file: sab.file }]), /no ring-1 form/);
-  } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-});
-test('every build check re-proves the tree: loadTree and assertTreeForCell return the CURRENT proof, not the one cached at tree creation', async () => {
-  const cell = cellById('MMC1-V');
-  const t = makeTree({ ring: 1, extra: ['dest-plus08-vertical'] });
-  try {
-    const made = t.production;
-    const checked = assertTreeForCell(t, cell);
-    assert.deepEqual(checked, made);
-    assert.notEqual(checked, made, 'a fresh proof object, computed from the files on disk now');
-    assert.equal(t.production, checked, 'the tree keeps the latest check');
-    assert.deepEqual((await loadTree(t)).proof, provenanceFor(1, ['dest-plus08-vertical']).productionVertical, 'loadTree returns the proof of ITS check, equal to the one computed from the patches alone');
-    // the tree is edited AFTER it was made: the next check refuses, and the stale cached proof is not what a stamp would carry
-    fs.appendFileSync(path.join(t.root, 'engine/streamworld.asm'), '\n; late edit\n');
-    assert.throws(() => refreshProof(t), /plus its applied patches/);
-    await assert.rejects(loadTree(t), /plus its applied patches/);
-  } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-  const h = makeTree({ ring: 2 });
-  try { assert.equal(assertTreeForCell(h, cellById('MMC1-H')), null, 'a horizontal tree has no production-vertical proof'); } finally { fs.rmSync(h.root, { recursive: true, force: true }); }
-});
-
-// ---- C3 fix 1, finding 2: the certificate audit validates the tree provenance of every build / run stamp
-test('SABOTAGE of the audit: a REAL build stamp with missing or contradictory tree provenance is refused (baseline, treeKind, patch names/order/hashes, the exact proof, the declared sabotage)', async () => {
-  const cell = cellById('MMC1-V');
-  const tree = makeTree({ ring: 1 });
-  const dir = tmp();
-  let built;
-  try {
-    const { project } = ringProject({ cell, gameType: 'action' });
-    built = await buildCell({ tree, project, cell, gameType: 'action', provDir: dir, label: 'real-stamp', links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } });
-    const real = JSON.parse(fs.readFileSync(path.join(dir, 'real-stamp.json'), 'utf8'));
-    assert.equal(real.status, 'built');
-    const prov = (s) => auditTreeProvenance(s, 'x.json');
-    assert.deepEqual(prov(real), [], 'the real stamp passes');
-    assert.equal(auditStamp(real, 'x.json', () => true).filter((b) => /tree provenance/.test(b)).length, 0);
-    const refuse = (mut, re, label) => {
-      const s = structuredClone(real); mut(s);
-      const direct = prov(s), via = auditStamp(s, 'x.json', () => true).filter((b) => /tree provenance/.test(b));
-      assert.ok(direct.some((b) => re.test(b)), `${label}: direct ${direct.join('|') || '(accepted)'}`);
-      assert.ok(via.some((b) => re.test(b)), `${label}: auditStamp ${via.join('|') || '(accepted)'}`);
-    };
-    refuse((s) => { s.treeKind = 'prototype-horizontal'; s.productionVertical = null; }, /treeKind .*needs production-vertical/, 'prototype-horizontal with no proof on a vertical cell');
-    refuse((s) => { delete s.treeKind; delete s.productionVertical; }, /treeKind undefined|carries no exact production-vertical proof/, 'both fields omitted');
-    refuse((s) => { s.baseline = 'wrong-baseline'; s.patches = []; }, /baseline "wrong-baseline"/, 'wrong baseline and no patches');
-    refuse((s) => { s.patches = []; }, /do not start with the ring-1 required set/, 'no patches');
-    refuse((s) => { s.patches[0].sha256 = '0'.repeat(64); }, /is not the canonical ring-1 patch file's/, 'a patch hash that is not the canonical file\'s');
-    refuse((s) => { s.patches = [s.patches[0], { name: '01-ring-select.patch', sha256: sha256(fs.readFileSync(patchFile('01-ring-select.patch'))) }]; }, /not a ring-1 sabotage form|hash .* canonical/, 'a prototype patch listed on a vertical stamp');
-    refuse((s) => { s.patches.push({ name: 'dest-plus08-vertical', sha256: sha256(fs.readFileSync(patchFile('dest-plus08-vertical', 1))) }); }, /not exactly its declared sabotage/, 'an extra patch with no declared sabotage');
-    refuse((s) => { s.sabotage = 'dest-plus08-vertical'; }, /not exactly its declared sabotage/, 'a declared sabotage with no patch');
-    refuse((s) => { s.productionVertical.expected['shared/project.js'] = '0'.repeat(40); }, /expected file contents are not BASELINE plus/, 'a proof whose expected content is altered');
-    refuse((s) => { s.productionVertical.exact = false; }, /carries no exact production-vertical proof/, 'a proof that is not marked exact');
-    refuse((s) => { s.productionVertical.changed = ['shared/project.js', 'engine/streamworld.asm']; }, /changed files are not exactly/, 'a proof listing a changed file the patches do not declare');
-    refuse((s) => { s.productionVertical.patches = []; }, /different patches than the stamp lists/, 'a proof made for other patches');
-    // a horizontal stamp may not carry a vertical proof, and a vertical-looking one may not pass as horizontal
-    const h = { ...real, cell: 'MMC1-H', ...provenanceFor(2) };
-    assert.deepEqual(prov(h), [], 'the ring-2 positive');
-    assert.ok(prov({ ...h, productionVertical: real.productionVertical }).some((b) => /carries a production-vertical proof/.test(b)), 'a horizontal stamp with a vertical proof');
-    assert.ok(prov({ ...h, treeKind: 'production-vertical' }).some((b) => /needs prototype-horizontal/.test(b)));
-    assert.ok(prov({ ...h, patches: provenanceFor(1).patches }).some((b) => /ring-2 required set/.test(b)), 'the vertical patch set on a horizontal cell');
-    assert.ok(prov({ ...real, cell: 'MMC1-X' }).some((b) => /no tree can be derived/.test(b)));
-  } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
-});
-test('the audit handles ring-0 comparisons and declared sabotage controls explicitly', () => {
+test('the audit handles ring-0 comparisons and declared sabotage controls explicitly (both rings are production trees)', () => {
   const prov = (s) => auditTreeProvenance(s, 'x.json');
   // declared sabotage controls: exactly the declared patch, in its ring's form
-  const sab = { kind: 'cell-build', cell: 'MMC1-V', sabotage: 'dest-plus08-vertical', ...provenanceFor(1, ['dest-plus08-vertical']) };
-  assert.deepEqual(prov(sab), []);
-  assert.ok(prov({ ...sab, sabotage: 'strip-len-30-vertical' }).some((b) => /not exactly its declared sabotage/.test(b)), 'a different sabotage declared');
-  assert.ok(prov({ ...sab, sabotage: null }).some((b) => /not exactly its declared sabotage/.test(b)));
-  const wrongForm = { ...sab, patches: [...sab.patches.slice(0, 1), { name: 'dest-plus08-vertical', sha256: sha256(fs.readFileSync(patchFile('dest-plus08-vertical', 2))) }] };
-  assert.ok(prov(wrongForm).some((b) => /canonical ring-1 patch file/.test(b)), 'the HORIZONTAL form of a sabotage on a vertical cell');
+  for (const ring of [1, 2]) {
+    const cell = RING_CELL[ring];
+    const sab = { kind: 'cell-build', cell, sabotage: 'dest-plus08-vertical', ...provenanceFor(ring, ['dest-plus08-vertical']) };
+    assert.deepEqual(prov(sab), [], `ring ${ring}`);
+    assert.ok(prov({ ...sab, sabotage: 'no-walk-v' }).some((b) => /not exactly its declared sabotage/.test(b)), 'a different sabotage declared');
+    assert.ok(prov({ ...sab, sabotage: null }).some((b) => /not exactly its declared sabotage/.test(b)));
+    const wrongForm = { ...sab, sabotage: 'render-four-nts', patches: [...sab.patches.slice(0, 1), { name: 'render-four-nts', sha256: sha256(fs.readFileSync(patchFile('render-four-nts', 3 - ring))) }] };
+    assert.ok(prov(wrongForm).some((b) => new RegExp(`canonical ring-${ring} patch file`).test(b)), `the ring-${3 - ring} form of a sabotage on a ring-${ring} cell`);
+    assert.ok(prov({ ...sab, kind: 's1b-witness' }).length === 0, 'an s1b witness declares its sabotage the same way');
+    // an s1c control declares its sabotage through its control id
+    const ctl = { kind: 's1c-run', cell, control: 'nmi-dest-plus08-vertical', ...provenanceFor(ring, ['dest-plus08-vertical']) };
+    assert.deepEqual(prov(ctl), []);
+    assert.ok(prov({ ...ctl, control: null }).some((b) => /not exactly its declared sabotage/.test(b)));
+    assert.ok(prov({ ...ctl, control: 'no-such-control' }).some((b) => /not a declared S1c control/.test(b)));
+    assert.deepEqual(prov({ kind: 's1c-run', cell, ...provenanceFor(ring) }), [], 'an s1c positive');
+  }
   const hsab = { kind: 'cell-build', cell: 'MMC3-H', sabotage: 'wrap-row-32', ...provenanceFor(2, ['wrap-row-32']) };
   assert.deepEqual(prov(hsab), [], 'wrap-row-32 exists only for ring 2');
-  assert.ok(prov({ ...sab, kind: 's1b-witness', sabotage: 'dest-plus08-vertical' }).length === 0, 'an s1b witness declares its sabotage the same way');
-  // an s1c control declares its sabotage through its control id
-  const ctl = { kind: 's1c-run', cell: 'MMC1-V', control: 'nmi-dest-plus08-vertical', ...provenanceFor(1, ['dest-plus08-vertical']) };
-  assert.deepEqual(prov(ctl), []);
-  assert.ok(prov({ ...ctl, control: null }).some((b) => /not exactly its declared sabotage/.test(b)));
-  assert.ok(prov({ ...ctl, control: 'no-such-control' }).some((b) => /not a declared S1c control/.test(b)));
-  assert.deepEqual(prov({ kind: 's1c-run', cell: 'MMC1-V', ...provenanceFor(1) }), [], 'an s1c positive');
-  // ring 0: the pristine side has no patches; the patched side and the six-fixture comparison carry the ring-2 set and no sabotage
+  assert.ok(prov({ ...hsab, cell: 'MMC3-V' }).length > 0, 'and a ring-1 cell cannot carry it');
+  // ring 0: the pristine side has no patches and no tree; the patched side is a ring-2 production build; the six-fixture comparison names that tree
   const p2 = provenanceFor(2);
-  const ring0 = (tree, patches) => ({ kind: 'ring0-build', tree, baseline: BASELINE, patches });
+  const ring0 = (tree, patches) => (tree === 'patched' ? { kind: 'ring0-build', tree, ...p2, patches } : { kind: 'ring0-build', tree, baseline: BASELINE, patches });
   assert.deepEqual(prov(ring0('pristine', [])), []);
   assert.deepEqual(prov(ring0('patched', p2.patches)), []);
   assert.ok(prov(ring0('pristine', p2.patches)).some((b) => /required set|declared sabotage/.test(b)), 'a pristine side that carries patches');
+  assert.ok(prov({ ...ring0('pristine', []), treeKind: 'production-horizontal' }).some((b) => /pristine ring-0 stamp carries treeKind/.test(b)), 'a pristine side with a tree kind');
+  assert.ok(prov({ ...ring0('pristine', []), productionProof: p2.productionProof }).some((b) => /pristine ring-0 stamp carries a production proof/.test(b)));
   assert.ok(prov(ring0('patched', [])).some((b) => /ring-2 required set/.test(b)), 'a patched side without its patches');
-  assert.ok(prov(ring0('patched', provenanceFor(1).patches)).some((b) => /ring-2 required set/.test(b)), 'the vertical set on the ring-0 patched side');
   assert.ok(prov({ ...ring0('patched', p2.patches), baseline: 'old' }).some((b) => /certification baseline/.test(b)));
-  assert.ok(prov({ ...ring0('patched', p2.patches), treeKind: 'production-vertical' }).some((b) => /ring-0 stamp with treeKind/.test(b)));
+  assert.ok(prov({ ...ring0('patched', p2.patches), treeKind: 'production-vertical' }).some((b) => /needs production-horizontal/.test(b)));
+  assert.ok(prov({ ...ring0('patched', p2.patches), treeKind: PROTOTYPE_TREE_KIND }).some((b) => /needs production-horizontal/.test(b)));
+  assert.ok(prov({ ...ring0('patched', p2.patches), consumed: undefined }).some((b) => /carries none/.test(b)), 'the patched ring-0 build must carry its consumed evidence');
   assert.ok(prov({ ...ring0('elsewhere', []) }).some((b) => /no tree can be derived/.test(b)));
-  const cmp = { kind: 'ring0-identity-comparison', baseline: BASELINE, patches: p2.patches };
+  const { consumed: _omit, ...p2NoEvidence } = p2;
+  const cmp = { kind: 'ring0-identity-comparison', ...p2NoEvidence };
   assert.deepEqual(prov(cmp), []);
-  assert.ok(prov({ ...cmp, patches: p2.patches.slice(0, 3) }).some((b) => /ring-2 required set/.test(b)), 'a comparison with a patch missing');
+  assert.ok(prov({ ...cmp, consumed: p2.consumed }).some((b) => /comparison builds nothing/.test(b)), 'a comparison cannot claim consumed evidence');
+  assert.ok(prov({ ...cmp, patches: p2.patches.slice(0, 0) }).some((b) => /ring-2 required set/.test(b)), 'a comparison with a patch missing');
+  assert.ok(prov({ ...cmp, treeKind: PROTOTYPE_TREE_KIND }).some((b) => /needs production-horizontal/.test(b)), 'a comparison against the prototype');
   assert.ok(prov({ ...cmp, baseline: '5138c1f' }).some((b) => /certification baseline/.test(b)), 'a comparison against the pre-C2 baseline');
   // and auditStamp runs it on the comparison and on an errored build stamp
   assert.ok(auditStamp({ schema: 'ring-prov-3', ...cmp, patches: [], status: 'built' }, 'c.json', () => true).some((b) => /tree provenance/.test(b)));
@@ -704,7 +853,7 @@ test('regen_patches locateBlock: the end anchor must be unique after the start; 
 // ---- C3 fix 2, finding 1: a vertical build is bound to the bytes it CONSUMED, not to a check of the mutable tree before and after it ----------------------------------------------
 // The reviewer's repro: a source that is edited only while the generator copies it (and restored right after) passes the check before the build and the check after it.
 const SCENE = { gt: 'action', sizes: [2, 2, 2, 2, 2, 2, 2, 2], wide: true, ring: { mapper: 1, mirroring: 'vertical', ring: 1, n: 4, bulk: 0 } };
-/** Runs `body` with fs/promises.copyFile hooked: while the generator copies the tree's engine/streamworld.asm, the undeclared prototype row fork is applied and the #32 variant made; the source is restored right after the copy. Returns the number of edited copies. */
+/** Runs `body` with fs/promises.copyFile hooked: while the generator copies the tree's engine/streamworld.asm, the row length operand is replaced by #32 (an undeclared edit); the source is restored right after the copy. Returns the number of edited copies. */
 async function withSourceRestoredDuringCopy(tree, body) {
   const source = path.join(tree.root, 'engine/streamworld.asm');
   const original = fs.readFileSync(source);
@@ -712,7 +861,6 @@ async function withSourceRestoredDuringCopy(tree, body) {
   let edits = 0;
   fsp.copyFile = async function hookedCopyFile(src, dest, ...rest) {
     if (String(src) !== source) return copy.call(this, src, dest, ...rest);
-    execFileSync('git', ['apply', '-p2', '--whitespace=nowarn', patchFile('02-ring-engine.patch')], { cwd: tree.root, stdio: 'pipe' });
     fs.writeFileSync(source, fs.readFileSync(source, 'utf8').replaceAll('#SW_RING_ROW_LEN', '#32'));
     edits++;
     try { return await copy.call(this, src, dest, ...rest); } finally { fs.writeFileSync(source, original); }
@@ -724,14 +872,17 @@ async function withSourceRestoredDuringCopy(tree, body) {
 test('SABOTAGE of the consumed-input guard: the reviewer\'s restored-during-copy repro is REFUSED in buildCell, in a scene build (the S1b/S1c path) and when the copy bypasses the guard', async () => {
   const cell = cellById('MMC1-V');
   const { project } = ringProject({ cell, gameType: 'action' });
-  // (1) buildCell: both tree checks (before and after) pass -- the check-time proof is exactly what the repro defeated -- and the BUILD is refused anyway
-  const t = makeTree({ ring: 1, extra: ['dest-plus08-vertical'] });
+  // (1) buildCell, on BOTH rings: both tree checks (before and after) pass -- the check-time proof is exactly what the repro defeated -- and the BUILD is refused anyway
+  for (const ring of [1, 2]) {
+  const rcell = cellById(RING_CELL[ring]);
+  const rproject = ringProject({ cell: rcell, gameType: 'action' }).project;
+  const t = makeTree({ ring, extra: ['dest-plus08-vertical'] });
   const dir = tmp();
   try {
     let before, after;
     const edits = await withSourceRestoredDuringCopy(t, async () => {
       before = refreshProof(t);
-      await assert.rejects(buildCell({ tree: t, project, cell, gameType: 'action', sabotage: 'dest-plus08-vertical', provDir: dir, label: 'restored-during-copy' }), /consumed-input guard: the build read engine\/streamworld\.asm as git blob .* the source changed while the build consumed it/);
+      await assert.rejects(buildCell({ tree: t, project: rproject, cell: rcell, gameType: 'action', sabotage: 'dest-plus08-vertical', provDir: dir, label: 'restored-during-copy' }), /consumed-input guard: the build read engine\/streamworld\.asm as git blob .* the source changed while the build consumed it/);
       after = refreshProof(t);
     });
     assert.equal(edits, 1, 'the hook edited the one copy');
@@ -741,6 +892,7 @@ test('SABOTAGE of the consumed-input guard: the reviewer\'s restored-during-copy
     assert.equal(stamp.status, 'error', 'the refused build leaves an error stamp, never a built one');
     assert.equal(stamp.consumed.engine.builds, 0, 'no build was verified');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(t.root, { recursive: true, force: true }); }
+  }
   // (2) a scene build from a vertical tree (what run_s1b.mjs / run_s1c.mjs do through runManifest and measureMove): the same hook, the same refusal
   const s = makeTree({ ring: 1, extra: ['dest-plus08-vertical'] });
   const out = tmp();
@@ -794,53 +946,51 @@ test('the consumed-input guard also binds a PERSISTENT edit seen only by a scene
     assert.deepEqual(auditTreeProvenance({ kind: 's1b-witness', cell: 'MMC1-V', status: 'built', sabotage: null, baseline: BASELINE, ...provenanceFor(1), consumed: ev }, 's1b.json'), []);
   } finally { fs.rmSync(d.root, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true }); }
 });
-test('SABOTAGE of the audit: a real vertical build stamp with missing, wrong or incomplete consumed-input evidence is refused (and an errored attempt may be partial but never wrong)', async () => {
-  const cell = cellById('MMC1-V');
-  const tree = makeTree({ ring: 1, extra: ['strip-len-30-vertical'] });
-  const { project } = ringProject({ cell, gameType: 'action' });
-  let built;
-  try {
-    built = await buildCell({ tree, project, cell, gameType: 'action', sabotage: 'strip-len-30-vertical', label: 'unit-consumed' });
-    const stamp = { kind: 'cell-build', status: 'built', ...built.prov, sabotage: 'strip-len-30-vertical' };
-    const prov = (o) => auditTreeProvenance({ ...stamp, ...o }, 'c.json');
-    const clone = () => structuredClone(stamp.consumed);
-    assert.deepEqual(prov({}), [], 'the real stamp is clean');
-    assert.equal(stamp.consumed.engine.builds, 1);
-    assert.ok(stamp.consumed.js.files['main/build/generate.js'], 'the sabotage targets the generator: its loaded blob is recorded');
-    assert.notEqual(stamp.consumed.js.files['main/build/generate.js'], execFileSync('git', ['rev-parse', `${BASELINE}:main/build/generate.js`], { cwd: REPO, encoding: 'utf8' }).trim(), 'and it is the PATCHED blob, not the baseline one');
-    const refused = (o, re, why) => assert.ok(prov(o).some((b) => re.test(b)), `${why}: ${prov(o).join(' | ') || 'accepted'}`);
-    refused({ consumed: undefined }, /carries none/, 'no evidence');
-    refused({ consumed: null }, /carries none/, 'null evidence');
-    let c = clone(); c.engine.files['streamworld.asm'] = '0'.repeat(40);
-    refused({ consumed: c }, /engine\/streamworld\.asm was consumed as git blob 000000000000/, 'a wrong engine blob');
-    c = clone(); delete c.engine.files['text.asm'];
-    refused({ consumed: c }, /not exactly the engine set/, 'an engine file missing');
-    c = clone(); c.engine.files['extra.asm'] = '1'.repeat(40);
-    refused({ consumed: c }, /extra\.asm|not exactly the engine set/, 'an engine file nobody ships');
-    c = clone(); c.js.files['main/build/generate.js'] = execFileSync('git', ['rev-parse', `${BASELINE}:main/build/generate.js`], { cwd: REPO, encoding: 'utf8' }).trim();
-    refused({ consumed: c }, /main\/build\/generate\.js was loaded as git blob/, 'the unpatched generator for a stamp that declares the strip-len sabotage');
-    c = clone(); delete c.js.files['main/build/pipeline.js'];
-    refused({ consumed: c }, /main\/build\/pipeline\.js is not among the loaded modules/, 'a required module missing');
-    c = clone(); c.engine.builds = 0;
-    refused({ consumed: c }, /no verified build/, 'no build');
-    c = clone(); c.mechanism = 'checked-the-tree';
-    refused({ consumed: c }, /mechanism/, 'another mechanism');
-    c = clone(); c.refused = 'x';
-    refused({ consumed: c }, /the guard refused a build/, 'a refusal on a finished stamp');
-    c = clone(); c.engine.files = null;
-    refused({ consumed: c }, /no engine \/ js file maps/, 'no maps');
-    // a ring-2 (horizontal) stamp has no exact content to bind: it must carry none, and may not claim any
-    const h = { kind: 'cell-build', status: 'built', cell: 'MMC1-H', sabotage: null, ...provenanceFor(2) };
-    assert.deepEqual(auditTreeProvenance(h, 'h.json'), []);
-    assert.deepEqual(auditTreeProvenance({ ...h, consumed: null }, 'h.json'), []);
-    assert.ok(auditTreeProvenance({ ...h, consumed: stamp.consumed }, 'h.json').some((b) => /ring-2 .*consumed-input evidence/.test(b) || /carries consumed-input evidence/.test(b)), 'ring 2 claims evidence');
-    // an errored attempt: partial evidence is fine, a wrong entry or no evidence at all is not
-    const err = { ...stamp, status: 'error' };
-    const partial = { mechanism: stamp.consumed.mechanism, baseline: BASELINE, engine: { builds: 0, files: { 'text.asm': stamp.consumed.engine.files['text.asm'] } }, js: { files: {} } };
-    assert.deepEqual(auditTreeProvenance({ ...err, consumed: partial }, 'e.json'), []);
-    assert.ok(auditTreeProvenance({ ...err, consumed: { ...partial, engine: { builds: 0, files: { 'text.asm': '2'.repeat(40) } } } }, 'e.json').some((b) => /engine\/text\.asm was consumed as git blob/.test(b)));
-    assert.ok(auditTreeProvenance({ ...err, consumed: undefined }, 'e.json').some((b) => /carries none/.test(b)));
-  } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
+test('SABOTAGE of the audit, on BOTH rings: a real build stamp with missing, wrong or incomplete consumed-input evidence is refused (and an errored attempt may be partial but never wrong)', async () => {
+  for (const ring of [1, 2]) {
+    const cell = cellById(RING_CELL[ring]);
+    const tree = makeTree({ ring, extra: ['render-four-nts'] });
+    const { project } = ringProject({ cell, gameType: 'action' });
+    let built;
+    try {
+      built = await buildCell({ tree, project, cell, gameType: 'action', sabotage: 'render-four-nts', label: 'unit-consumed' });
+      const stamp = { kind: 'cell-build', status: 'built', ...built.prov, sabotage: 'render-four-nts' };
+      const prov = (o) => auditTreeProvenance({ ...stamp, ...o }, 'c.json');
+      const clone = () => structuredClone(stamp.consumed);
+      assert.deepEqual(prov({}), [], 'the real stamp is clean');
+      assert.equal(stamp.consumed.engine.builds, 1);
+      const baseGen = execFileSync('git', ['rev-parse', `${BASELINE}:main/build/generate.js`], { cwd: REPO, encoding: 'utf8' }).trim();
+      assert.ok(stamp.consumed.js.files['main/build/generate.js'], 'the sabotage targets the generator: its loaded blob is recorded');
+      assert.notEqual(stamp.consumed.js.files['main/build/generate.js'], baseGen, 'and it is the PATCHED blob, not the baseline one');
+      const refused = (o, re, why) => assert.ok(prov(o).some((b) => re.test(b)), `ring ${ring} ${why}: ${prov(o).join(' | ') || 'accepted'}`);
+      refused({ consumed: undefined }, /carries none/, 'no evidence');
+      refused({ consumed: null }, /carries none/, 'null evidence');
+      let c = clone(); c.engine.files['streamworld.asm'] = '0'.repeat(40);
+      refused({ consumed: c }, /engine\/streamworld\.asm was consumed as git blob 000000000000/, 'a wrong engine blob');
+      c = clone(); delete c.engine.files['text.asm'];
+      refused({ consumed: c }, /not exactly the engine set/, 'an engine file missing');
+      c = clone(); c.engine.files['extra.asm'] = '1'.repeat(40);
+      refused({ consumed: c }, /extra\.asm|not exactly the engine set/, 'an engine file nobody ships');
+      c = clone(); c.js.files['main/build/generate.js'] = baseGen;
+      refused({ consumed: c }, /main\/build\/generate\.js was loaded as git blob/, 'the unpatched generator for a stamp that declares the render-four-nts sabotage');
+      c = clone(); delete c.js.files['main/build/pipeline.js'];
+      refused({ consumed: c }, /main\/build\/pipeline\.js is not among the loaded modules/, 'a required module missing');
+      c = clone(); c.engine.builds = 0;
+      refused({ consumed: c }, /no verified build/, 'no build');
+      c = clone(); c.mechanism = 'checked-the-tree';
+      refused({ consumed: c }, /mechanism/, 'another mechanism');
+      c = clone(); c.refused = 'x';
+      refused({ consumed: c }, /the guard refused a build/, 'a refusal on a finished stamp');
+      c = clone(); c.engine.files = null;
+      refused({ consumed: c }, /no engine \/ js file maps/, 'no maps');
+      // an errored attempt: partial evidence is fine, a wrong entry or no evidence at all is not
+      const err = { ...stamp, status: 'error' };
+      const partial = { mechanism: stamp.consumed.mechanism, baseline: BASELINE, engine: { builds: 0, files: { 'text.asm': stamp.consumed.engine.files['text.asm'] } }, js: { files: {} } };
+      assert.deepEqual(auditTreeProvenance({ ...err, consumed: partial }, 'e.json'), []);
+      assert.ok(auditTreeProvenance({ ...err, consumed: { ...partial, engine: { builds: 0, files: { 'text.asm': '2'.repeat(40) } } } }, 'e.json').some((b) => /engine\/text\.asm was consumed as git blob/.test(b)));
+      assert.ok(auditTreeProvenance({ ...err, consumed: undefined }, 'e.json').some((b) => /carries none/.test(b)));
+    } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
+  }
 });
 test('a patch file is read ONCE per use and git applies those bytes from stdin: the bytes hashed are the bytes parsed and applied (no path is reopened after it was hashed)', () => {
   const lift = patchFile('00-refusal-lift.patch'), sab = patchFile('dest-plus08-vertical', 1);
@@ -857,11 +1007,11 @@ test('a patch file is read ONCE per use and git applies those bytes from stdin: 
     assert.equal(reads.get(lift), 2, 'makeTree reads the required patch twice: once to hash AND apply the same bytes, once for the exact-content proof it then runs');
     assert.equal(reads.get(sab), 2, 'and the sabotage form likewise');
     reads.clear();
-    expectedVerticalContent(t.applied);
+    expectedContent(t.applied, 1);
     assert.equal(reads.get(lift), 1, 'the expected-content derivation reads each canonical patch once (hash, parse, apply)');
     assert.equal(reads.get(sab), 1);
     reads.clear();
-    verifyProductionVertical(t.root, t.applied);
+    verifyProduction(t.root, t.applied, 1);
     assert.equal(reads.get(lift), 1, 'and so does the proof');
     // every `git apply` (the tree's own and the expected-content derivation's) takes the patch on stdin from the captured bytes: no patch PATH is handed to git
     assert.ok(applies.length >= 4, `${applies.length} git apply calls observed`);
@@ -891,6 +1041,15 @@ test('SABOTAGE of the historical waiver: a current-baseline stamp given { histor
   for (const kind of ['cell-build', 'ring0-build', 'ring0-identity-comparison', 's1b-witness']) assert.equal(isHistoricalStamp({ baseline: PRE_C2_BASELINE, kind }), true, kind);
   // a short or different hash is not the baseline either
   assert.equal(isHistoricalStamp({ ...old, baseline: '5138c1f' }), false);
+  // S3 C2: the waiver admits NO new kind and no new baseline. The list is exactly the four kinds of the pre-C2 certificate, and a ring-2 prototype stamp is waived only under PRE_C2_BASELINE
+  assert.deepEqual([...HISTORICAL_KINDS].sort(), ['cell-build', 'ring0-build', 'ring0-identity-comparison', 's1b-witness']);
+  assert.notEqual(BASELINE, PRE_C2_BASELINE);
+  for (const baseline of [BASELINE, 'cd7a9f8', 'cd7a9f8' + '0'.repeat(33)]) assert.equal(isHistoricalStamp({ ...old, baseline }), false, baseline);
+  const proto2 = { ...old, cell: 'MMC3-H' };
+  assert.ok(!audit(proto2, { historicalTree: true }).some((b) => /tree provenance/.test(b)), 'the pre-C2 prototype-horizontal stamp is waived under its own baseline');
+  const cur2 = { ...proto2, baseline: BASELINE };
+  assert.ok(audit(cur2, { historicalTree: true }).some((b) => /tree provenance.*needs production-horizontal/.test(b)), 'the same stamp at the current baseline is refused even with the option');
+  assert.deepEqual(auditTreeProvenance({ kind: 'cell-build', cell: 'MMC3-H', sabotage: null, ...provenanceFor(2) }, 'x.json'), [], 'and a genuine production-horizontal stamp passes without needing the waiver');
 });
 test('s1b_rejudge refuses a provenance directory holding a current-baseline stamp (the reviewer\'s repro) before it writes anything, and does not refuse a pre-C2 one for being current', () => {
   const run = (baseline, kind = 'cell-build') => {

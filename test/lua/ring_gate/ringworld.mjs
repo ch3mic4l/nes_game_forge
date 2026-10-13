@@ -92,7 +92,7 @@ function parseBuildLog(lines) {
  * prov is the S1a certificate-build record (plan review 3, obligation 2).
  */
 export async function buildCell({ tree, project, cell, gameType, label, provDir, requestedPlacement = null, links = {}, sabotage = null }) {
-  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the prototype tree
+  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the production-horizontal tree
   assertCellRing(tree, cell);
   const loaded = await loadTree(tree); // re-proves a ring-1 tree from the files on disk, NOW; the stamps carry that proof (loaded.proof)
   const proof = loaded.proof;
@@ -103,7 +103,7 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
   const provPath = writeAttempt(provDir, stampLabel, {
     kind: 'cell-build', cell: cell?.id ?? null, gameType, requestedPlacement, sabotage,
     links: { result: links.result ?? null, log: links.log ?? null },
-    head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionVertical: proof,
+    head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionProof: proof,
     mapper: project.cartridge.mapper, mirroring: project.cartridge.mirroring, grid: `${map0.gridW}x${map0.gridH}`,
     harness: harnessFingerprint(), projectSha256: projectSha256(project), fixtureHashes: cachedFixtureHashes(), nesasm: nesasmStamp(), host: hostStamp()
   });
@@ -146,7 +146,7 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
       trackedStatus: tree.status,
       patches: tree.patches,
       treeKind: tree.kind,
-      productionVertical: proof,
+      productionProof: proof,
       consumed,
       mapper: project.cartridge.mapper,
       mirroring: project.cartridge.mirroring,

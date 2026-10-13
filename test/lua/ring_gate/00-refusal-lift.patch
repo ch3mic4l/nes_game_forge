@@ -1,8 +1,8 @@
 diff --git a/a/shared/project.js b/b/shared/project.js
-index 14bb178..2422d4d 100644
+index ffd8103..bd978ce 100644
 --- a/a/shared/project.js
 +++ b/b/shared/project.js
-@@ -6825,25 +6825,6 @@ export function streamedBoardProblems(project) {
+@@ -6831,25 +6831,6 @@ export function streamedBoardProblems(project) {
            'UNROM 512 with horizontal or vertical mirroring -- change the board in the Build panel, or remove ' +
            '"streamed" (or set it to false) for this map in the project\'s map JSON.'
        );

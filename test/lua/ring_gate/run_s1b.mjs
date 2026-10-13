@@ -85,7 +85,7 @@ const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null };
 const provPath = writeAttempt(provDir, label, {
   kind: 's1b-witness', cell: cell.id, gameType: gt, placement, sabotage: sabotage ?? null, fault: fault ?? null, specs: specSel, links,
-  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionVertical: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
+  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionProof: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
 });
 let items = [], perSpec = [], cellInfo = null, bound = null;
 const sweepCache = new Map();
@@ -175,7 +175,7 @@ if (provPath) {
   const stamps = mesenStamp(MESEN, [...loaded], [...loaded].sort().map((p) => fileStamp(p)).filter(Boolean).map((f) => ({ ...f, path: f.path.startsWith(home) ? `<isolated-HOME>${f.path.slice(home.length)}` : f.path })));
   const planned = { cell: cell.id, gameType: gt, placement, n: result.n, specs: perSpec.map((s) => ({ name: s.name, kind: s.spec.kind, romSha256: s.romSha256, invocations: plannedInvocations(specsRun.find((x) => x.name === s.name)).map((i) => i.purpose) })) };
   finishAttempt(provPath, 'built', {
-    productionVertical: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
+    productionProof: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
     consumed: consumedEvidence(tree), // what every build of this run CONSUMED: each engine copy and each loaded module verified as it was read (ringtree.mjs, the consumed-input guard); throws if no build went through the guard
     romSha256: sha256(JSON.stringify(planned)), projectSha256: sha256(JSON.stringify(perSpec.map((s) => s.romSha256))),
     plan: { ...planned, sha256: sha256(JSON.stringify(planned)) }, counts, expect, verdictOk, gateFailed, gateFailures: gateCtl.numeric.length, operationalFailures: gateCtl.operational.length, sabotage: sabotage ?? null, fault: fault ?? null,

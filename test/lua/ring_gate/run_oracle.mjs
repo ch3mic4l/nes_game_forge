@@ -20,7 +20,7 @@ import { checkAddresses } from './ringaddr.mjs';
 import { judge, judgeCoverage } from './ringjudge.mjs';
 import { runMesen, MESEN } from './ringrun_mesen.mjs';
 import { jsnesStamp, mesenStamp, stampResult } from './ringprov.mjs';
-import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError, sabotageRings } from './ringsabotage.mjs';
+import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError, sabotageRings, noFormReason } from './ringsabotage.mjs';
 
 const BULK = 3000; // never-reached text that pushes the overlay into the battle bank (see run_identity.mjs)
 const args = process.argv.slice(2);
@@ -49,7 +49,7 @@ const talkerModes = list('talkers', ['none', 'enter'], ['none', 'enter']);
 const placements = list('placement', ['resident', 'banked'], ['resident', 'banked']);
 const scenarioSel = list('scenario', ['lap', 'seam0', 'seam1'], ['lap', 'seam0', 'seam1']);
 if (!cells.length) die('the --cell/--ring selection matches no cell');
-for (const c of cells) if (sabotage && !sabotageRings(sabotage).includes(c.ring)) die(`sabotage ${sabotage} has no ring-${c.ring} form (${c.id}): it targets code the ${c.ring === 1 ? 'vertical production tree does not carry' : 'horizontal tree does not carry'}`);
+for (const c of cells) if (sabotage && !sabotageRings(sabotage).includes(c.ring)) die(`sabotage ${sabotage} has no ring-${c.ring} form (${c.id}): ${noFormReason(sabotage, c.ring)}`);
 const verbose = args.includes('--verbose');
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null };

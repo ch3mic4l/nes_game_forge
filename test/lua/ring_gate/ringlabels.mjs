@@ -1,4 +1,4 @@
-// The ring-only labels of 02-ring-engine.patch, the opcode each names, and which RING_GEOMETRY field its operand must equal.
+// The ring-only labels of engine/streamworld.asm (assembled when STREAM_RING is nonzero), the opcode each names, and which RING_GEOMETRY field its operand must equal.
 export const RING_FORK_LABELS = {
   sw_ring_col_cmp: { opcode: 0xc9, field: 'col' },
   sw_ring_col_len: { opcode: 0xa9, field: 'col' },
