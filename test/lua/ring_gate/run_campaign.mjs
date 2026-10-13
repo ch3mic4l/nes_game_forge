@@ -8,7 +8,7 @@
 // emulator the scene registry does not run: printed with its reason, never dropped); 2 = any error (build, run, placement, selection). Errors outrank failures. With --sabotage the run EXPECTS every executed row to fail the --expect verdict.
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeTree } from './ringtree.mjs';
+import { makeTreeSet } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject, buildCell } from './ringworld.mjs';
 import { scenesFor, ALL_SCENE_IDS } from './ringcampaign.mjs';
 import { bootRom, runSteps } from './ringrun_jsnes.mjs';
@@ -18,7 +18,7 @@ import { runMesen, MESEN, mesenUnavailable } from './ringrun_mesen.mjs';
 import { observedWitnessRecords } from './ringwitness.mjs';
 import { jsnesStamp, mesenStamp, stampResult, projectSha256 } from './ringprov.mjs';
 import { sha256 } from './ringtree.mjs';
-import { IDENTITY_OUTCOME } from './ringsabotage.mjs';
+import { IDENTITY_OUTCOME, sabotageRings } from './ringsabotage.mjs';
 
 const BULK = 3000;
 const args = process.argv.slice(2);
@@ -45,6 +45,7 @@ const gts = list('gt', GAME_TYPES, GAME_TYPES);
 const sceneSel = list('scene', ALL_SCENE_IDS, ALL_SCENE_IDS);
 const placements = list('placement', ['resident', 'banked'], ['resident', 'banked']);
 if (!cells.length) die('the --cell/--ring selection matches no cell');
+for (const c of cells) if (sabotage && !sabotageRings(sabotage).includes(c.ring)) die(`sabotage ${sabotage} has no ring-${c.ring} form (${c.id}): it targets code the ${c.ring === 1 ? 'vertical production tree does not carry' : 'horizontal tree does not carry'}`);
 const verbose = args.includes('--verbose');
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null };
@@ -59,7 +60,7 @@ for (const cell of cells) for (const gameType of gts) for (const s of scenesFor(
 if (!plan.length) die('the selection matches no scene');
 if (args.includes('--list')) { for (const p of plan) console.log(`${p.cell.id} ${p.gameType} ${p.id} ${p.placement} N=${p.n} ${p.na ? 'N/A ' + p.na : `${p.scene.steps.length} steps, ${p.scene.expect.witnesses.length} witnesses`}`); process.exit(0); }
 
-const tree = makeTree({ ring: true, extra: sabotage ? [sabotage] : [] });
+const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 const emuStamps = { jsnes: jsnesStamp() };
 const rows = [];
 for (const p of plan) {
@@ -70,6 +71,7 @@ for (const p of plan) {
   const { project, gridW, gridH } = ringProject({ cell, gameType, n: p.n, talkers: scene.world?.talkers ?? 'none', start: scene.start, bulkText: banked ? BULK : 0, mutate: scene.world?.mutate });
   const label = `${registryEmus ? 'reg-' + registryEmus.join('+') + '-' : ''}${sabotage ? `sab-${sabotage}${expectVerdict === 'any' ? '' : `-exp-${expectVerdict}`}-` : ''}${cell.id}-${gameType}-${p.placement}-${p.id}`;
   let built;
+  const tree = trees.forCell(cell);
   try { built = await buildCell({ tree, project, cell, gameType, provDir, links, sabotage: sabotage ?? null, label, requestedPlacement: p.placement }); }
   catch (e) { rows.push({ ...base, emu: 'build', error: `build failed: ${e.message.split('\n')[0]}` }); if (e.provPath) stampResult(e.provPath, { ...base, error: e.message.split('\n')[0] }); continue; }
   if (banked) {
@@ -110,7 +112,7 @@ for (const p of plan) {
   }
   fs.rmSync(built.dir, { recursive: true, force: true });
 }
-fs.rmSync(tree.root, { recursive: true, force: true });
+trees.dispose();
 
 const pad = (s, n) => String(s).padEnd(n);
 const executed = rows.filter((r) => !r.error && !r.na && !r.unmeasured);

@@ -16,13 +16,21 @@
 // 2 = usage.
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { jobs } from './ringjobs.mjs';
 import { judgeJob } from './run_matrix.mjs';
 import { auditProvenance } from './ringprovindex.mjs';
 import { validateS1cResult, summarize } from './s1caudit.mjs';
 import { harnessFingerprint } from './ringprov.mjs';
-import { CONTROLS, CELL_IDS, MMC3_CELLS, controlBuilds, positiveLabel, controlLabel } from './s1ccontrols.mjs';
+import { CONTROLS, CELL_IDS, MMC3_CELLS, controlBuilds, controlHasForm, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
+import { SABOTAGE_RINGS } from './ringsabotage.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** The printed source proof that control `id` has no form on `ring`: the declared rings (SABOTAGE_RINGS, the single writer) and the patch file's absence, checked now. */
+export function noFormProof(id, ring) {
+  const arg = CONTROLS[id].arg, rel = `sabotage/${ring === 1 ? 'vertical/' : ''}${arg}.patch`;
+  return `${declaredFor(id, ring).why}; SABOTAGE_RINGS['${arg}'] = [${(SABOTAGE_RINGS[arg] ?? [1, 2]).join(', ')}] and test/lua/ring_gate/${rel} ${fs.existsSync(path.join(HERE, rel)) ? 'EXISTS (the declaration is void)' : 'does not exist'}`;
+}
 
 export const BUILDS4 = [['action', 'resident'], ['rpg', 'resident'], ['rpg', 'banked'], ['action', 'banked']];
 export const ROW_NAMES = { 1: 'ROM identity', 2: 'workload witnesses', 3: 'VRAM+attr oracle', 4: 'mainline G', 5: 'NMI deadline', 6: 'close', 7: 'decoded seam', 8: 'MMC3 split/lock', 9: 'controls' };
@@ -60,7 +68,7 @@ export function s1bRowStatus(rec, row, emu) {
     let base;
     if (row === 7 && emu === 'mesen') {
       const ran = ['run:seam-walk', 'run:seam-move'].every((id) => (rec.items ?? []).some((i) => i.id === id && i.emu === 'mesen' && i.status === 'PASS'));
-      base = ran ? cell('N/A', 'S1b decodes seams from jsnes state only (test/lua/ring_gate/s1bjudge.mjs "decoded seams (jsnes)"); Mesen ran the seam-walk and seam-move specs to their end (run:seam-walk, run:seam-move PASS) and their bodies are compared with jsnes\'s by agree:bodies, but no Mesen-side decode exists -- NEEDS A RULING whether that is sufficient')
+      base = ran ? cell('N/A', 'S1b decodes seams from jsnes state only (test/lua/ring_gate/s1bjudge.mjs "decoded seams (jsnes)"); Mesen ran the seam-walk and seam-move specs to their end (run:seam-walk, run:seam-move PASS) and their bodies are compared with jsnes\'s by agree:bodies, but no Mesen-side decode exists -- accepted as N/A by S1c reviews 1 and 3; jsnes supplies the decoded-seam evidence and no Mesen-side decode is claimed')
         : cell('UNMEASURED', 'the Mesen seam specs did not run to their end');
     } else base = cell(emu === 'jsnes' && row === 4 ? 'N/A' : 'UNMEASURED', emu === 'jsnes' && row === 4 ? 'G is a Mesen cycle measurement; the jsnes core has no cycle-accurate mainline' : `no row-${row} item on ${emu}`);
     return fromCommon ?? base;
@@ -140,15 +148,17 @@ export function buildGate({ prov, logs, s1b, construct = false }) {
         put(c, gt, pl, row, { mesen: cell(ok ? 'PASS' : 'FAIL', ok ? summarize(res) : `evidence invalid: ${probs[0] ?? `status ${st.status}`}${probs.length > 1 ? ` (+${probs.length - 1} more)` : ''}`), jsnes: jna ? cell('N/A', jna) : cell('UNMEASURED', 'no jsnes statement in the stamp') });
       }
       // row 9: the S1c controls of this build (Mesen), plus the S1b controls of the cell on action resident
-      const mine = [];
+      const mine = [], controlNA = [];
       for (const [id, ctl] of Object.entries(CONTROLS)) {
         if (ctl.row === 8 && !MMC3_CELLS.includes(c)) continue;
         if (!controlBuilds(id).some(([g, p]) => g === gt && p === pl)) continue;
+        if (!controlHasForm(id, ring)) { controlNA.push({ id, proof: noFormProof(id, ring) }); continue; } // no form on this ring: never scheduled, N/A with a source proof (printed below); not part of the cell's verdict
         const lbl = controlLabel(id, c, gt, pl), st = stamps.get(lbl);
         mine.push({ id, st, lbl });
       }
       if (banNA) put(c, gt, pl, 9, both(s1bNA?.status ?? 'UNMEASURED', s1bNA?.note ?? ''));
       else {
+        const put9 = (e) => put(c, gt, pl, 9, { ...e, controlNA });
         const fails = [];
         const sts = mine.map((m) => {
           if (!m.st) { fails.push(`${m.id} (no stamp)`); return 'UNMEASURED'; }
@@ -162,8 +172,8 @@ export function buildGate({ prov, logs, s1b, construct = false }) {
           const re = new RegExp(`^s1b-(pad-(over|under)-|seam-.*-|fault-.*-)${c}$|^s1b-fault-.*-${c}-?`);
           for (const j of matrixJobs.filter((x) => re.test(x.name))) { const v = jobVerdict.get(j.name); sts.push(v.ok ? 'PASS' : v.missing ? 'UNMEASURED' : 'FAIL'); if (!v.ok) fails.push(`${j.name}: ${v.why}`); }
         }
-        if (!sts.length) put(c, gt, pl, 9, { mesen: cell('N/A', 'no S1c control is declared on this build (controls run on action resident, and on rpg banked for the deadline controls; the matching positive of every control is the build it ran on)'), jsnes: cell('N/A', 'S1c controls are Mesen-only (rows 5/6/8 jsnes N/A)') });
-        else put(c, gt, pl, 9, { mesen: cell(worst(sts), fails.length ? fails.join(', ') : `${sts.length} control(s) each caught or passing as declared`), jsnes: cell('N/A', 'S1c controls are Mesen-only (rows 5/6/8 jsnes N/A); the oracle controls run on both emulators (global controls below)') });
+        if (!sts.length) put9({ mesen: cell('N/A', 'no S1c control is declared on this build (controls run on action resident, and on rpg banked for the deadline controls; the matching positive of every control is the build it ran on)'), jsnes: cell('N/A', 'S1c controls are Mesen-only (rows 5/6/8 jsnes N/A)') });
+        else put9({ mesen: cell(worst(sts), fails.length ? fails.join(', ') : `${sts.length} control(s) each caught or passing as declared`), jsnes: cell('N/A', 'S1c controls are Mesen-only (rows 5/6/8 jsnes N/A); the oracle controls run on both emulators (global controls below)') });
       }
     }
   }
@@ -206,6 +216,11 @@ export function render({ entries, unexpected, jobsJudged, s1bSource, stamps, aud
   }
   out.push('N/A proofs:');
   for (const [k, n] of na) out.push(`  ${n} x ${k}`);
+  const cna = flat.filter((e) => e.controlNA?.length);
+  if (cna.length) {
+    out.push('control N/A proofs (a control with no form on the cell\'s ring is never scheduled; it is not part of that cell\'s row-9 verdict, which is its other controls):');
+    for (const e of cna) for (const n of e.controlNA) out.push(`  row 9 ${e.cell} ${e.gt} ${e.placement} mesen: control ${n.id}: N/A -- ${n.proof}`);
+  }
   out.push('');
   out.push(`matrix jobs: ${jobsJudged} judged against their declared exit and log pattern, ${unexpected.length} unexpected (global controls -- the oracle, campaign, identity-sabotage and repro jobs -- are among them)`);
   for (const u of unexpected.slice(0, 40)) out.push(`  UNEXPECTED ${u}`);

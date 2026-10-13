@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // S1c parts A and B: the two deadline builders (build_sw_nmi_roms.mjs, build_sw_close_deadline_roms.mjs) gained a `--ring=<cell>` flag. With the flag ABSENT each must
 // produce byte-identical output to what it produced before: this records, then checks, the SHA-256 of every artifact (the ROM and the RENDERED Lua script) of every
-// no-flag configuration the two run scripts use (both parities x the two breaks and none; both placements x the two breaks and none).
-//   node test/lua/ring_gate/s1c_noflag.mjs record <file.json>   (taken from the tree BEFORE the flags were added: handoff-next/s1c-noflag-before.json)
+// no-flag configuration the two run scripts use (both parities x the two breaks and none; both placements x the two breaks and none). The baseline is the C2 tree's output, so
+// a pass proves flag-absent output is unchanged since C2; it does not re-prove the flags' original inertness (that was checked against the 5138c1f recording, kept as evidence).
+//   node test/lua/ring_gate/s1c_noflag.mjs record <file.json>   (the tracked baseline, test/lua/ring_gate/noflag/s1c-cd7a9f8.json, was recorded from a detached cd7a9f8 (S2 commit C2) worktree)
 //   node test/lua/ring_gate/s1c_noflag.mjs check <file.json>    exit 0 = every artifact equals the recorded hash, 1 = a difference, 2 = usage
 import fs from 'node:fs';
 import os from 'node:os';

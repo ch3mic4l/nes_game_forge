@@ -6,6 +6,7 @@ import { classify, coexisting } from './ringcount.mjs';
 import { decodeSeams, expectedOrigin, torusOf } from './ringseam.mjs';
 import { judgeCell, summary, GATE, REQUIRED, perClass, allRows } from './s1bjudge.mjs';
 import { SPEC_NAMES } from './s1bspecs.mjs';
+import { S1B_R3_REAL } from './ringjobs.mjs';
 
 // ---------------------------------------------------------------- classify: by observed execution only
 test('classify: each class comes from its own evidence', () => {
@@ -233,14 +234,14 @@ test('judge: every spec the runner names exists and the judge needs the specs it
 
 // ---------------------------------------------------------------- the provenance audit of an s1b-witness stamp
 import { auditStamp } from './ringprovindex.mjs';
-import { sha256 } from './ringtree.mjs';
+import { sha256, provenanceFor } from './ringtree.mjs';
 const H = (c) => c.repeat(64);
 const INV = { n: 1, spec: 'walk', purpose: 'witness', pid: 1, status: 0, signal: null, isolated: true, homeSeen: '<isolated-HOME>', exe: '/x/Mesen', settingsSha256: H('f'), loadedFiles: [{ path: '/x/MesenCore.so', sha256: H('1') }] };
 function stamp(over = {}) {
   const planned = { cell: 'MMC1-H', gameType: 'action', placement: 'resident', n: 14, specs: [{ name: 'walk', kind: 'manifest', romSha256: H('a'), invocations: ['witness'] }] };
   return {
-    schema: 'ring-prov-3', kind: 's1b-witness', status: 'built', attempt: { startedAt: 'x' }, harness: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`f${i}`, H('b')])),
-    head: 'h', baseline: 'b', patches: [], links: { result: '/r', log: '/l' }, nesasm: { sha256: H('c') }, host: { kernel: 'k' },
+    schema: 'ring-prov-3', kind: 's1b-witness', status: 'built', cell: 'MMC1-H', attempt: { startedAt: 'x' }, harness: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`f${i}`, H('b')])),
+    head: 'h', ...provenanceFor(2), links: { result: '/r', log: '/l' }, nesasm: { sha256: H('c') }, host: { kernel: 'k' },
     romSha256: H('d'), projectSha256: H('e'), plan: { ...planned, sha256: sha256(JSON.stringify(planned)) }, counts: { PASS: 100 }, expect: 'pass', verdictOk: true,
     gateFailed: false, gateFailures: 0, operationalFailures: 0, sabotage: null, userSavesUntouched: true, mesenChain: [INV],
     results: [{ scene: 's', emu: 'mesen+jsnes', emulatorStamp: { emulator: 'Mesen', loadedFiles: [{ path: '/x/MesenCore.so', sha256: H('1') }, { path: '/x/Mesen.dll', sha256: H('2') }], binarySha256: H('3'), host: { kernel: 'k' } } }],
@@ -280,7 +281,7 @@ test('audit: the retained Mesen chain must equal the planned invocations, each i
   assert.ok(audit(withPlan([{ ...mv[0], invocations: undefined }], [cal, wit])).some((m) => /does not name every spec/.test(m)));
 });
 test('audit: a sabotage control that did not fail the G gate is rejected; one that did is accepted', () => {
-  const ok = stamp({ expect: 'gate-fail', sabotage: 'pad-mainline-over', gateFailed: true, gateFailures: 31, operationalFailures: 0, counts: { PASS: 50, FAIL: 12 } });
+  const ok = stamp({ ...provenanceFor(2, ['pad-mainline-over']), expect: 'gate-fail', sabotage: 'pad-mainline-over', gateFailed: true, gateFailures: 31, operationalFailures: 0, counts: { PASS: 50, FAIL: 12 } });
   assert.deepEqual(audit(ok), []);
   assert.ok(audit({ ...ok, gateFailed: false }).some((m) => /did not fail the G gate/.test(m)));
   assert.ok(audit({ ...ok, gateFailures: 0 }).some((m) => /NUMERICAL G failure/.test(m)), 'a stamp whose only failures are diagnostics');
@@ -877,10 +878,12 @@ test('round 4: an under-pad record is re-judged by estimateRefusal -- a not-caug
 
 // The reviewer's two probes against the REAL r3 record (MMC1-V action resident: 107 UNACCEPTED mismatches), through the real command, with a copied stamp and unchanged retained bytes.
 const HERE4 = path.dirname(fileURLToPath(import.meta.url)), ROOT4 = path.resolve(HERE4, '../../..');
-const R3 = path.join(ROOT4, 'handoff-next/s1b-r3-logs'), R3P = path.join(ROOT4, 'handoff-next/s1b-provenance-r3');
-const REAL = 's1b-MMC1-V-action-resident.json';
-const haveR3 = fs.existsSync(path.join(R3, REAL)) && fs.existsSync(R3P);
+// The fixture is TRACKED (ringjobs.mjs S1B_R3_REAL, also in the harness fingerprint): the original round-3 bytes, no handoff-next. Missing fixture data FAILS this test, it never skips it.
+const R3 = path.join(ROOT4, S1B_R3_REAL.dir, 'logs'), R3P = path.join(ROOT4, S1B_R3_REAL.dir, 'prov');
+const REAL = S1B_R3_REAL.result;
 function realProbe(mutate) {
+  for (const f of S1B_R3_REAL.logs) assert.ok(fs.existsSync(path.join(R3, f)), `required fixture file missing: ${path.join(S1B_R3_REAL.dir, 'logs', f)}`);
+  for (const f of S1B_R3_REAL.prov) assert.ok(fs.existsSync(path.join(R3P, f)), `required fixture file missing: ${path.join(S1B_R3_REAL.dir, 'prov', f)}`);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1b-r4-'));
   const logs = path.join(tmp, 'logs'), prov = path.join(tmp, 'prov'), out = path.join(tmp, 'out');
   fs.mkdirSync(logs); fs.mkdirSync(prov);
@@ -896,7 +899,7 @@ function realProbe(mutate) {
   fs.rmSync(tmp, { recursive: true, force: true });
   return { run, man, res };
 }
-test('round 4 (real record, real command): the genuine record passes; 107 -> 999,999 mismatches and a deleted agree:bodies both exit nonzero, report a problem and keep the positive red', { skip: haveR3 ? false : 'handoff-next r3 evidence not present' }, () => {
+test('round 4 (real record, real command): the genuine record passes; 107 -> 999,999 mismatches and a deleted agree:bodies both exit nonzero, report a problem and keep the positive red', () => {
   const ok = realProbe(() => {});
   assert.equal(ok.run.status, 0, ok.run.stdout + ok.run.stderr); assert.equal(ok.res.verdictOk, true); assert.equal(ok.man.audit.problems, 0);
   const p1 = realProbe((rec) => { const i = rec.items.find((x) => x.id === 'agree:bodies'); assert.match(i.detail, /107 UNACCEPTED mismatches/); i.detail = i.detail.replace('107 UNACCEPTED mismatches', '999999 UNACCEPTED mismatches'); });

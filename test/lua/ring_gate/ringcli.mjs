@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { makeTree } from './ringtree.mjs';
+import { makeTree, assertTreeForCell } from './ringtree.mjs';
 import { cellById } from './ringworld.mjs';
 
 /** The smallest world the scenes need (start screen, two target screens, one empty screen behind them). */
@@ -35,7 +35,8 @@ export async function maxWorkloadN(tree, cell, gt, build, hi = 255) {
 export async function prepareRing({ cellId, gt = 'action', n = null, sizes = null, wide = false, scene = {}, tree = null, bulk = 0, chaserDamage = 0, terrain = false }) {
   const cell = cellById(cellId);
   const own = tree === null;
-  const t = tree ?? makeTree({ ring: true });
+  const t = tree ?? makeTree({ ring: cell.ring });
+  assertTreeForCell(t, cell);
   const { buildSceneProject } = await import(pathToFileURL(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../sw_manifest_scene.mjs')).href);
   const build = async (root, nn) => (await buildSceneProject({ root, gt, sizes, wide, ring: { mapper: cell.mapper, mirroring: cell.mirroring, ring: cell.ring, n: nn, bulk, ...(chaserDamage ? { chaserDamage } : {}), ...(terrain ? { terrain: true } : {}) }, ...scene })).project;
   const N = n ?? await maxWorkloadN(t, cell, gt, build);

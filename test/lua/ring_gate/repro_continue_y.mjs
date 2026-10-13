@@ -19,7 +19,7 @@ import { createMap } from '../../../shared/project.js';
 
 const local = Number(process.argv[2] ?? 239);
 const cell = cellById('MMC1-H');
-const tree = makeTree({ ring: true });
+const tree = makeTree({ ring: cell.ring });
 const { project } = ringProject({ cell, gameType: 'action', n: 4, talkers: 'none', mutate: (p) => {
   p.sprites.actors.push({ name: 'Saver', behavior: 'npc', hp: 1, damage: 0 });
   p.maps.push(createMap(p.maps.length, 'Title'));

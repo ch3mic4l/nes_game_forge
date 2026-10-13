@@ -1,0 +1,207 @@
+MMC1-V action resident: N=255 (the 255-screen NO_SCREEN ceiling), specs walk,touch+1,touch+2,touch+3,touch+4,touch+5,touch+6,touch+7,say,stand,edge,heavy,warp,chase,heavy14,mv-say,mv-lead,mv-flash,mv-wait,seam-walk,seam-move
+  walk      45.0s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 5521f356532d
+  touch+1   9.7s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM e3ba639369f4
+  touch+2   10.2s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 4674e0ace391
+  touch+3   9.6s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 1186ed7a7d2f
+  touch+4   10.3s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM ab4c05f8a85a
+  touch+5   9.9s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 1f656031d61b
+  touch+6   9.6s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 347c8d7b9915
+  touch+7   9.4s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 31049ac7a375
+  say       49.1s mesen 660 bodies (exit 0) jsnes 660 bodies, 2 crossings decoded, ROM 8d773e032cd4
+  stand     41.5s mesen 220 bodies (exit 0) jsnes 220 bodies, 0 crossings decoded, ROM 6dcb5ae8edc7
+  edge      14.1s mesen 899 bodies (exit 0) jsnes 899 bodies, 3 crossings decoded, ROM 5521f356532d
+  heavy     46.6s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 786a1afb38b9
+  warp      35.0s mesen 164 bodies (exit 0) jsnes 164 bodies, - crossings decoded, ROM 407ec5848299
+  chase     32.2s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM d3fb03ba1626
+  (heavy14: the bound-tile project admits N=254)
+  heavy14   32.5s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 8153360e230d
+  mv-say    36.1s mesen 440 bodies (exit 0) jsnes 440 bodies, 3 crossings decoded, ROM 362f1af28542
+  mv-lead   37.5s mesen 440 bodies (exit 0) jsnes 440 bodies, 3 crossings decoded, ROM aa49d456f3b3
+  mv-flash  31.3s mesen 440 bodies (exit 0) jsnes 440 bodies, 3 crossings decoded, ROM dfe9c41915f4
+  mv-wait   30.5s mesen 400 bodies (exit 0) jsnes 400 bodies, 2 crossings decoded, ROM ba88d56c7946
+  seam-walk 30.0s mesen 500 bodies (exit 0) jsnes 500 bodies, 3 crossings decoded, ROM 495b84e26452
+  seam-move 31.1s mesen 440 bodies (exit 0) jsnes 440 bodies, 3 crossings decoded, ROM 6a9ec9b32179
+PASS       mesen  run:walk                   exit 0, 500 bodies, frames 616
+PASS       jsnes  run:walk                   500 bodies
+PASS       mesen  run:touch+1                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+1                500 bodies
+PASS       mesen  run:touch+2                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+2                500 bodies
+PASS       mesen  run:touch+3                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+3                500 bodies
+PASS       mesen  run:touch+4                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+4                500 bodies
+PASS       mesen  run:touch+5                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+5                500 bodies
+PASS       mesen  run:touch+6                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+6                500 bodies
+PASS       mesen  run:touch+7                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:touch+7                500 bodies
+PASS       mesen  run:say                    exit 0, 660 bodies, frames 776
+PASS       jsnes  run:say                    660 bodies
+PASS       mesen  run:stand                  exit 0, 220 bodies, frames 282
+PASS       jsnes  run:stand                  220 bodies
+PASS       mesen  run:edge                   exit 0, 899 bodies, frames 921
+PASS       jsnes  run:edge                   899 bodies
+PASS       mesen  run:heavy                  exit 0, 500 bodies, frames 616
+PASS       jsnes  run:heavy                  500 bodies
+PASS       mesen  run:warp                   exit 0, 164 bodies, frames 316
+PASS       jsnes  run:warp                   164 bodies
+PASS       mesen  run:chase                  exit 0, 500 bodies, frames 616
+PASS       jsnes  run:chase                  500 bodies
+PASS       mesen  run:heavy14                exit 0, 500 bodies, frames 616
+PASS       jsnes  run:heavy14                500 bodies
+PASS       mesen  run:mv-say                 exit 0, 440 bodies, frames 720
+PASS       jsnes  run:mv-say                 440 bodies
+PASS       mesen  run:mv-lead                exit 0, 440 bodies, frames 720
+PASS       jsnes  run:mv-lead                440 bodies
+PASS       mesen  run:mv-flash               exit 0, 440 bodies, frames 720
+PASS       jsnes  run:mv-flash               440 bodies
+PASS       mesen  run:mv-wait                exit 0, 400 bodies, frames 680
+PASS       jsnes  run:mv-wait                400 bodies
+PASS       mesen  run:seam-walk              exit 0, 500 bodies, frames 616
+PASS       jsnes  run:seam-walk              500 bodies
+PASS       mesen  run:seam-move              exit 0, 440 bodies, frames 720
+PASS       jsnes  run:seam-move              440 bodies
+PASS       -      placement:walk             sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+1          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+2          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+3          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+4          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+5          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+6          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:touch+7          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:say              sw_dlg_single at $f785, the cell is resident
+PASS       -      placement:stand            sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:edge             sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:heavy            sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:warp             sw_dlg_single at $f75f, the cell is resident
+PASS       -      placement:chase            sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:heavy14          sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:mv-say           sw_dlg_single at $f77d, the cell is resident
+PASS       -      placement:mv-lead          sw_dlg_single at $f771, the cell is resident
+PASS       -      placement:mv-flash         sw_dlg_single at $f788, the cell is resident
+PASS       -      placement:mv-wait          sw_dlg_single at $f76f, the cell is resident
+PASS       -      placement:seam-walk        sw_dlg_single at $f764, the cell is resident
+PASS       -      placement:seam-move        sw_dlg_single at $f77d, the cell is resident
+PASS       mesen  class:C0                   2 bodies
+PASS       mesen  class:C1                   7161 bodies
+PASS       mesen  class:C2                   531 bodies
+PASS       mesen  class:C3a                  34 bodies
+PASS       mesen  class:C3b                  208 bodies
+PASS       mesen  class:C4a                  1459 bodies
+PASS       mesen  class:C4b                  462 bodies
+PASS       mesen  class:C4bw                 68 bodies
+PASS       mesen  class:C4c                  16 bodies
+PASS       mesen  class:none-unclassified    every body classified
+PASS       jsnes  class:C0                   2 bodies
+PASS       jsnes  class:C1                   7161 bodies
+PASS       jsnes  class:C2                   531 bodies
+PASS       jsnes  class:C3a                  34 bodies
+PASS       jsnes  class:C3b                  208 bodies
+PASS       jsnes  class:C4a                  1379 bodies
+PASS       jsnes  class:C4b                  462 bodies
+PASS       jsnes  class:C4bw                 68 bodies
+PASS       jsnes  class:C4c                  16 bodies
+PASS       jsnes  class:none-unclassified    every body classified
+PASS       mesen  reads:C1                   max peek 3 (ceiling 3), max goto 3 (ceiling 3), attained: both
+PASS       mesen  reads:C2                   max peek 3 (ceiling 3), max goto 4 (ceiling 4), attained: both
+PASS       mesen  reads:C3a                  max peek 2 (ceiling 2), max goto 2 (ceiling 3), attained: peek
+PASS       mesen  reads:C3b                  max peek 0 (ceiling 3), max goto 1 (ceiling 4), attained: neither
+PASS       mesen  reads:C4a                  max peek 0 (ceiling 0), max goto 0 (ceiling 0), attained: both
+PASS       mesen  reads:C4bw                 max peek 0 (ceiling 0), max goto 0 (ceiling 0), attained: both
+PASS       mesen  reads:C4b                  max peek 2 (ceiling 2), max goto 3 (ceiling 3), attained: both
+PASS       mesen  reads:C4c                  max peek 0 (ceiling 2), max goto 3 (ceiling 3), attained: goto
+PASS       mesen  reads:C1s                  max peek 0 (ceiling 1), max goto 0 (ceiling 1), attained: neither
+PASS       mesen  reads:C3s                  max peek 0 (ceiling 0), max goto 0 (ceiling 0), attained: both
+PASS       jsnes  reads:C1                   max peek 3 (ceiling 3), max goto 3 (ceiling 3), attained: both
+PASS       jsnes  reads:C2                   max peek 3 (ceiling 3), max goto 4 (ceiling 4), attained: both
+PASS       jsnes  reads:C3a                  max peek 2 (ceiling 2), max goto 2 (ceiling 3), attained: peek
+PASS       jsnes  reads:C3b                  max peek 0 (ceiling 3), max goto 1 (ceiling 4), attained: neither
+PASS       jsnes  reads:C4a                  max peek 0 (ceiling 0), max goto 0 (ceiling 0), attained: both
+PASS       jsnes  reads:C4bw                 max peek 0 (ceiling 0), max goto 0 (ceiling 0), attained: both
+PASS       jsnes  reads:C4b                  max peek 2 (ceiling 2), max goto 3 (ceiling 3), attained: both
+PASS       jsnes  reads:C4c                  max peek 0 (ceiling 2), max goto 3 (ceiling 3), attained: goto
+PASS       jsnes  reads:C1s                  max peek 0 (ceiling 1), max goto 0 (ceiling 1), attained: neither
+PASS       jsnes  reads:C3s                  max peek 0 (ceiling 0), max goto 0 (ceiling 0), attained: both
+PASS       mesen  path:deepest-row           a vertical ring's sw_goto row loop never iterates (max 0): gridH == 1
+PASS       jsnes  path:deepest-row           a vertical ring's sw_goto row loop never iterates (max 0): gridH == 1
+PASS       mesen  arm:axis                   591 arm bodies, 0 on the wrong axis (a vertical ring arms columns)
+PASS       mesen  arm:st_len                 st_len values 15 against the build's SW_RING_COL_LEN = 15
+PASS       mesen  arm:active                 591 arm bodies; st_active at the body-end sample must be 1 (a column strip: sw_stream_start_col ends in st_active = 1): 0 bodies with the strip not active
+PASS       mesen  arm:parity                 591 arm bodies; st_fnt must be a destination parity of the column axis, one of {0, 4}: 0 illegal
+PASS       jsnes  arm:axis                   591 arm bodies, 0 on the wrong axis (a vertical ring arms columns)
+PASS       jsnes  arm:st_len                 st_len values 15 against the build's SW_RING_COL_LEN = 15
+PASS       jsnes  arm:active                 591 arm bodies; st_active at the body-end sample must be 1 (a column strip: sw_stream_start_col ends in st_active = 1): 0 bodies with the strip not active
+PASS       jsnes  arm:parity                 591 arm bodies; st_fnt must be a destination parity of the column axis, one of {0, 4}: 0 illegal
+PASS       jsnes  cover:C1-busy              53 C1 bodies carry, in ONE body: the player's 8 projection calls, all 8 entities drawn with every tile iterated, Flash+Shake+Sfx, the NMI strip drain, two leading-corner probes and the hazard probe; heaviest chase@132 (17618 cycles, 15 tiles)
+PASS       jsnes  cover:C2-busy              3 C2 bodies carry, in ONE body: the player's 8 projection calls, all 8 entities drawn with every tile iterated, Flash+Shake+Sfx, the NMI strip drain, two leading-corner probes and the hazard probe, and an armed strip (st_len 15, camera + window arm); heaviest touch+5@139 (16386 cycles, 16 tiles)
+PASS       jsnes  cover:arm-alignment        565 arm bodies; (destination-nametable parity, ring wrap) cells visited {"fnt0+nowrap":335,"fnt4+nowrap":230}; 0 on the wrong axis, 0 with st_len off the build (column strip, st_len 15); both LEGAL parities required (st_fnt 2 distinct of the axis's legal {0, 4}); the wrapping start is N/A: the ring's dead camera axis pins the strip's start at 0, so no strip starts mid-ring (checked on all 565 arm bodies: every st_vary - st_cur == 0)
+PASS       jsnes  cover:draw-heavy           heavy (15 tiles): 236 bodies iterate all 15 tiles through the straddle loop with none parked, 0 with all parked, 134 mixed; entity_animate live in 368
+PASS       jsnes  cover:draw-heavy14         heavy14 (14 tiles): 236 bodies iterate all 14 tiles through the straddle loop with none parked, 0 with all parked, 134 mixed; entity_animate live in 368
+PASS       jsnes  cover:draw-chase           chase (15 tiles): 236 bodies iterate all 15 tiles through the straddle loop with none parked, 0 with all parked, 134 mixed; entity_animate live in 368
+PASS       jsnes  cover:route-C1             7161 bodies; read counts attained peek 3/3, goto 3/3 (ceiling attained); cases witnessed: straddling 234, same-screen 6927, off-grid wall 320 (the last two make no bank switch and are dominated by the straddling read charged in every slot)
+PASS       jsnes  cover:route-C2             531 bodies; read counts attained peek 3/3, goto 4/4 (ceiling attained); cases witnessed: straddling 29, same-screen 0, off-grid wall 0 (the last two make no bank switch and are dominated by the straddling read charged in every slot)
+PASS       jsnes  cover:route-C3a            34 bodies; read counts attained peek 2/2, goto 2/3 (ceiling NOT attained: the bound charges the unattained reads at the exhaustive price); cases witnessed: straddling 34, same-screen 0, off-grid wall 0 (the last two make no bank switch and are dominated by the straddling read charged in every slot)
+PASS       jsnes  cover:route-C3b            208 bodies; read counts attained peek 0/3, goto 1/4 (ceiling NOT attained: the bound charges the unattained reads at the exhaustive price); cases witnessed: straddling 0, same-screen 182, off-grid wall 0 (the last two make no bank switch and are dominated by the straddling read charged in every slot)
+PASS       jsnes  cover:route-C4b            462 bodies; read counts attained peek 2/2, goto 3/3 (ceiling attained); cases witnessed: straddling 36, same-screen 396, off-grid wall 0 (the last two make no bank switch and are dominated by the straddling read charged in every slot)
+PASS       jsnes  cover:route-C4c            16 bodies; read counts attained peek 0/2, goto 3/3 (ceiling NOT attained: the bound charges the unattained reads at the exhaustive price); cases witnessed: straddling 0, same-screen 5, off-grid wall 0 (the last two make no bank switch and are dominated by the straddling read charged in every slot)
+PASS       jsnes  cover:exclusions           no C3a body ran the hazard probe or the AI, no C4bw body a Move / camera / arm / probe (checked on every body)
+PASS       mesen  coexist:C3b-damage         16 knockback bodies from damaging chasers; busiest: 8 entity draws, peek undefined, goto undefined, terms draw+entities+entityDraw+hazard+knockback+movProbe+nmiStream
+PASS       jsnes  coexist:C3b-damage         16 knockback bodies from damaging chasers; busiest: 8 entity draws, peek undefined, goto undefined, terms draw+entities+entityDraw+hazard+knockback+movProbe+nmiStream
+FAIL       both   agree:bodies               9923 bodies of 34 phases in 21 specs compared one to one (class, every counter, every read event, game_state, end state): 6 phases exactly equal, 0 phases of declared-divergent specs EXCLUDED from this verdict (UNCERTIFIED: item agree:chase), 0 phases whose length differs by a C0 body's whole-frame duration difference between the cores (none), 107 UNACCEPTED mismatches (no counter is skew-tolerated any more: a body that differs in dsp only is a mismatch like any other; 107 such bodies are listed by name in agree:reported) (first walk/walkR#127: dsp 4/2), 0 phases with unequal body counts; nmiT within +-2 on agreeing bodies; Mesen G - jsnes cyc over equal bodies in [-665, 671]
+PASS       both   agree:chase                every phase of the damaging-chaser spec stays in lockstep and is compared exactly in agree:bodies
+PASS       both   agree:reported             not compared (reported): 4 phases whose Mesen bodies carry the template's SYNTHETIC pokes (stand/M3 (40 bodies), stand/M6 (60 bodies), stand/M4a (40 bodies), stand/M4b (40 bodies)); OBSERVED dsp discrepancies (107 bodies, each also an unaccepted mismatch above) walk/walkR#127: dsp 4/2 | walk/walkR#135: dsp 6/4 | walk/walkR#148: dsp 8/6 | walk/walkR#156: dsp 10/8 | walk/walkD#86: dsp 0/2 | walk/walkD#94: dsp 2/4 | walk/walkD#106: dsp 6/4 | touch+1/walkD#86: dsp 0/2 | touch+1/walkD#94: dsp 2/4 | touch+1/walkD#106: dsp 6/4 | touch+2/walkR#127: dsp 4/2 | touch+2/walkR#135: dsp 6/4 | touch+2/walkR#148: dsp 8/6 | touch+2/walkR#156: dsp 10/8 | touch+2/walkD#86: dsp 0/2 | touch+2/walkD#94: dsp 2/4 | touch+2/walkD#106: dsp 6/4 | touch+3/walkR#127: dsp 4/2 | touch+3/walkR#135: dsp 6/4 | touch+3/walkR#148: dsp 8/6 | touch+3/walkR#156: dsp 10/8 | touch+3/walkD#86: dsp 0/2 | touch+3/walkD#94: dsp 2/4 | touch+3/walkD#106: dsp 6/4 | touch+4/walkD#86: dsp 0/2 | touch+4/walkD#94: dsp 2/4 | touch+4/walkD#106: dsp 6/4 | touch+5/walkR#127: dsp 4/2 | touch+5/walkR#135: dsp 6/4 | touch+5/walkR#148: dsp 8/6 | touch+5/walkR#156: dsp 10/8 | touch+5/walkD#86: dsp 0/2 | touch+5/walkD#94: dsp 2/4 | touch+5/walkD#106: dsp 6/4 | touch+6/walkR#127: dsp 4/2 | touch+6/walkR#135: dsp 6/4 | touch+6/walkR#148: dsp 8/6 | touch+6/walkR#156: dsp 10/8 | touch+6/walkD#86: dsp 0/2 | touch+6/walkD#94: dsp 2/4 | touch+6/walkD#106: dsp 6/4 | touch+7/walkD#86: dsp 0/2 | touch+7/walkD#94: dsp 2/4 | touch+7/walkD#106: dsp 6/4 | say/walkR#127: dsp 4/2 | say/walkR#135: dsp 6/4 | say/walkR#148: dsp 8/6 | say/walkR#156: dsp 10/8 | edge/edge#221: dsp 4/2 | edge/edge#229: dsp 6/4 | edge/edge#242: dsp 8/6 | edge/edge#250: dsp 10/8 | edge/edge#440: dsp 0/2 | edge/edge#448: dsp 2/4 | edge/edge#460: dsp 6/4 | heavy/walkR#127: dsp 3/1 | heavy/walkR#135: dsp 5/3 | heavy/walkR#148: dsp 7/5 | heavy/walkR#156: dsp 9/7 | heavy/walkD#86: dsp 0/2 | heavy/walkD#94: dsp 2/4 | heavy/walkD#106: dsp 6/4 | chase/walkR#127: dsp 3/1 | chase/walkR#135: dsp 5/3 | chase/walkR#148: dsp 7/5 | chase/walkR#156: dsp 9/7 | chase/walkD#86: dsp 0/2 | chase/walkD#94: dsp 2/4 | chase/walkD#106: dsp 6/4 | heavy14/walkR#127: dsp 3/1 | heavy14/walkR#135: dsp 5/3 | heavy14/walkR#148: dsp 7/5 | heavy14/walkR#156: dsp 9/7 | heavy14/walkD#86: dsp 0/2 | heavy14/walkD#94: dsp 2/4 | heavy14/walkD#106: dsp 6/4 | mv-say/M11#127: dsp 4/2 | mv-say/M11#135: dsp 4/6 | mv-say/M11#140: dsp 6/8 | mv-say/M11#148: dsp 10/8 | mv-say/M11#167: dsp 13/14 | mv-lead/M11#182: dsp 4/2 | mv-lead/M11#190: dsp 4/6 | mv-lead/M11#195: dsp 6/8 | mv-lead/M11#203: dsp 10/8 | mv-lead/M11#222: dsp 13/14 | mv-flash/M11#127: dsp 4/2 | mv-flash/M11#135: dsp 4/6 | mv-flash/M11#140: dsp 6/8 | mv-flash/M11#148: dsp 10/8 | mv-flash/M11#167: dsp 13/14 | mv-wait/M11#157: dsp 4/2 | mv-wait/M11#165: dsp 4/6 | mv-wait/M11#170: dsp 6/8 | mv-wait/M11#178: dsp 10/8 | seam-walk/walkR#127: dsp 4/2 | seam-walk/walkR#135: dsp 6/4 | seam-walk/walkR#148: dsp 8/6 | seam-walk/walkR#156: dsp 10/8 | seam-walk/walkD#86: dsp 0/2 | seam-walk/walkD#94: dsp 2/4 | seam-walk/walkD#106: dsp 6/4 | seam-move/M11#127: dsp 4/2 | seam-move/M11#135: dsp 4/6 | seam-move/M11#140: dsp 6/8 | seam-move/M11#148: dsp 10/8 | seam-move/M11#167: dsp 13/14; divergent none
+PASS       mesen  sanity:relationships       every body: g/l/p events == goto/loc/peek, pkc == the peeks' prices, pkx == the dearest, bank >= goto + loc, mapper writes == 5 per switch
+PASS       mesen  sanity:evidence            reads priced, restored, switched and written: loc 1529, bank 3152, mwm 15770, peek 840, goto 1605, pkx 290164, p-events 840, g-events 1577, l-events 1525, nmiT 10578651
+PASS       mesen  sanity:class-state         every body's class is consistent with game_state read at its end
+PASS       jsnes  sanity:relationships       every body: g/l/p events == goto/loc/peek, pkc == the peeks' prices, pkx == the dearest, bank >= goto + loc, mapper writes == 5 per switch
+PASS       jsnes  sanity:evidence            reads priced, restored, switched and written: loc 1529, bank 3152, mwm 15770, peek 840, goto 1605, pkx 290164, p-events 840, g-events 1577, l-events 1525, nmiT 10573405
+PASS       jsnes  sanity:class-state         every body's class is consistent with game_state read at its end
+PASS       jsnes  seam:walk                  51 walk crossings decoded (51 with the authored arrival record spawned; scroll = this frame's or the previous frame's), 0 decode failures
+PASS       jsnes  seam:bound-walk            33/33 decoded walk crossings bound to a C3a/C3b body that ran the matching sw_cross_*; 18 crossings in positioning frames outside every measured phase (no body exists there, counted not bound); 0 such bodies without a decoded crossing
+PASS       jsnes  seam:terrain-walk          5 walk crossings on a distinguishable-terrain ring: 42 frames / 10695 viewport blocks around them match the project's tiles and attribute palette, 0 blocks differ
+PASS       jsnes  seam:move                  4 move crossings decoded (4 with the authored arrival record spawned; scroll = the torus position of the PREVIOUS frame's origin, within the Shake displacement), 0 decode failures
+PASS       jsnes  seam:bound-move            4/4 decoded move crossings bound to a C4b/C4c body that ran the matching sw_cross_*; 0 crossings in positioning frames outside every measured phase (no body exists there, counted not bound); 0 such bodies without a decoded crossing
+PASS       jsnes  seam:terrain-move          1 move crossings on a distinguishable-terrain ring: 8 frames / 2025 viewport blocks around them match the project's tiles and attribute palette, 0 blocks differ
+PASS       mesen  gate:C1                    7161 bodies, max G 17980 (chase@484, goto 3, peek 3, mwm 30), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C1                0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C2                    531 bodies, max G 19085 (chase@481, goto 4, peek 3, mwm 40), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C2                0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C3s                   22 bodies, max G 10694 (say@132, goto 0, peek 0, mwm 0), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C3s               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C3a                   34 bodies, max G 16792 (edge@112, goto 2, peek 2, mwm 30), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C3a               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C3b                   208 bodies, max G 16300 (heavy14@426, goto 1, peek 0, mwm 10), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C3b               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C4a                   1459 bodies, max G 18124 (say@338, goto 0, peek 0, mwm 0), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C4a               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C1s                   140 bodies, max G 14459 (stand@148, goto 0, peek 0, mwm 0), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C1s               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C0                    exempt ON OBSERVED EVIDENCE only: 2 bodies each with a $2001 write of 0, a $2007 draw while blank and the restore (c0); max G 539759, 2 at or over 29780 (reported, not gating)
+PASS       mesen  gate:C4b                   462 bodies, max G 14722 (mv-flash@449, goto 3, peek 2, mwm 30), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C4b               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C4c                   16 bodies, max G 17460 (mv-lead@423, goto 3, peek 0, mwm 45), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C4c               0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:C4bw                  68 bodies, max G 10224 (mv-wait@377, goto 0, peek 0, mwm 0), 0 bodies refused by the harness verdict G < 29780 (a body at exactly 29780 is refused; the Lua template's raw gateFail diagnostic counts G > 29780 and is not the verdict), overruns 0
+PASS       mesen  overruns:C4bw              0 bodies with an NMI landing inside (diagnostic: a body that spans a frame)
+PASS       mesen  gate:near                  0 non-C0 bodies within 64 cycles of 29780 (the harness verdict is gateAllows: G < 29780, strict)
+PASS       jsnes  cost:sweep                 13 distinct kernel layout(s), every (current, target) pair of the 255/255/255/255/255/255/254/255/255/255/255/255/255-screen ring called through sw_peek_byte (Y=0 and Y=255), sw_goto and sw_locate_current: goto cost independent of the current screen: true, locate cost independent of the target: true; dearest peek 1136 cycles over all pairs, 1136 ring-adjacent; digests 3f0e2be0fb,a4ed72a640,3f0e2be0fb,3f0e2be0fb,3f0e2be0fb,3f0e2be0fb,8bf00673cf,3f0e2be0fb,3f0e2be0fb,3f0e2be0fb,3f0e2be0fb,3f0e2be0fb,3f0e2be0fb
+PASS       mesen  cost:events                1577 sw_goto, 1525 sw_locate_current and 840 sw_peek_byte events priced at their own coordinates: 0 differ from the sweep, 0 non-adjacent pairs, 0 outside the swept domain
+PASS       jsnes  cost:events                1577 sw_goto, 1525 sw_locate_current and 840 sw_peek_byte events priced at their own coordinates: 0 differ from the sweep, 0 non-adjacent pairs, 0 outside the swept domain
+PASS       jsnes  cost:proj                  exhaustive over every branch class: sw_project_axis max 67 (min 51), sw_oam_project_x 99, _tile_x 111, sw_oam_project_y 264, _tile_y 168, sw_oam_rowbase 118; the dearest observed call (x 99, y 264) is <= its swept maximum; the player's 4 tiles x 2 axes ceiling = 1452
+UNCERTIFIED mesen  bound:certification        the class bounds below are estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI): the remainder (max over every sampled body of the class), the per-pass entity draw (max over every sampled body) and the releasing NMI (max over the cell's bodies) are sampled maxima, so a scene with a worse remainder, draw or NMI than the variants sampled would not be seen. NOT CLAIMED: a proof for those terms, certified slack against 29780, or any bound for an unsampled project. The reads (source count x exhaustive price) and the player projection (source pass count x exhaustive per-routine maxima) are the only terms with a source basis. The MEASURED Mesen G of every class keeps its own gate verdict.
+UNCERTIFIED mesen  bound:C1                   estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 7096 decomposed bodies: NMI 2102 (sampled) + remainder 8734 (sampled max) + reads 3408 (3 peeks x 1136 + 0 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 1 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 1452 + 5546 => 21242; 65 bodies with no exactly-equal jsnes counterpart bounded as themselves (own G + unmade ceiling reads): worst 18446 at heavy14@482; class estimate 21242; every-pair reads 3408 give 21242 (< 29780; unattained, reported, not judged); worst measured G 17980
+UNCERTIFIED mesen  bound:C2                   estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 518 decomposed bodies: NMI 2102 (sampled) + remainder 10250 (sampled max) + reads 4519 (3 peeks x 1136 + 1 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 1 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 1452 + 5546 => 23869; 13 bodies with no exactly-equal jsnes counterpart bounded as themselves (own G + unmade ceiling reads): worst 20363 at chase@470; class estimate 23869; every-pair reads 4519 give 23869 (< 29780; unattained, reported, not judged); worst measured G 19085
+UNCERTIFIED mesen  bound:C3s                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 22 decomposed bodies: NMI 2102 (sampled) + remainder 1796 (sampled max) + reads 0 (0 peeks x 1136 + 0 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 1 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 1452 + 5546 => 10896; class estimate 10896; every-pair reads 0 give 10896 (< 29780; unattained, reported, not judged); worst measured G 10694
+UNCERTIFIED mesen  bound:C3a                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 34 decomposed bodies: NMI 2102 (sampled) + remainder 5948 (sampled max) + reads 3383 (2 peeks x 1136 + 1 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 1 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 1452 + 5546 => 18431; class estimate 18431; every-pair reads 3383 give 18431 (< 29780; unattained, reported, not judged); worst measured G 16792
+UNCERTIFIED mesen  bound:C3b                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 208 decomposed bodies: NMI 2102 (sampled) + remainder 8202 (sampled max) + reads 4519 (3 peeks x 1136 + 1 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 1 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 1452 + 5546 => 21821; class estimate 21821; every-pair reads 4519 give 21821 (< 29780; unattained, reported, not judged); worst measured G 16300
+UNCERTIFIED mesen  bound:C4a                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 1379 decomposed bodies: NMI 2102 (sampled) + remainder 7603 (sampled max) + reads 0 (0 peeks x 1136 + 0 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 2 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 2904 + 11092 => 23701; 80 bodies with no exactly-equal jsnes counterpart bounded as themselves (own G + unmade ceiling reads): worst 11704 at stand@203; class estimate 23701; every-pair reads 0 give 23701 (< 29780; unattained, reported, not judged); worst measured G 18124
+UNCERTIFIED mesen  bound:C1s                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 40 decomposed bodies: NMI 2102 (sampled) + remainder 4960 (sampled max) + reads 1136 (1 peeks x 1136 + 0 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 1 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 1452 + 5546 => 15196; 100 bodies with no exactly-equal jsnes counterpart bounded as themselves (own G + unmade ceiling reads): worst 15595 at stand@148; class estimate 15595; every-pair reads 1136 give 15595 (< 29780; unattained, reported, not judged); worst measured G 14459
+UNCERTIFIED mesen  bound:C4b                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 438 decomposed bodies: NMI 2102 (sampled) + remainder 5375 (sampled max) + reads 3383 (2 peeks x 1136 + 1 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 2 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 2904 + 11092 => 24856; 24 bodies with no exactly-equal jsnes counterpart bounded as themselves (own G + unmade ceiling reads): worst 15489 at mv-flash@428; class estimate 24856; every-pair reads 3383 give 24856 (< 29780; unattained, reported, not judged); worst measured G 14722
+UNCERTIFIED mesen  bound:C4c                  estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 16 decomposed bodies: NMI 2102 (sampled) + remainder 7449 (sampled max) + reads 3383 (2 peeks x 1136 + 1 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 2 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 2904 + 11092 => 26930; class estimate 26930; every-pair reads 3383 give 26930 (< 29780; unattained, reported, not judged); worst measured G 17460
+UNCERTIFIED mesen  bound:C4bw                 estimate (uncertified: sampled remainder, sampled entity draw, sampled NMI), 68 decomposed bodies: NMI 2102 (sampled) + remainder 1534 (sampled max) + reads 0 (0 peeks x 1136 + 0 arm(s) x (948 goto + 163 restore): exhaustive, ring-adjacent) + 2 OAM pass(es) (source ceiling) x (player projection 1452 + entity draw 5546 per pass, sampled) = 2904 + 11092 => 17632; class estimate 17632; every-pair reads 0 give 17632 (< 29780; unattained, reported, not judged); worst measured G 10224
+N/A        jsnes  gate                       G is the template's masterClock difference (DMA stalls, NMI latency); the vendored core DOES schedule the OAM-DMA stall (513/514 cycles, ppu/index.js and nes.js) and the counting wrapper adds it (cpu.haltCycles hook) to `cyc`, but it still has no masterClock, so its `cyc` is the instruction-cycle cross-check only, never the gate (the agreement item reports Mesen G - jsnes cyc over equal bodies)
+MMC1-V action resident: 181 items: 168 PASS, 1 FAIL, 11 UNCERTIFIED, 1 N/A
+MMC1-V action resident: S1b FAIL
+exit=1

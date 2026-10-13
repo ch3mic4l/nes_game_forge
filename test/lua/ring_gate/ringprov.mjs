@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ROOT, sha256 } from './ringtree.mjs';
-import { matrixScripts } from './ringjobs.mjs';
+import { matrixScripts, REQUIRED_DATA } from './ringjobs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The entry points of the gate that no matrix job names (the matrix's own scripts come from the job list itself, below: matrixScripts()); the closure
@@ -24,10 +24,13 @@ const ENTRIES = [...EVIDENCE_ENTRIES, 'ringworld.mjs', 'ringjudge.mjs', 'ringrun
 // S1c: the three row 5/6/8 Lua templates (and the legacy deadline templates and builders the no-flag proof executes) are read from test/lua, outside the import closure
 const EXTRA = ['ring_oracle.lua.template', 'regen_patches.mjs', '../sw_nmi_ring.lua.template', '../sw_close_deadline.lua.template', '../sw_split_ring.lua.template', '../sw_nmi_deadline.lua.template',
   '../build_sw_nmi_roms.mjs', '../build_sw_close_deadline_roms.mjs', '../run_sw_ring_gate.sh'];
-const EXTRA_ROOT = ['test/lua/ring_gate/fixture-hashes.mjs', 'test/lua/ring_gate/fixture-hashes-before.txt', 'test/lua/ring_gate/fixture-hashes-r4-before.txt'];
+// Repo-relative inputs the certificate reads that are not scripts: the fixture-hash script and its baselines, plus ringjobs.mjs's REQUIRED_DATA (the two tracked no-flag
+// baselines and the S1b real-record fixture). Every one is REQUIRED: harnessFingerprint throws when one is absent, because a fingerprint that silently omits a missing input
+// would stamp a certificate no fresh clone can reproduce.
+export const EXTRA_ROOT = ['test/lua/ring_gate/fixture-hashes.mjs', 'test/lua/ring_gate/fixture-hashes-before.txt', 'test/lua/ring_gate/fixture-hashes-r4-before.txt', ...REQUIRED_DATA];
 const patchFiles = () => {
   const out = [];
-  for (const d of ['', 'sabotage']) for (const f of fs.existsSync(path.join(HERE, d)) ? fs.readdirSync(path.join(HERE, d)) : []) if (f.endsWith('.patch')) out.push(path.join(HERE, d, f));
+  for (const d of ['', 'sabotage', 'sabotage/vertical']) for (const f of fs.existsSync(path.join(HERE, d)) ? fs.readdirSync(path.join(HERE, d)) : []) if (f.endsWith('.patch')) out.push(path.join(HERE, d, f));
   return out;
 };
 
@@ -53,7 +56,9 @@ export const fingerprintGaps = (fp, scripts = matrixScripts()) => [...new Set([.
  * together with ENTRIES; `seed` replaces it (a control passes a seed with one script removed). With `check` (default) a script the matrix executes
  * that the result lacks throws: a stamp must never certify a harness whose executed script it did not hash.
  */
-export function harnessFingerprint({ seed, check = true } = {}) {
+export function harnessFingerprint({ seed, check = true, required = EXTRA_ROOT } = {}) {
+  const missing = required.filter((e) => !fs.existsSync(path.join(ROOT, e)));
+  if (missing.length) throw new Error(`harness fingerprint lacks required input file(s): ${missing.join(', ')}`);
   const seen = new Set();
   const seedFiles = seed ?? [...ENTRIES.map((e) => path.join('test/lua/ring_gate', e)), ...matrixScripts()];
   const stack = seedFiles.map((e) => path.resolve(ROOT, e)).filter((p) => fs.existsSync(p));
@@ -64,7 +69,7 @@ export function harnessFingerprint({ seed, check = true } = {}) {
     for (const d of localImports(f)) stack.push(d);
   }
   for (const e of EXTRA) seen.add(path.join(HERE, e));
-  for (const e of EXTRA_ROOT) if (fs.existsSync(path.join(ROOT, e))) seen.add(path.join(ROOT, e));
+  for (const e of required) seen.add(path.join(ROOT, e));
   for (const f of patchFiles()) seen.add(f);
   const out = {};
   for (const f of [...seen].sort()) if (fs.existsSync(f)) out[path.relative(ROOT, f)] = sha256(fs.readFileSync(f));

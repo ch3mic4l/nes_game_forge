@@ -12,7 +12,7 @@
 // --log=<path> only links the log file the caller redirects this run to into the provenance stamps.
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeTree } from './ringtree.mjs';
+import { makeTreeSet } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject, buildCell } from './ringworld.mjs';
 import { laps, seam, seamStart } from './ringscene.mjs';
 import { bootRom, runSteps } from './ringrun_jsnes.mjs';
@@ -20,7 +20,7 @@ import { checkAddresses } from './ringaddr.mjs';
 import { judge, judgeCoverage } from './ringjudge.mjs';
 import { runMesen, MESEN } from './ringrun_mesen.mjs';
 import { jsnesStamp, mesenStamp, stampResult } from './ringprov.mjs';
-import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError } from './ringsabotage.mjs';
+import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError, sabotageRings } from './ringsabotage.mjs';
 
 const BULK = 3000; // never-reached text that pushes the overlay into the battle bank (see run_identity.mjs)
 const args = process.argv.slice(2);
@@ -49,11 +49,12 @@ const talkerModes = list('talkers', ['none', 'enter'], ['none', 'enter']);
 const placements = list('placement', ['resident', 'banked'], ['resident', 'banked']);
 const scenarioSel = list('scenario', ['lap', 'seam0', 'seam1'], ['lap', 'seam0', 'seam1']);
 if (!cells.length) die('the --cell/--ring selection matches no cell');
+for (const c of cells) if (sabotage && !sabotageRings(sabotage).includes(c.ring)) die(`sabotage ${sabotage} has no ring-${c.ring} form (${c.id}): it targets code the ${c.ring === 1 ? 'vertical production tree does not carry' : 'horizontal tree does not carry'}`);
 const verbose = args.includes('--verbose');
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null };
 
-const tree = makeTree({ ring: true, extra: sabotage ? [sabotage] : [] });
+const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 const emuStamps = { jsnes: jsnesStamp() };
 const rows = [];
 const scenariosFor = (cell, talkers) => {
@@ -70,6 +71,7 @@ for (const cell of cells) for (const gameType of gts) for (const placement of pl
     const label = `${sabotage ? `sab-${sabotage}-` : ''}${cell.id}-${gameType}-${placement}-${talkers}-${sc.id}`;
     const base = { cell: cell.id, gameType, placement, talkers, scenario: sc.id };
     let built;
+    const tree = trees.forCell(cell);
     try { built = await buildCell({ tree, project, cell, gameType, provDir, links, sabotage: sabotage ?? null, label, requestedPlacement: placement }); }
     catch (e) {
       const cls = classifyBuildError(sabotage, cell, gameType, e.message);
@@ -114,7 +116,7 @@ for (const cell of cells) for (const gameType of gts) for (const placement of pl
     fs.rmSync(built.dir, { recursive: true, force: true });
   }
 }
-fs.rmSync(tree.root, { recursive: true, force: true });
+trees.dispose();
 
 const pad = (s, n) => String(s).padEnd(n);
 const executed = rows.filter((r) => !r.error && !r.witnessed);

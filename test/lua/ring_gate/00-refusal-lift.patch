@@ -1,0 +1,30 @@
+diff --git a/a/shared/project.js b/b/shared/project.js
+index 14bb178..2422d4d 100644
+--- a/a/shared/project.js
++++ b/b/shared/project.js
+@@ -6825,25 +6825,6 @@ export function streamedBoardProblems(project) {
+           'UNROM 512 with horizontal or vertical mirroring -- change the board in the Build panel, or remove ' +
+           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
+       );
+-    } else if (!streamCapableFourScreen(mapper, mirroringId)) {
+-      // Phase 2 slice 2b: the resolver/render engine (engine/streamworld.asm's
+-      // sw_resolve_screen, cam_nt) was built and measured only against a
+-      // four-screen ring's four independent physical nametables -- the
+-      // two-nametable ring streamCapable() otherwise admits is phase 3,
+-      // "addressing only" today (shared/cartridge.js's own doc comment on
+-      // streamCapableTwoNametable), so a board that only qualifies through
+-      // that ring is refused here even though streamCapable() calls it
+-      // capable in the abstract. Distinct from the !capable message above:
+-      // that one says "this board can never stream," this one says "not yet,
+-      // on this board, in this build."
+-      add(
+-        'capability',
+-        'Build',
+-        `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
+-          'which only reaches the two-nametable ring -- not implemented yet. Streamed maps need UNROM 512 with ' +
+-          'four-screen mirroring today; change the board and mirroring in the Build panel, or remove "streamed" ' +
+-          '(or set it to false) for this map in the project\'s map JSON.'
+-      );
+     }
+     for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message);
+     // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.

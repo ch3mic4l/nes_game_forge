@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { makeTree, sha256 } from './ringtree.mjs';
+import { makeTree, sha256, readTreeText } from './ringtree.mjs';
 import { buildCell } from './ringworld.mjs';
 import { createStreamedProject } from '../../lib/streamedproject.js';
 import { renderSections } from './ringsections.mjs';
@@ -83,11 +83,11 @@ export async function buildCloseRing({ cell, gt = 'rpg', placement = 'resident',
   if (mutation && !(mutation in CLOSE_MUTATIONS)) throw new Error(`unknown --mutation ${mutation}: ${Object.keys(CLOSE_MUTATIONS).join(', ')}`);
   if (breakMode && !['no-flash', 'slow-drain'].includes(breakMode)) throw new Error(`unknown --break ${breakMode}`);
   const own = !tree;
-  const t = tree ?? makeTree({ ring: true, extra: sabotage ? [sabotage] : [] });
+  const t = tree ?? makeTree({ ring: cell.ring, extra: sabotage ? [sabotage] : [] });
   const { project } = await ringCloseProject({ tree: t, cell, gt, placement });
   const overrides = [];
   if (breakMode === 'slow-drain') {
-    const text = fs.readFileSync(path.join(t.root, 'engine/text.asm'), 'utf8');
+    const text = readTreeText(t, 'engine/text.asm');
     const needle = 'vram_drain_byte:\n  lda vram_buf,x\n  sta $2007\n';
     if (text.split(needle).length - 1 !== 1) throw new Error('slow-drain: the vram_drain byte loop moved');
     overrides.push({ name: 'text.asm', text: text.replace(needle, needle + '  nop\n'.repeat(8)) });

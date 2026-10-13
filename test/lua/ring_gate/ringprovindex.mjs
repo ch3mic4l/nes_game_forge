@@ -6,7 +6,8 @@ import { auditChain } from './ringhome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { sha256 } from './ringtree.mjs';
+import { sha256, BASELINE, PRE_C2_BASELINE, CONSUMED_MECHANISM, REQUIRED_JS, RING_PATCH_SETS, patchFile, sabotageHasRing, expectedVerticalContent, expectedTreeBlobs, expectedEngineNames } from './ringtree.mjs';
+import { controlFlags } from './s1ccontrols.mjs';
 import zlib from 'node:zlib';
 import { relationshipFailures, requiredEvidence } from './s1bagree.mjs';
 import { validateS1cResult } from './s1caudit.mjs';
@@ -58,16 +59,108 @@ export function auditEmulator(e, name) {
   return bad;
 }
 
+const TREE_KIND = { 1: 'production-vertical', 2: 'prototype-horizontal' };
+/** The stamp kinds the pre-C2 S1b certificate (rounds 1-3, baseline PRE_C2_BASELINE) actually contains: the only kinds a historical re-judgment may waive tree provenance for. */
+export const HISTORICAL_KINDS = ['cell-build', 'ring0-build', 'ring0-identity-comparison', 's1b-witness'];
+/** Is `st` a stamp of the pre-C2 S1b certificate? Both its baseline and its kind must say so; a current-baseline stamp is never historical. */
+export const isHistoricalStamp = (st) => st?.baseline === PRE_C2_BASELINE && HISTORICAL_KINDS.includes(st.kind);
+
+/**
+ * The consumed-input evidence of a ring-1 stamp (C3 fix 2): which bytes the build actually read, not which bytes the tree held when it was checked. The evidence names every engine source the
+ * build copied and every JS module the loader read, each with its git blob; the audit re-derives the expected blobs from BASELINE and the stamp's patch files (`expected`, the recomputed
+ * proof) and requires equality. A finished stamp must list exactly the engine set and the modules every build executes; an errored attempt's evidence may be partial but every entry it lists must be right.
+ */
+function auditConsumed(st, name, expected) {
+  const bad = [];
+  const need = (cond, msg) => { if (!cond) bad.push(`${name}: tree provenance: consumed-input evidence: ${msg}`); };
+  const c = st.consumed;
+  if (!c || typeof c !== 'object') { need(false, 'a vertical stamp carries none: nothing shows which bytes the build consumed'); return bad; }
+  const partial = st.status === 'error';
+  const blobs = expectedTreeBlobs(expected);
+  need(c.mechanism === CONSUMED_MECHANISM && c.baseline === BASELINE, `mechanism/baseline ${JSON.stringify(c.mechanism)}/${JSON.stringify(c.baseline)}`);
+  const eng = c.engine?.files, js = c.js?.files;
+  if (!eng || typeof eng !== 'object' || !js || typeof js !== 'object') { need(false, 'no engine / js file maps'); return bad; }
+  for (const [n, b] of Object.entries(eng)) need(blobs.get(`engine/${n}`) === b, `engine/${n} was consumed as git blob ${String(b).slice(0, 12)}, which is not ${BASELINE} plus the stamp's patches`);
+  for (const [rel, b] of Object.entries(js)) need(blobs.get(rel) === b, `${rel} was loaded as git blob ${String(b).slice(0, 12)}, which is not ${BASELINE} plus the stamp's patches`);
+  if (!partial) {
+    need(!c.refused, `the guard refused a build (${c.refused})`);
+    need(Number.isInteger(c.engine.builds) && c.engine.builds >= 1, 'no verified build');
+    need(JSON.stringify(Object.keys(eng).sort()) === JSON.stringify(expectedEngineNames(blobs)), `the engine sources consumed [${Object.keys(eng).sort().join(', ')}] are not exactly the engine set`);
+    for (const m of REQUIRED_JS) need(m in js, `${m} is not among the loaded modules`);
+  }
+  return bad;
+}
+
+/**
+ * The tree provenance of a build or run stamp (round-1 review, finding 2): a stamp that names the wrong baseline, the wrong ring's tree kind, patches other than the ring's required
+ * set (names, ORDER and content hashes, checked against the canonical patch files) plus the one sabotage the stamp declares, or a production-vertical proof that is not the exact expected
+ * content of BASELINE plus those patches, is refused -- a truthy head/baseline and an array of patches certify nothing.
+ *   ring 1 (a -V cell)  treeKind 'production-vertical', patches = 00 (+ the declared sabotage's vertical form), productionVertical = the exact proof recomputed here from the patch files.
+ *   ring 2 (a -H cell)  treeKind 'prototype-horizontal', patches = 00..03 (+ the sabotage's horizontal form), productionVertical null.
+ *   ring 0              a ring-0 identity build: the 'pristine' side carries no patches; the 'patched' side and the six-fixture comparison carry the ring-2 set. They have no treeKind / proof of their own.
+ * A declared sabotage control (st.sabotage on a build / witness stamp, st.control's patch on an s1c run) must be exactly the one extra patch, and an extra patch must be declared.
+ */
+export function auditTreeProvenance(st, name) {
+  const bad = [];
+  const need = (cond, msg) => { if (!cond) bad.push(`${name}: tree provenance: ${msg}`); };
+  need(st.baseline === BASELINE, `baseline ${JSON.stringify(st.baseline)} is not the certification baseline ${BASELINE}`);
+  const cellRing = /-V$/.test(String(st.cell ?? '')) ? 1 : /-H$/.test(String(st.cell ?? '')) ? 2 : null;
+  let ring;
+  if (st.kind === 'ring0-build') ring = st.tree === 'pristine' ? 0 : st.tree === 'patched' ? 2 : null;
+  else if (st.kind === 'ring0-identity-comparison') ring = 2;
+  else ring = cellRing;
+  if (ring === null) { need(false, `no tree can be derived (kind ${st.kind}, cell ${st.cell}, tree ${st.tree})`); return bad; }
+  const ring0 = st.kind === 'ring0-build' || st.kind === 'ring0-identity-comparison';
+  // the tree kind: required for a ring-1/2 cell; a ring-0 stamp has none (or, if it ever grows one, the right one)
+  if (ring0) need(st.treeKind === undefined || st.treeKind === (ring === 0 ? 'pristine' : TREE_KIND[2]), `ring-0 stamp with treeKind ${st.treeKind}`);
+  else need(st.treeKind === TREE_KIND[ring], `treeKind ${JSON.stringify(st.treeKind)}, a ${st.cell} stamp (ring ${ring}) needs ${TREE_KIND[ring]}`);
+  // the patch list: required set in order, with hashes; then the declared sabotage only
+  const patches = Array.isArray(st.patches) ? st.patches : [];
+  const base = ring === 0 ? [] : RING_PATCH_SETS[ring];
+  need(patches.length >= base.length && base.every((n, i) => patches[i]?.name === n), `patches [${patches.map((p) => p?.name).join(', ')}] do not start with the ring-${ring} required set [${base.join(', ')}] in that order`);
+  const extras = patches.slice(base.length);
+  const canonicalHash = (n) => { try { return sha256(fs.readFileSync(patchFile(n, ring))); } catch { return null; } };
+  for (const p of patches) need(isHex(p?.sha256) && p.sha256 === canonicalHash(p?.name), `patch ${p?.name} hash ${String(p?.sha256).slice(0, 12)} is not the canonical ring-${ring} patch file's`);
+  for (const p of extras) need(!String(p?.name).endsWith('.patch') && ring !== 0 && sabotageHasRing(p.name, ring), `extra patch ${p?.name} is not a ring-${ring} sabotage form`);
+  let declared = null;
+  if (st.kind === 's1c-run' && st.control) { try { declared = controlFlags(st.control).sabotage; } catch { need(false, `control ${st.control} is not a declared S1c control`); } }
+  else if (st.kind !== 's1c-run' && !ring0) declared = st.sabotage ?? null;
+  need(JSON.stringify(extras.map((p) => p?.name)) === JSON.stringify(declared ? [declared] : []), `the stamp's extra patches [${extras.map((p) => p?.name)}] are not exactly its declared sabotage (${JSON.stringify(declared)})`);
+  // the production-vertical proof
+  const pv = st.productionVertical;
+  if (ring === 1) {
+    need(pv && typeof pv === 'object' && pv.exact === true && pv.baseline === BASELINE, 'a vertical stamp carries no exact production-vertical proof');
+    if (pv && pv.exact === true) {
+      try {
+        const exp = expectedVerticalContent(patches.map((p) => ({ name: p.name, file: patchFile(p.name, 1) })));
+        need(JSON.stringify(pv.patches) === JSON.stringify(exp.patches) && JSON.stringify(pv.patches) === JSON.stringify(patches.map(({ name: n, sha256: h }) => ({ name: n, sha256: h }))), 'the proof was made for different patches than the stamp lists');
+        need(JSON.stringify(pv.expected) === JSON.stringify(exp.expected), 'the proof\'s expected file contents are not BASELINE plus the stamp\'s patches');
+        need(JSON.stringify(pv.declared) === JSON.stringify([...exp.declared].sort()) && JSON.stringify(pv.changed) === JSON.stringify(pv.declared), 'the proof\'s changed files are not exactly the files the patches declare');
+        need(pv.forksChecked > 0 && Array.isArray(pv.unmodifiedShippedFiles), 'the proof does not record the shipped forks it checked');
+        bad.push(...auditConsumed(st, name, exp.expected));
+      } catch (e) { need(false, `the proof cannot be recomputed from the stamp's patches: ${String(e.message).split('\n')[0]}`); }
+    }
+  } else {
+    need(pv === null || (ring0 && pv === undefined), `a ring-${ring} stamp carries a production-vertical proof (${typeof pv})`);
+    need(st.consumed === null || st.consumed === undefined, `a ring-${ring} stamp carries consumed-input evidence: only a ring-1 build has an exact content to bind it to (ring 2 gets the kind, name, order and hash check only, until S3)`);
+  }
+  return bad;
+}
+
 /**
  * Audits one stamp object; returns problem strings. `exists(p, kind)` says whether a linked file exists (`kind`: 'result' | 'log' | 'raw' | 'comparison' | 'stamp' -- the directory audit
  * resolves each kind from its own directory argument, by file name, never from the absolute path the stamp recorded). `read(p)` returns a linked file's bytes (the S1c content audit and
- * the retained records read through it).
+ * the retained records read through it). `opts.historicalTree` skips the tree-provenance audit for a stamp of the certificate built BEFORE the production rebaseline (s1b_rejudge.mjs), whose tree was
+ * the old baseline plus the S1 prototype -- and ONLY for such a stamp: its baseline must be PRE_C2_BASELINE and its kind one the old S1b certificate contains (HISTORICAL_KINDS). A stamp of any other
+ * baseline or kind is audited in full whatever the option says, so a current stamp cannot borrow the waiver.
  */
-export function auditStamp(st, name, exists, read = undefined) {
+export function auditStamp(st, name, exists, read = undefined, { historicalTree = false } = {}) {
+  const waive = historicalTree && isHistoricalStamp(st);
   const bad = [];
   const need = (cond, msg) => { if (!cond) bad.push(`${name}: ${msg}`); };
   need(st.schema === 'ring-prov-3', `schema ${st.schema}`);
   if (st.kind === 'ring0-identity-comparison') {
+    if (!waive) bad.push(...auditTreeProvenance(st, name)); // the comparison names the patched tree; its two constituents (pristine, patched) are audited as ring0-build stamps below
     need(st.status === 'built', `comparison status ${st.status}`);
     for (const side of ['pristine', 'patched']) {
       const c = st.constituents?.[side];
@@ -84,6 +177,7 @@ export function auditStamp(st, name, exists, read = undefined) {
   need(['built', 'error'].includes(st.status), `status ${st.status} (an attempt that never completed)`);
   need(st.attempt?.startedAt && st.harness && Object.keys(st.harness).length > 20, 'no attempt record / harness fingerprint');
   need(st.head && st.baseline && Array.isArray(st.patches), 'head, baseline or patches missing');
+  if (!waive) bad.push(...auditTreeProvenance(st, name));
   need(st.links?.result && exists(st.links.result, 'result'), `links.result ${st.links?.result} missing or not on disk`);
   need(st.links?.log && exists(st.links.log, 'log'), `links.log ${st.links?.log} missing or not on disk`);
   need(st.nesasm?.sha256 && st.host?.kernel, 'assembler or host stamp missing');

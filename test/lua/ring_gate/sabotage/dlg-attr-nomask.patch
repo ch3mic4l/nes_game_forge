@@ -1,8 +1,8 @@
 diff --git a/a/engine/streamdialog.asm b/b/engine/streamdialog.asm
-index 7e74b89..8a243e1 100644
+index 39a2ed3..be56c53 100644
 --- a/a/engine/streamdialog.asm
 +++ b/b/engine/streamdialog.asm
-@@ -353,7 +353,7 @@ sw_dlg_attr_addr:
+@@ -292,7 +292,7 @@ sw_dlg_attr_addr:
  ; in A -- the box's fixed background palette 0 (text.asm's identical
  ; choice) makes "mask in the box palette" a plain clear, no OR needed.
  sw_dlg_attr_overlay:

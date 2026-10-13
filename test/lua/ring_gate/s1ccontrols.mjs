@@ -7,6 +7,7 @@
 // 'mutation' = the harness is told something false (a HARNESS mutation); 'break' = the built ROM/scene is altered the way build_sw_*_roms.mjs --break= always has been;
 // 'split' = a row-8 override edit of banks.asm/split.asm (ringsplit.mjs SPLIT_SABOTAGES), built into the harness ROM of an MMC3 cell.
 // `declare(ring)` answers what the control does on a cell whose ring axis is `ring` (1 vertical, 2 horizontal): { outcome: 'caught', mustFail } or { outcome: 'pass', why }.
+import { sabotageRings } from './ringsabotage.mjs';
 export const CELL_IDS = ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H'];
 export const MMC3_CELLS = ['MMC3-V', 'MMC3-H'];
 export const SLICE = 'S1c';
@@ -27,6 +28,8 @@ const passes = (why) => ({ outcome: 'pass', why });
 const vOnly = (mustFail, why) => (ring) => (ring === 1 ? caught(...mustFail) : passes(why));
 const hOnly = (mustFail, why) => (ring) => (ring === 2 ? caught(...mustFail) : passes(why));
 const all = (...mustFail) => () => caught(...mustFail);
+// 'na': the control has NO FORM on this ring (its sabotage patch exists for the other ring only, ringsabotage.mjs SABOTAGE_RINGS); it is never built, scheduled or stamped there
+const noForm = (why) => ({ outcome: 'na', why });
 
 export const CONTROLS = {
   // ---- row 5: the NMI strip drain (ringnmi.mjs judgeNmi) ------------------------------------------------------------------------------------------------------------------------------
@@ -35,7 +38,7 @@ export const CONTROLS = {
   'nmi-strip-len-30-vertical': { row: 5, kind: 'patch', arg: 'strip-len-30-vertical', what: 'the vertical ring arms a 30-block column strip instead of 15 (ENGINE patch)', declare: vOnly(['arm:geometry', 'strip:blocks'], 'the patch edits the vertical ring\'s column length only; a horizontal ring is the same code as the baseline'), slice: 'S1a patch, S1c row 5', scope: 'every cell' },
   'nmi-dest-plus08-vertical': { row: 5, kind: 'patch', arg: 'dest-plus08-vertical', what: 'the vertical strip\'s second half is drawn at nametable +$08 (ENGINE patch)', declare: vOnly(['arm:geometry', 'ppu:live-nt'], 'the patch edits the vertical ring\'s destination nametable only'), slice: 'S1a patch, S1c row 5', scope: 'every cell' },
   'nmi-wrap-col-30': { row: 5, kind: 'patch', arg: 'wrap-col-30', what: 'the vertical ring\'s column strip wraps at 30 blocks (the four-screen modulus) instead of 15 (ENGINE patch)', declare: vOnly(['ppu:writes', 'block:advance', 'ppu:live-nt'], 'the patch edits the column wrap only; the row strip has its own wrap'), slice: 'S1a patch, S1c row 5', scope: 'every cell' },
-  'nmi-wrap-row-32': { row: 5, kind: 'patch', arg: 'wrap-row-32', what: 'the horizontal ring\'s row strip wraps at 32 instead of 16 (ENGINE patch)', declare: hOnly(['ppu:writes', 'block:advance', 'ppu:live-nt'], 'the patch edits the row wrap only; the column strip has its own wrap'), slice: 'S1a patch, S1c row 5', scope: 'every cell' },
+  'nmi-wrap-row-32': { row: 5, kind: 'patch', arg: 'wrap-row-32', what: 'the horizontal ring\'s row strip wraps at 32 instead of 16 (ENGINE patch)', declare: (ring) => (ring === 2 ? caught('ppu:writes', 'block:advance', 'ppu:live-nt') : noForm('the vertical production tree has no row-strip fork, so there is no ring-1 form of this patch (SABOTAGE_RINGS)')), slice: 'S1a patch, S1c row 5', scope: 'every horizontal cell (N/A on a vertical cell: no ring-1 form)' },
   'nmi-arm-len30': { row: 5, kind: 'mutation', arg: 'arm-len30', what: 'the harness arms the strip with length 30 on a ring (HARNESS mutation of the armed strip, then the real NMI drains it)', declare: all('arm:geometry', 'strip:blocks'), slice: SLICE, scope: 'every cell' },
   'nmi-arm-wrong-axis': { row: 5, kind: 'mutation', arg: 'arm-wrong-axis', what: 'the harness arms the other axis\'s strip (st_active 1 on a horizontal ring, 2 on a vertical one)', declare: all('arm:geometry', 'strip:blocks'), slice: SLICE, scope: 'every cell' },
   'nmi-arm-start-past-wrap': { row: 5, kind: 'mutation', arg: 'arm-start-past-wrap', what: 'the harness arms a start offset at the ring\'s wrap (past its last block)', declare: all('arm:geometry'), slice: SLICE, scope: 'every cell' },
@@ -62,6 +65,8 @@ export const CONTROLS = {
 
 export const controlIds = (row) => Object.keys(CONTROLS).filter((id) => CONTROLS[id].row === row);
 export const declaredFor = (id, ring) => CONTROLS[id].declare(ring);
+/** Does control `id` exist on a cell of ring `ring`? A patch control exists only on the rings its sabotage has a form for (ringsabotage.mjs SABOTAGE_RINGS, the single writer); every other kind exists everywhere. */
+export const controlHasForm = (id, ring) => CONTROLS[id].kind !== 'patch' || sabotageRings(CONTROLS[id].arg).includes(ring);
 /** The runner flags for a control: { sabotage, mutation, breakMode }. */
 export const controlFlags = (id) => { const c = CONTROLS[id]; return { sabotage: c.kind === 'patch' ? c.arg : null, mutation: c.kind === 'mutation' ? c.arg : null, breakMode: c.kind === 'break' ? c.arg : null, split: c.kind === 'split' ? c.arg : null }; };
 /** Which (gameType, placement) builds a control runs on: a deadline control is also run on the banked RPG placement, which changes the timing. */

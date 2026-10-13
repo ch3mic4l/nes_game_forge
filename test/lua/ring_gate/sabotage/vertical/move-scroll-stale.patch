@@ -1,0 +1,12 @@
+diff --git a/a/engine/entities.asm b/b/engine/entities.asm
+index f2dc772..6e63ede 100644
+--- a/a/engine/entities.asm
++++ b/b/engine/entities.asm
+@@ -833,6 +833,7 @@ move_tick_s_done:
+   lda <moving
+   beq move_wall              ; the driver refused the step: blocked, exactly as shipped
+   jsr sw_frame_camera_window
++  inc <cam_dirty
+   jmp move_advance
+ move_tick_ordinary:
+   .endif

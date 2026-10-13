@@ -9,11 +9,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { makeTree, loadTree, ROOT, sha256 } from './ringtree.mjs';
+import { makeTree, makeTreeSet, loadTree, ROOT, sha256 } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject, buildCell } from './ringworld.mjs';
 import { identityFailures } from './ringidentity.mjs';
 import { harnessFingerprint, stampResult, writeAttempt, finishAttempt, nesasmStamp, hostStamp, fileStamp } from './ringprov.mjs';
-import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError } from './ringsabotage.mjs';
+import { IDENTITY_OUTCOME, buildErrorWitness, classifyBuildError, sabotageRings } from './ringsabotage.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
@@ -79,10 +79,13 @@ function record(row) {
   if (row.error) errors++; else if (row.mismatch || row.fails.length && !sabotage) failures++;
 }
 
-const tree = makeTree({ ring: true, extra: sabotage ? [sabotage] : [] });
+// One tree per orientation: a vertical cell is built through the production-vertical tree (C2's shipped forks + the refusal lift), a horizontal cell through the prototype tree.
+const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 
-// ---- STREAM_RING=0: the six fixtures through the patched tree are byte-identical to the unpatched tree (every constituent build stamped)
+// ---- STREAM_RING=0: the six fixtures through the patched tree are byte-identical to the unpatched tree (every constituent build stamped). The patched tree is the
+// horizontal PROTOTYPE tree: it carries every patch there is, so it is the one a leak into a four-screen build could come from (the vertical tree is production + one validate edit).
 if (!sabotage) {
+  const tree = trees.forRing(2);
   const pristine = makeTree({ ring: false });
   for (const name of FIXTURES) {
     let a, b;
@@ -109,6 +112,12 @@ for (const cell of CELLS.filter((c) => !flag('ring') || c.ring === Number(flag('
       const { project } = ringProject({ cell, gameType, bulkText: banked ? BULK : 0 });
       const placement = banked ? 'banked' : 'resident';
       const declared = sabotage ? IDENTITY_OUTCOME[sabotage](cell, gameType, banked) : 'pass';
+      if (sabotage && !sabotageRings(sabotage).includes(cell.ring)) {
+        // no form of this sabotage exists for this ring: the vertical production tree does not carry the code it targets (ringsabotage.mjs SABOTAGE_RINGS)
+        witnessed++; results.push({ row: 'identity', cell: cell.id, gameType, placement, fails: [], witnessed: `sabotage ${sabotage} has no ring-${cell.ring} form: the ${cell.ring === 1 ? 'vertical production' : 'horizontal'} tree does not carry the code it targets` });
+        continue;
+      }
+      const tree = trees.forCell(cell);
       let built;
       try { built = await buildCell({ tree, project, cell, gameType, provDir, links, sabotage: sabotage ?? null, label: `${stamp}${cell.id}-${gameType}${banked ? '-banked' : ''}`, requestedPlacement: placement }); }
       catch (e) {
@@ -142,6 +151,7 @@ if (!sabotage) {
     project.maps[0].gridW = 2; project.maps[0].gridH = 2; // four-screen keeps both axes live: a 2 x 2 world
     project.maps[0].screens = [0, 1, 2, 3].map(() => structuredClone(project.maps[0].screens[0]));
     let built;
+    const tree = trees.forCell(cell);
     try { built = await buildCell({ tree, project, cell, gameType: 'action', provDir, links, label: `control-four-screen-${cell.id}` }); }
     catch (e) { record({ row: 'identity-control', cell: `${cell.id} built four-screen`, gameType: 'action', fails: [], error: `BUILD ERROR (not a catch): ${e.message.split('\n')[0]}` }); continue; }
     const fails = identityFailures(built, cell, { expectBanked: false });
@@ -150,7 +160,7 @@ if (!sabotage) {
     fs.rmSync(built.dir, { recursive: true, force: true });
   }
 }
-fs.rmSync(tree.root, { recursive: true, force: true });
+trees.dispose();
 
 const pad = (s, n) => String(s).padEnd(n);
 for (const r of results) {

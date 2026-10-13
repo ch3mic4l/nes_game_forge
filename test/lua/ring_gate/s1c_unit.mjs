@@ -12,19 +12,20 @@ import { renderSections } from './ringsections.mjs';
 import { vblankMargin, modelNmi, judgeNmi, splitArmed, parseNmiOutput, GEOM, planCases, requiredCover, worstMetatiles, queueShape, packetsFor, SHAPE_A, SHAPE_B } from './ringnmi.mjs';
 import { parseQueue, queueProblems, judgeClose, parseCloseOutput, closeShape } from './ringclose.mjs';
 import { analyze, judgeSplit, parseSplitOutput, SPLIT_SABOTAGES, harnessPsb } from './ringsplit.mjs';
-import { CONTROLS, controlIds, declaredFor, controlBuilds, controlFlags, CELL_IDS, MMC3_CELLS, positiveLabel, controlLabel, REQUIRED_ITEMS } from './s1ccontrols.mjs';
+import { CONTROLS, controlIds, declaredFor, controlBuilds, controlFlags, controlHasForm, CELL_IDS, MMC3_CELLS, positiveLabel, controlLabel, REQUIRED_ITEMS } from './s1ccontrols.mjs';
 import { validateS1cResult, decodeLabel, recomputeVerdict } from './s1caudit.mjs';
 import zlib from 'node:zlib';
-import { sha256 } from './ringtree.mjs';
+import { sha256, provenanceFor } from './ringtree.mjs';
 import { auditChain } from './ringhome.mjs';
 import { auditProvenance } from './ringprovindex.mjs';
 import { s1bRowStatus, buildGate, render } from './s1c_gate.mjs';
 import { jobs } from './ringjobs.mjs';
 import { matrixScripts } from './ringjobs.mjs';
 import { fingerprintGaps, harnessFingerprint } from './ringprov.mjs';
-import { longestPath, nmiBound, maxQSum, certifiedMargin, decode, fixedBank, sweep, ENTRY_DELAY_CYCLES, VBLANK_CYCLES, RTI_CYCLES, OAM_DMA_CYCLES } from './ringwcet.mjs';
+import { longestPath, nmiBound, maxQSum, certifiedMargin, decode, fixedBank, sweep, ENTRY_DELAY_CYCLES, VBLANK_CYCLES, RTI_CYCLES, OAM_DMA_CYCLES, OPCODES } from './ringwcet.mjs';
 import { buildNmiRing, wcetFor } from './ringnmi.mjs';
 import { makeTree } from './ringtree.mjs';
+import { sabotageRings } from './ringsabotage.mjs';
 import { CELLS } from './ringworld.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -277,7 +278,8 @@ test('controls: every control is declared for both rings with a mustFail set (or
     assert.ok([5, 6, 8].includes(CONTROLS[id].row), id);
     for (const ring of [1, 2]) {
       const d = declaredFor(id, ring);
-      assert.ok((d.outcome === 'caught' && d.mustFail.length > 0) || (d.outcome === 'pass' && d.why), `${id} ring ${ring}`);
+      assert.ok((d.outcome === 'caught' && d.mustFail.length > 0) || (d.outcome === 'pass' && d.why) || (d.outcome === 'na' && d.why), `${id} ring ${ring}`);
+      assert.equal(d.outcome === 'na', !controlHasForm(id, ring), `${id} ring ${ring}: a declared N/A is exactly a control with no form on that ring`);
     }
     const f = controlFlags(id);
     assert.equal([f.sabotage, f.mutation, f.breakMode, f.split].filter((x) => x).length, 1, `${id}: exactly one runner flag`);
@@ -297,7 +299,8 @@ test('controls: each patch control names a real sabotage patch and each horizont
   for (const id of Object.keys(CONTROLS)) if (CONTROLS[id].kind === 'patch') assert.ok(fs.existsSync(path.join(HERE, 'sabotage', `${CONTROLS[id].arg}.patch`)), id);
   assert.equal(declaredFor('close-expect-87', 1).outcome, 'pass');
   assert.equal(declaredFor('close-expect-87', 2).outcome, 'caught');
-  assert.equal(declaredFor('nmi-wrap-row-32', 1).outcome, 'pass');
+  assert.equal(declaredFor('nmi-wrap-row-32', 1).outcome, 'na');
+  assert.equal(controlHasForm('nmi-wrap-row-32', 1), false);
   assert.equal(declaredFor('nmi-wrap-row-32', 2).outcome, 'caught');
 });
 test('the matrix names every control on every cell it is declared for, each beside its matching positive', () => {
@@ -305,10 +308,36 @@ test('the matrix names every control on every cell it is declared for, each besi
   for (const id of Object.keys(CONTROLS)) for (const c of CELL_IDS) {
     if (CONTROLS[id].row === 8 && !MMC3_CELLS.includes(c)) continue;
     for (const [gt, pl] of controlBuilds(id)) {
-      assert.ok(names.has(controlLabel(id, c, gt, pl)), `${id} ${c} ${gt} ${pl} has no job`);
+      assert.equal(names.has(controlLabel(id, c, gt, pl)), controlHasForm(id, c.endsWith('-V') ? 1 : 2), `${id} ${c} ${gt} ${pl}: a job exists exactly when the control has a form on the cell's ring`);
+      if (!controlHasForm(id, c.endsWith('-V') ? 1 : 2)) continue;
       assert.ok(names.has(positiveLabel(CONTROLS[id].row, c, gt, pl)), `${id} ${c} ${gt} ${pl}: its matching positive has no job`);
     }
   }
+});
+// The scheduling invariant behind the C3 matrix's three UNMEASURED cells: the job list must never ask a runner for a sabotage form its cell's ring does not have (the runner dies "no ring-1 form").
+// Generic over EVERY job: each job's argv names its sabotage directly (--sabotage=) or through a control (--control= -> a patch control's sabotage), and its cells by --cell=, else --ring=, else all six.
+// run_identity.mjs is the one runner that takes a sabotage across all cells by design: it witnesses a no-form cell as N/A itself (run_identity.mjs, "no form of this sabotage exists for this ring").
+test('no scheduled job names a sabotage absent from its cell\'s ring (every job kind of ringjobs.mjs)', () => {
+  const arg = (j, n) => j.argv.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
+  const WITNESSES_ITSELF = ['test/lua/ring_gate/run_identity.mjs'];
+  const kinds = new Set();
+  let checked = 0;
+  for (const j of jobs('/p', '/l')) {
+    const ctl = arg(j, 'control');
+    const sab = arg(j, 'sabotage') ?? (ctl !== undefined && CONTROLS[ctl]?.kind === 'patch' ? CONTROLS[ctl].arg : undefined);
+    if (sab === undefined || WITNESSES_ITSELF.includes(j.argv[0])) continue;
+    const cell = arg(j, 'cell'), ring = arg(j, 'ring');
+    const scope = CELLS.filter((c) => (cell === undefined || c.id === cell) && (ring === undefined || c.ring === Number(ring)));
+    assert.ok(scope.length > 0, `${j.name}: selects no cell`);
+    for (const c of scope) assert.ok(sabotageRings(sab).includes(c.ring), `${j.name}: sabotage ${sab} has no ring-${c.ring} form (${c.id})`);
+    kinds.add(j.argv[0]); checked++;
+  }
+  // not vacuous: every runner that takes a sabotage is covered, and the horizontal wrap-row-32 control is still scheduled where the form exists
+  assert.ok(checked >= 70, `only ${checked} sabotage-carrying jobs checked`);
+  for (const k of ['run_oracle', 'run_campaign', 'run_s1b', 'run_s1c']) assert.ok([...kinds].some((f) => f.endsWith(`${k}.mjs`)), `${k} carries no checked job`);
+  const names = jobs('/p', '/l').map((j) => j.name);
+  assert.ok(names.includes('s1c-r5-ctl-nmi-wrap-row-32-MMC3-H-action-resident'));
+  for (const c of ['MMC1-V', 'MMC3-V', 'U512-V']) assert.ok(!names.includes(`s1c-r5-ctl-nmi-wrap-row-32-${c}-action-resident`), c);
 });
 test('the harness fingerprint covers every S1c module and template, and every script the matrix executes', () => {
   const fp = harnessFingerprint();
@@ -352,7 +381,9 @@ test('gate: option A\'s uncertified items print as UNCERTIFIED, never PASS; a FA
   assert.equal(s1bRowStatus(rec(items, { verdictOk: false }), 7, 'mesen').status, 'UNMEASURED', 'a record with no row-7 item at all is not a pass of row 7');
   const ran = [{ id: 'run:seam-walk', emu: 'mesen', status: 'PASS' }, { id: 'run:seam-move', emu: 'mesen', status: 'PASS' }, { id: 'seam:walk', emu: 'jsnes', status: 'PASS' }];
   assert.equal(s1bRowStatus(rec(ran), 7, 'mesen').status, 'N/A', 'Mesen ran the seam specs but decodes nothing: N/A with its stated proof, flagged for a ruling');
-  assert.match(s1bRowStatus(rec(ran), 7, 'mesen').note, /NEEDS A RULING/);
+  const row7 = s1bRowStatus(rec(ran), 7, 'mesen').note;
+  assert.match(row7, /accepted as N\/A by S1c reviews 1 and 3; jsnes supplies the decoded-seam evidence and no Mesen-side decode is claimed/);
+  assert.doesNotMatch(row7, /NEEDS A RULING/, 'the verdict is settled (phase3b-s1c-cert-review.md): no pending-ruling wording');
   assert.equal(s1bRowStatus(rec([ran[0], ran[2]]), 7, 'mesen').status, 'UNMEASURED', 'a Mesen seam spec that did not run is not N/A');
   assert.equal(s1bRowStatus(rec(ran), 7, 'jsnes').status, 'PASS');
 });
@@ -502,7 +533,7 @@ function certDir(pairs, { raw = true } = {}) {
     const plan = { row: p.result.row, cell: p.result.cell, gameType: p.result.gameType, placement: p.result.placement, control: p.result.control, purpose: `row${p.result.row}-${rowName}`, romSha256: H64, luaSha256: H64b };
     const stamp = {
       schema: 'ring-prov-3', kind: 's1c-run', status: 'built', ...p.stamp, slice: 'S1c', matchingPositive: p.result.control ? positiveLabel(p.result.row, p.result.cell, p.result.gameType, p.result.placement) : null,
-      attempt: { startedAt: 'x' }, harness: fp, head: 'h', baseline: 'b', patches: [], nesasm: { sha256: H64 }, host: { kernel: 'k' },
+      attempt: { startedAt: 'x' }, harness: fp, head: 'h', ...provenanceFor(p.result.cell.endsWith('-V') ? 1 : 2, p.result.control && controlFlags(p.result.control).sabotage ? [controlFlags(p.result.control).sabotage] : []), nesasm: { sha256: H64 }, host: { kernel: 'k' },
       projectSha256: H64, plan: { ...plan, sha256: sha256(JSON.stringify(plan)) }, build: { streamRing: p.result.cell.endsWith('-V') ? 1 : 2, placement: { requested: p.result.placement, assembled: p.result.placement === 'banked' ? 'switchable' : 'resident' } },
       userSavesUntouched: true, mesenChain: [{ n: 1, spec: plan.purpose, purpose: plan.purpose, pid: 7, status: p.result.mesenStatus, isolated: true, settingsSha256: 'a', exe: '/m', loadedFiles: ['/x'] }],
       emulators: { mesen: {}, jsnes: { na: 'not measured: this slice has no jsnes timing recorder; Mesen is the authoritative measurement' } },
@@ -932,6 +963,42 @@ test('round 3 finding 1: the CLIs are explicit -- ringprovindex needs --verify o
 // ---------------------------------------------------------------- round 3, finding 3: the static NMI bound and the certified deadline allowance
 // A tiny hand-assembled program at $C000: `at(addr, bytes)` builds the reader longestPath/decode take.
 const mem = (parts) => { const m = new Map(); for (const [addr, bytes] of parts) bytes.forEach((b, i) => m.set(addr + i, b)); return (a) => { if (!m.has(a)) throw new Error(`no byte at $${a.toString(16)}`); return m.get(a); }; };
+// The documented NMOS 6502 timing, stated here independently of ringwcet.mjs's table (S2 C3: an absolute cost the bounds depend on, PHA's 3, was not pinned by any assertion -- changing it to 2 in memory
+// left every test green). Base cycles by mnemonic class and addressing mode; the page-crossing cycle is the decoder's job and is asserted by the longestPath tests below.
+const NMOS_READ = new Set(['ADC', 'AND', 'BIT', 'CMP', 'CPX', 'CPY', 'EOR', 'LDA', 'LDX', 'LDY', 'ORA', 'SBC']);
+const NMOS_STORE = new Set(['STA', 'STX', 'STY']);
+const NMOS_RMW = new Set(['ASL', 'DEC', 'INC', 'LSR', 'ROL', 'ROR']);
+const NMOS_BRANCH = new Set(['BPL', 'BMI', 'BVC', 'BVS', 'BCC', 'BCS', 'BNE', 'BEQ']);
+const NMOS_IMPLIED = { BRK: 7, RTI: 6, RTS: 6, PHA: 3, PHP: 3, PLA: 4, PLP: 4 }; // every other implied/accumulator instruction is 2
+function nmosCycles(m, mode) {
+  if (m === 'JSR') return 6;
+  if (m === 'JMP') return mode === 'abs' ? 3 : 5;
+  if (NMOS_BRANCH.has(m)) return 2;
+  if (mode === 'imp' || mode === 'acc') return NMOS_IMPLIED[m] ?? 2;
+  if (mode === 'imm') return 2;
+  if (NMOS_READ.has(m)) return { zp: 3, zpx: 4, zpy: 4, abs: 4, abx: 4, aby: 4, izx: 6, izy: 5 }[mode];
+  if (NMOS_STORE.has(m)) return { zp: 3, zpx: 4, zpy: 4, abs: 4, abx: 5, aby: 5, izx: 6, izy: 6 }[mode];
+  if (NMOS_RMW.has(m)) return { zp: 5, zpx: 6, abs: 6, abx: 7 }[mode];
+  throw new Error(`no documented cost for ${m} ${mode}`);
+}
+test('ringwcet opcode table: every entry costs what the documented NMOS timing says, and the costs the tests and the NMI entry rely on are asserted by name (a wrong PHA cost fails)', () => {
+  assert.ok(OPCODES.size >= 150, `${OPCODES.size} opcodes in the table`);
+  const wrong = [...OPCODES.values()].filter((o) => o.cyc !== nmosCycles(o.m, o.mode)).map((o) => `$${o.op.toString(16)} ${o.m} ${o.mode}: table ${o.cyc}, documented ${nmosCycles(o.m, o.mode)}`);
+  assert.deepEqual(wrong, []);
+  // by name: the push/pull/return costs the NMI prologue and tail are made of, and the entry-delay arithmetic
+  const cost = (op) => OPCODES.get(op).cyc;
+  assert.deepEqual({ PHA: cost(0x48), PLA: cost(0x68), PHP: cost(0x08), PLP: cost(0x28), RTI: cost(0x40), RTS: cost(0x60), JSR: cost(0x20), NOP: cost(0xea), TXA: cost(0x8a), TYA: cost(0x98), TAX: cost(0xaa), TAY: cost(0xa8) },
+    { PHA: 3, PLA: 4, PHP: 3, PLP: 4, RTI: 6, RTS: 6, JSR: 6, NOP: 2, TXA: 2, TYA: 2, TAX: 2, TAY: 2 });
+  assert.equal(RTI_CYCLES, cost(0x40), 'the charged rti is the table\'s RTI');
+  assert.equal(ENTRY_DELAY_CYCLES, 7 + 7 + 7 + 1, 'the entry allowance is the three 7-cycle sequences plus one cycle of phase');
+  // and through the decoder and the path walker: a hand-assembled pha ; pla ; rts costs exactly 3 + 4 + 6
+  const r = mem([[0xc000, [0x48, 0x68, 0x60]]]);
+  assert.deepEqual([0xc000, 0xc001, 0xc002].map((pc) => decode(r, pc).cyc), [3, 4, 6]);
+  assert.equal(longestPath(0xc000, { read: r }).cycles, 3 + 4 + 6);
+  // the SABOTAGE this test exists for: the table with PHA at 2 disagrees with the documented rule
+  const bad = { ...OPCODES.get(0x48), cyc: 2 };
+  assert.notEqual(bad.cyc, nmosCycles(bad.m, bad.mode), 'a PHA that costs 2 is caught by the rule comparison');
+});
 test('ringwcet decode: cycle counts of the documented 6502 table, addressing modes and branch targets', () => {
   const r = mem([[0xc000, [0xa9, 0x05, 0x8d, 0x00, 0x20, 0xbd, 0x20, 0xc0, 0xd0, 0xfb, 0x20, 0x34, 0x12, 0x6c, 0x00, 0x02]]]);
   assert.deepEqual([0xc000, 0xc002, 0xc005, 0xc008, 0xc00a, 0xc00d].map((pc) => { const d = decode(r, pc); return [d.m, d.mode, d.cyc, d.len]; }),
@@ -979,7 +1046,8 @@ test('certifiedMargin: the vblank cycles left after the entry delay, the handler
 
 // the real assembled builds: the three pilot cells
 const wcetBuild = async (cellId, gt, placement) => {
-  const b = await buildNmiRing({ cell: CELLS.find((c) => c.id === cellId), gt, placement, label: `unit-wcet-${cellId}-${gt}-${placement}`, tree: makeTree({ ring: true }) });
+  const cell = CELLS.find((c) => c.id === cellId);
+  const b = await buildNmiRing({ cell, gt, placement, label: `unit-wcet-${cellId}-${gt}-${placement}`, tree: makeTree({ ring: cell.ring }) });
   return b;
 };
 const REAL = [['MMC3-H', 'rpg', 'banked'], ['MMC1-V', 'action', 'resident'], ['U512-H', 'rpg', 'banked']];
@@ -1023,7 +1091,7 @@ for (const [cellId, gt, placement] of REAL) {
 }
 test('ringwcet: a ROM whose chunk differs from the contract has no bound for that mode (the nmi-chunk4 / nmi-mixed3 controls), the other mode keeps its bound', async () => {
   for (const [breakMode, bad, good] of [['chunk4', 'strip', 'mixed'], ['mixed3', 'mixed', 'strip']]) {
-    const b = await buildNmiRing({ cell: CELLS.find((c) => c.id === 'MMC1-V'), gt: 'action', placement: 'resident', breakMode, label: `unit-wcet-${breakMode}`, tree: makeTree({ ring: true }) });
+    const b = await buildNmiRing({ cell: CELLS.find((c) => c.id === 'MMC1-V'), gt: 'action', placement: 'resident', breakMode, label: `unit-wcet-${breakMode}`, tree: makeTree({ ring: 1 }) });
     try {
       assert.equal(b.wcet.error, undefined);
       assert.equal(b.wcet[bad], null);

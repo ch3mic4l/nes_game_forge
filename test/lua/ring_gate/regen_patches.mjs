@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Regenerates test/lua/ring_gate/*.patch (the complete phase 3b ring prototype) and
-// test/lua/ring_gate/sabotage/*.patch from the CURRENT engine/ main/ shared/. The patches are the
+// Regenerates test/lua/ring_gate/*.patch (what production does NOT ship: the refusal lift and the horizontal half of the phase 3b ring prototype),
+// test/lua/ring_gate/sabotage/*.patch (each on top of the horizontal prototype tree) and test/lua/ring_gate/sabotage/vertical/*.patch (each on top of the
+// vertical production tree = BASELINE + 00-refusal-lift) from the CURRENT engine/ main/ shared/, which must equal ringtree.mjs's BASELINE. The patches are the
 // artifact the gate applies (ringtree.mjs); this script is only how they were made, kept so a
 // rebase onto a moved HEAD is a re-run, not a hand edit. Each edit asserts that its anchor text is
 // found exactly once, so a moved site fails here, loudly, not as a silently shorter patch.
@@ -11,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { verifyBaseline, RING_PATCH_SETS } from './ringtree.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const HERE = path.join(ROOT, 'test/lua/ring_gate');
@@ -27,6 +29,18 @@ function edit(tree, file, from, to, { all = false } = {}) {
   if (n < 1 || (!all && n !== 1)) throw new Error(`${file}: anchor found ${n} times, expected exactly 1:\n${from}`);
   fs.writeFileSync(p, text.split(from).join(to));
 }
+/**
+ * The span [a, b) of a block delimited by two marks: `startMark` must occur exactly once in `text`, and `endMark` exactly once in the region that follows it (the intended search
+ * region), so a second matching delimiter can never silently pick the wrong end. Throws naming `what` otherwise.
+ */
+export function locateBlock(text, startMark, endMark, what) {
+  const starts = text.split(startMark).length - 1;
+  if (starts !== 1) throw new Error(`${what}: start anchor found ${starts} times, expected exactly 1`);
+  const a = text.indexOf(startMark);
+  const ends = text.slice(a + startMark.length).split(endMark).length - 1;
+  if (ends !== 1) throw new Error(`${what}: end anchor found ${ends} times after the start, expected exactly 1`);
+  return { a, b: text.indexOf(endMark, a + startMark.length) };
+}
 // `git diff --no-index` over two sibling dirs `a` and `b` -> a patch applied with `git apply -p2`.
 function diffTrees(base, work, out, files) {
   let text = '';
@@ -37,52 +51,51 @@ function diffTrees(base, work, out, files) {
       if (e.status === 1) text += e.stdout; else throw e;
     }
   }
-  if (!text && !out.includes('03-player')) throw new Error(`${out}: empty patch`);
+  if (!text) throw new Error(`${out}: empty patch (every patch of the shipped set must change something)`);
   fs.writeFileSync(out, text);
 }
 
-// ---------------------------------------------------------------- the three production-shaped patches
+// ---------------------------------------------------------------- the patches (BASELINE = C2: the vertical ring is production code)
+// What production (C2) does NOT ship, and the gate therefore still patches in:
+//   00  the validateProject refusal of every two-nametable streamed board (both rings; this is the whole vertical tree's patch set);
+//   01  the horizontal half of the generated constants: SW_RING_ROW_LEN, the mode-2 render step, and the lift of generate.js's mode-2 refusal;
+//   02  the horizontal row-strip fork and the row wrap (the vertical column fork and the render index are C2's, in BASELINE already);
+//   03  player.asm's far branch (a horizontal streamed build's `beq cross_none` is out of range).
+// 01-03 are the S1 prototype's horizontal half, which S3 productionizes. The vertical ring runs on C2's shipped code with 00 alone.
 const stages = [
   {
-    name: '01-ring-select.patch',
-    files: ['shared/cartridge.js', 'shared/project.js', 'main/build/generate.js'],
+    name: '00-refusal-lift.patch',
+    files: ['shared/project.js'],
     apply(t) {
-      edit(t, 'shared/cartridge.js', `/** Either ring: is a \`map.streamed\` legal on this board and mirroring at all? */`,
-`/**
- * Which streamed-ring geometry a build uses (the single writer; main/build/generate.js emits it as STREAM_RING):
- * 0 = four-screen torus, 1 = vertical mirroring (32 x 15 blocks, an X ring), 2 = horizontal mirroring
- * (16 x 30 blocks, a Y ring). Derived from cameraAxes, never from a second reading of the mirroring string.
- */
-export function streamRingMode(mapper, mirroringId) {
-  if (!streamCapableTwoNametable(mapper, mirroringId)) return 0;
-  const axes = cameraAxes(mapper, { mirroring: mirroringId });
-  if (axes.horizontal && axes.vertical) return 0;
-  return axes.horizontal ? 1 : 2;
-}
-
-/** Either ring: is a \`map.streamed\` legal on this board and mirroring at all? */`);
       // lift the "two-nametable ring not implemented" refusal (validateProject), keeping the dead-axis refusals
       const p = path.join(t, 'shared/project.js');
       let s = fs.readFileSync(p, 'utf8');
-      const a = s.indexOf('    } else if (!streamCapableFourScreen(mapper, mirroringId)) {\n      // Phase 2 slice 2b:');
-      const b = s.indexOf('    for (const problem of gridProblems)', a);
-      if (a < 0 || b < 0) throw new Error('project.js refusal block not found');
+      const startMark = '    } else if (!streamCapableFourScreen(mapper, mirroringId)) {\n      // Phase 2 slice 2b:';
+      const endMark = '    for (const problem of gridProblems)';
+      const { a, b } = locateBlock(s, startMark, endMark, 'project.js refusal block');
       s = s.slice(0, a) + '    }\n' + s.slice(b);
       fs.writeFileSync(p, s);
-      edit(t, 'main/build/generate.js', `} from '../../shared/cartridge.js';`, `  streamRingMode\n} from '../../shared/cartridge.js';`);
-      edit(t, 'main/build/generate.js', `  screenRegions,\n  tilesetLimit\n  streamRingMode`, `  screenRegions,\n  streamRingMode,\n  tilesetLimit`);
-      edit(t, 'main/build/generate.js', `    \`STREAMING_ENABLED = \${hasStreamed ? 1 : 0}\`,`,
-`    \`STREAMING_ENABLED = \${hasStreamed ? 1 : 0}\`,
-    // Phase 3b ring prototype: 0 four-screen / 1 vertical X ring / 2 horizontal Y ring, and the four constants the forks read.
-    // SW_RW_NT_STEP/END are the render-window nametable index sequence: vertical 0,1 (end 2), horizontal 0,2 (end 4).
-    \`STREAM_RING = \${ringMode}\`,
-    \`SW_RING_COL_LEN = \${ringMode === 1 ? 15 : 30}\`,
-    \`SW_RING_ROW_LEN = \${ringMode === 2 ? 16 : 32}\`,
-    \`SW_RW_NT_STEP = \${ringMode === 2 ? 2 : 1}\`,
-    \`SW_RW_NT_END = \${ringMode === 1 ? 2 : 4}\`,`);
-      edit(t, 'main/build/generate.js', `  const hasStreamed = streamedPlan !== null;`,
-`  const hasStreamed = streamedPlan !== null;
-  const ringMode = hasStreamed ? streamRingMode(resolveMapper(project.cartridge.mapper), project.cartridge.mirroring) : 0;`);
+    }
+  },
+  {
+    name: '01-ring-select.patch',
+    files: ['main/build/generate.js'],
+    apply(t) {
+      const g = 'main/build/generate.js';
+      // C2's generator refuses mode 2 (the S3 row fork): the horizontal tree carries the fork (02), so the refusal goes
+      edit(t, g, `  if (ringMode === 2) {
+    throw new Error(
+      'Build panel: this project streams a map on a board with horizontal mirroring, which needs the horizontal two-nametable ' +
+        'ring -- not implemented yet. Streamed maps need UNROM 512 with four-screen mirroring today; change the board and ' +
+        'mirroring in the Build panel, or remove "streamed" for this map.'
+    );
+  }
+`, `  // Phase 3b ring prototype (gate-only): mode 2 builds, with the row fork of 02-ring-engine.patch.
+`);
+      edit(t, g, `    \`SW_RW_NT_STEP = 1\`,`,
+`    \`SW_RING_ROW_LEN = \${ringMode === 2 ? 16 : 32}\`,
+    // vertical 0,1 (end 2), horizontal 0,2 (end 4)
+    \`SW_RW_NT_STEP = \${ringMode === 2 ? 2 : 1}\`,`);
     }
   },
   {
@@ -90,29 +103,7 @@ export function streamRingMode(mapper, mirroringId) {
     files: ['engine/streamworld.asm'],
     apply(t) {
       const f = 'engine/streamworld.asm';
-      // column strip: 30 -> SW_RING_COL_LEN (loop end + st_len)
-      edit(t, f, `  lda ss_i
-  cmp #30
-  bne sw_ssc_loop
-  jsr sw_locate_current        ; restore the CURRENT (player) screen
-  lda #30
-  sta st_len`,
-`  lda ss_i
-  .if STREAM_RING
-sw_ring_col_cmp:
-  cmp #SW_RING_COL_LEN
-  .else
-  cmp #30
-  .endif
-  bne sw_ssc_loop
-  jsr sw_locate_current        ; restore the CURRENT (player) screen
-  .if STREAM_RING
-sw_ring_col_len:
-  lda #SW_RING_COL_LEN
-  .else
-  lda #30
-  .endif
-  sta st_len`);
+      // row strip: 32 -> SW_RING_ROW_LEN (loop end + st_len)
       edit(t, f, `  lda ss_i
   cmp #32
   bne sw_ssr_loop
@@ -135,29 +126,12 @@ sw_ring_row_len:
   lda #32
   .endif
   sta st_len`);
-      // sw_nmi_stream wrap modulus
-      edit(t, f, `  lda st_vary
-  cmp #30
-  bne sw_ns_wrapdone
-  lda #0
-  sta st_vary
-  jmp sw_ns_wrapdone
-sw_ns_wrap32:
+      // sw_nmi_stream row wrap modulus (the column wrap is C2's)
+      edit(t, f, `sw_ns_wrap32:
   lda st_vary
   cmp #32
   bne sw_ns_wrapdone`,
-`  lda st_vary
-  .if STREAM_RING
-sw_ring_wrap_col:
-  cmp #SW_RING_COL_LEN
-  .else
-  cmp #30
-  .endif
-  bne sw_ns_wrapdone
-  lda #0
-  sta st_vary
-  jmp sw_ns_wrapdone
-sw_ns_wrap32:
+`sw_ns_wrap32:
   lda st_vary
   .if STREAM_RING
 sw_ring_wrap_row:
@@ -166,27 +140,6 @@ sw_ring_wrap_row:
   cmp #32
   .endif
   bne sw_ns_wrapdone`);
-      // render window: index sequence
-      edit(t, f, `  inc sw_rw_nt
-  lda sw_rw_nt
-  cmp #4
-  beq sw_rw_done
-  jmp sw_rw_nt_loop`,
-`  .if STREAM_RING
-  lda sw_rw_nt
-  clc
-sw_ring_nt_step:
-  adc #SW_RW_NT_STEP
-  sta sw_rw_nt
-sw_ring_nt_end:
-  cmp #SW_RW_NT_END
-  .else
-  inc sw_rw_nt
-  lda sw_rw_nt
-  cmp #4
-  .endif
-  beq sw_rw_done
-  jmp sw_rw_nt_loop`);
     }
   },
   {
@@ -210,6 +163,8 @@ sw_ring_nt_end:
     }
   }
 ];
+/** The stages each ring's tree carries (ringtree.mjs RING_PATCH_SETS says the same; regen asserts the two agree). */
+const STAGES_OF_RING = { 1: ['00-refusal-lift.patch'], 2: stages.map((s) => s.name) };
 
 // Source lines of the `beq cross_none` sites that fail a horizontal streamed build at the pristine HEAD (see the S1a report).
 const FAR_SITES = JSON.parse(process.env.RING_FAR_SITES ?? '[339]');
@@ -220,7 +175,7 @@ const sabotages = {
   'wrap-col-30': { files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `sw_ring_wrap_col:
   cmp #SW_RING_COL_LEN`, `sw_ring_wrap_col:
   cmp #30`) },
-  'wrap-row-32': { files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `sw_ring_wrap_row:
+  'wrap-row-32': { rings: [2], files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `sw_ring_wrap_row:
   cmp #SW_RING_ROW_LEN`, `sw_ring_wrap_row:
   cmp #32`) },
   'dest-plus08-vertical': { files: ['engine/streamworld.asm'], apply: (t) => edit(t, 'engine/streamworld.asm', `  asl a
@@ -231,8 +186,9 @@ const sabotages = {
   sta st_fnt                  ; nt-hi contribution = (screenCol&1)*4`) },
   // The render loop visits 0,1,2,3 on BOTH orientations: step 1, end 4. (Round 1's version set only END = 4, which on horizontal is already the
   // value, so it visited 0,2 and was a no-op there -- phase3b-s1a-review1.md finding 4.)
-  'render-four-nts': { files: ['main/build/generate.js'], apply: (t) => {
-    edit(t, 'main/build/generate.js', 'SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}', 'SW_RW_NT_STEP = 1');
+  // (The vertical production generator emits the literal STEP = 1, so only END changes there; the horizontal prototype's STEP expression is 01-ring-select's.)
+  'render-four-nts': { files: ['main/build/generate.js'], apply: (t, ring) => {
+    if (ring === 2) edit(t, 'main/build/generate.js', 'SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}', 'SW_RW_NT_STEP = 1');
     edit(t, 'main/build/generate.js', 'SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}', 'SW_RW_NT_END = 4');
   } },
   // coverage control: the walk does not walk (both player-step routines return at once)
@@ -296,7 +252,7 @@ text_type_instant_done:
   // placement control: the generated flag says banked while the overlay is still assembled resident (a prediction that disagrees with the ROM)
   'forced-banked': { files: ['main/build/generate.js'], apply: (t) => edit(t, 'main/build/generate.js', 'SW_DLG_BANKED = ${streamworldDialogueBanked(project, mapper) ? 1 : 0}', 'SW_DLG_BANKED = 1') },
   // index 1 names the $2800 screen: tables compacted, sequence 0,1, shadow offset n*64, cam_nt = screenRow&1 -- the NMI then selects $2400, a mirror of $2000
-  'compacted-cam-nt-horizontal': { files: ['engine/streamworld.asm', 'main/build/generate.js'], apply: (t) => {
+  'compacted-cam-nt-horizontal': { files: ['engine/streamworld.asm', 'main/build/generate.js'], apply: (t, ring) => {
     edit(t, 'engine/streamworld.asm', `sw_rw_nt_hi:  .db $20, $24, $28, $2C
 sw_rw_ntx:    .db 0, 16, 0, 16
 sw_rw_nty:    .db 0, 0, 15, 15`, `sw_rw_nt_hi:  .db $20, $28, $28, $2C
@@ -310,7 +266,7 @@ sw_rw_nty:    .db 0, 15, 15, 15`);
   and #1
   ora sw_tmp
   sta <cam_nt`);
-    edit(t, 'main/build/generate.js', 'SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}', 'SW_RW_NT_STEP = 1');
+    if (ring === 2) edit(t, 'main/build/generate.js', 'SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}', 'SW_RW_NT_STEP = 1');
     edit(t, 'main/build/generate.js', 'SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}', 'SW_RW_NT_END = ${ringMode ? 2 : 4}');
   } },
   // S1b full-system padding mutation (plan 2.6's only G-gate control): a delay loop at the TOP of every mainline body (main_loop_body_start: every frame class
@@ -318,7 +274,7 @@ sw_rw_nty:    .db 0, 15, 15, 15`);
   // worst walking/crossing body past the 29,780-cycle gate; `under` adds 6 passes = 7,716, which no measured class can exceed the gate with: the matching positive.
   'pad-mainline-over': { files: ['engine/boot.asm'], apply: (t) => edit(t, 'engine/boot.asm', 'main_loop_body_start:\n  jsr read_pad', 'main_loop_body_start:\n  ldy #12\ngate_pad_outer:\n  ldx #0\ngate_pad_inner:\n  dex\n  bne gate_pad_inner\n  dey\n  bne gate_pad_outer\n  jsr read_pad') },
   'pad-mainline-under': { files: ['engine/boot.asm'], apply: (t) => edit(t, 'engine/boot.asm', 'main_loop_body_start:\n  jsr read_pad', 'main_loop_body_start:\n  ldy #6\ngate_pad_outer:\n  ldx #0\ngate_pad_inner:\n  dex\n  bne gate_pad_inner\n  dey\n  bne gate_pad_outer\n  jsr read_pad') },
-  'ring-forced-0': { files: ['main/build/generate.js'], apply: (t) => edit(t, 'main/build/generate.js', 'const ringMode = hasStreamed ? streamRingMode(resolveMapper(project.cartridge.mapper), project.cartridge.mirroring) : 0;', 'const ringMode = 0;') },
+  'ring-forced-0': { files: ['main/build/generate.js'], apply: (t) => edit(t, 'main/build/generate.js', 'const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;', 'const ringMode = 0;') },
   // S1b round 2, row 7 (finding 5): a scripted Move publishes a STALE scroll while its RAM origin stays coherent -- the camera lock is left raised after every Move step's camera update, so the NMI
   // never refreshes its snapshot (the coherent-stale-frame policy, docs/design-camera.md section 2) and the PPU keeps the scroll of the Move's first frame. Only a Move reaches it.
   'move-scroll-stale': { files: ['engine/entities.asm'], apply: (t) => edit(t, 'engine/entities.asm', 'move_tick_s_done:\n  lda <moving\n  beq move_wall              ; the driver refused the step: blocked, exactly as shipped\n  jsr sw_frame_camera_window\n', 'move_tick_s_done:\n  lda <moving\n  beq move_wall              ; the driver refused the step: blocked, exactly as shipped\n  jsr sw_frame_camera_window\n  inc <cam_dirty\n') },
@@ -345,6 +301,10 @@ sw_rw_nty:    .db 0, 15, 15, 15`);
 };
 
 function main() {
+  verifyBaseline(); // the patches are made against, and only against, BASELINE (ringtree.mjs)
+  for (const ring of [1, 2]) {
+    if (JSON.stringify(RING_PATCH_SETS[ring]) !== JSON.stringify(STAGES_OF_RING[ring])) throw new Error(`ringtree.mjs RING_PATCH_SETS[${ring}] disagrees with this script's stages`);
+  }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-regen-'));
   const base = path.join(tmp, 'work', 'a');
   const cur = path.join(tmp, 'work', 'b');
@@ -353,6 +313,7 @@ function main() {
   copyTree(cur);
   // stage patches: a -> b accumulates, patch k is the diff between the tree before and after stage k
   let before = path.join(tmp, 'work', 'a');
+  const snaps = {}; // ring -> the tree its sabotages are diffed against (after the last stage the ring carries)
   for (const stage of stages) {
     const wk = path.join(tmp, 'work', 'b');
     stage.apply(wk);
@@ -364,17 +325,21 @@ function main() {
     diffTrees(path.join(pair, 'a'), path.join(pair, 'b'), path.join(HERE, stage.name), stage.files);
     before = path.join(tmp, `snap-${stage.name}`);
     fs.cpSync(wk, before, { recursive: true });
+    if (stage.name === STAGES_OF_RING[1].at(-1)) snaps[1] = before;
   }
-  fs.mkdirSync(path.join(HERE, 'sabotage'), { recursive: true });
+  snaps[2] = before;
+  fs.mkdirSync(path.join(HERE, 'sabotage', 'vertical'), { recursive: true });
   for (const [name, s] of Object.entries(sabotages)) {
-    const pair = path.join(tmp, `sab-${name}`);
-    fs.mkdirSync(pair, { recursive: true });
-    fs.cpSync(before, path.join(pair, 'a'), { recursive: true });
-    fs.cpSync(before, path.join(pair, 'b'), { recursive: true });
-    s.apply(path.join(pair, 'b'));
-    diffTrees(path.join(pair, 'a'), path.join(pair, 'b'), path.join(HERE, 'sabotage', `${name}.patch`), s.files);
+    for (const ring of s.rings ?? [1, 2]) {
+      const pair = path.join(tmp, `sab-${ring}-${name}`);
+      fs.mkdirSync(pair, { recursive: true });
+      fs.cpSync(snaps[ring], path.join(pair, 'a'), { recursive: true });
+      fs.cpSync(snaps[ring], path.join(pair, 'b'), { recursive: true });
+      s.apply(path.join(pair, 'b'), ring);
+      diffTrees(path.join(pair, 'a'), path.join(pair, 'b'), path.join(HERE, ring === 1 ? path.join('sabotage', 'vertical') : 'sabotage', `${name}.patch`), s.files);
+    }
   }
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('patches written to', HERE);
 }
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

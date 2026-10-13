@@ -1,0 +1,19 @@
+diff --git a/a/engine/boot.asm b/b/engine/boot.asm
+index 8f5f939..57f7f13 100644
+--- a/a/engine/boot.asm
++++ b/b/engine/boot.asm
+@@ -187,6 +187,14 @@ main_loop:
+ ; ending at main_loop_ready (below) where the frame hands off to NMI. A label costs the cartridge
+ ; nothing, the same precedent main_loop_after_player already set.
+ main_loop_body_start:
++  ldy #6
++gate_pad_outer:
++  ldx #0
++gate_pad_inner:
++  dex
++  bne gate_pad_inner
++  dey
++  bne gate_pad_outer
+   jsr read_pad
+   jsr music_tick            ; music keeps playing while the world is paused
+   .if STING_ENABLED

@@ -1,0 +1,17 @@
+diff --git a/a/engine/text.asm b/b/engine/text.asm
+index eb41095..6a33513 100644
+--- a/a/engine/text.asm
++++ b/b/engine/text.asm
+@@ -480,6 +480,12 @@ text_type_glyph:
+   jsr text_put_char
+   jsr msg_advance
+   inc <msg_col
++  ldy #0
++  lda [msg_ptr_lo],y
++  cmp #$A0                    ; a glyph tile (the control tokens are $00-$03): keep drawing this frame
++  bcc text_type_instant_done
++  jmp text_type_glyph
++text_type_instant_done:
+   rts
+ 
+ msg_advance:

@@ -9,7 +9,7 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { makeTree, sha256 } from './ringtree.mjs';
+import { makeTree, sha256, refreshProof, consumedEvidence, consumedSnapshot } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject } from './ringworld.mjs';
 import { openIsolatedHome, auditChain } from './ringhome.mjs';
 import { MESEN, mesenUnavailable, userSavesSnapshot } from './ringrun_mesen.mjs';
@@ -17,7 +17,7 @@ import { harnessFingerprint, writeAttempt, finishAttempt, nesasmStamp, hostStamp
 import { buildNmiRing, spawnMesen, parseNmiOutput, judgeNmi } from './ringnmi.mjs';
 import { buildCloseRing, parseCloseOutput, judgeClose } from './ringclose.mjs';
 import { buildSplitRing, parseSplitOutput, judgeSplit } from './ringsplit.mjs';
-import { CONTROLS, declaredFor, controlFlags, positiveLabel, controlLabel, SLICE } from './s1ccontrols.mjs';
+import { CONTROLS, declaredFor, controlFlags, controlHasForm, positiveLabel, controlLabel, SLICE } from './s1ccontrols.mjs';
 
 const BULK = 3000;
 // Why rows 5/6/8 are N/A on jsnes (round 2, finding 4). Mesen's Lua callbacks (execute / write / masterClock / PPU position) are the authoritative deadline and split measurement; this slice
@@ -41,6 +41,7 @@ if (!GAME_TYPES.includes(gt)) die(`--gt=${gt} is not one of ${GAME_TYPES.join(',
 if (!['resident', 'banked'].includes(placement)) die(`--placement=${placement}`);
 if (controlId !== undefined && !(controlId in CONTROLS)) die(`--control=${controlId} is not a declared control (s1ccontrols.mjs)`);
 if (controlId !== undefined && CONTROLS[controlId].row !== row) die(`--control=${controlId} targets row ${CONTROLS[controlId].row}, not ${row}`);
+if (controlId !== undefined && !controlHasForm(controlId, cell.ring)) die(`--control=${controlId} has no ring-${cell.ring} form (${cell.id}): N/A, not a run (s1ccontrols.mjs controlHasForm, ringsabotage.mjs SABOTAGE_RINGS)`);
 if (args.includes('--list')) { for (const [id, c] of Object.entries(CONTROLS)) if (c.row === row) console.log(`${id}\t${c.kind}\t${c.what}`); process.exit(0); }
 if (mesenUnavailable()) die(`Mesen is unavailable: ${mesenUnavailable()}`);
 const out = (l) => console.log(l);
@@ -50,7 +51,7 @@ const label = controlId ? controlLabel(controlId, cell.id, gt, placement) : posi
 // modules): an action project has no battle bank, so it is false whatever the text volume. The scene carrying 3,000 characters of never-reached text (what forces an RPG's overlay
 // into its battle bank) is built, and the capacity verdict reported: resident or refused, never banked.
 if (placement === 'banked' && gt === 'action') {
-  const tree = makeTree({ ring: true });
+  const tree = makeTree({ ring: cell.ring });
   const base = pathToFileURL(tree.root).href;
   const sp = await import(`${base}/main/build/streamplacement.js`), sh = await import(`${base}/shared/project.js`), gen = await import(`${base}/main/build/generate.js`), cart = await import(`${base}/shared/cartridge.js`);
   const { project } = ringProject({ cell, gameType: 'action', n: 4, talkers: 'none', start: { screen: 0, x: 120, y: 120 }, bulkText: BULK });
@@ -72,12 +73,12 @@ const flags = controlId ? controlFlags(controlId) : { sabotage: null, mutation: 
 const savesBefore = userSavesSnapshot();
 const iso = openIsolatedHome();
 const { home, loaded } = iso;
-const tree = makeTree({ ring: true, extra: flags.sabotage ? [flags.sabotage] : [] });
+const tree = makeTree({ ring: cell.ring, extra: flags.sabotage ? [flags.sabotage] : [] });
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null, raw: flag('json') ? path.resolve(flag('json')).replace(/\.json$/, '.raw.gz') : null };
 const provPath = writeAttempt(provDir, label, {
   kind: 's1c-run', row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, declared, links,
-  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
+  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionVertical: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
 });
 const PURPOSE = { 5: 'row5-nmi', 6: 'row6-close', 8: 'row8-split' }[row];
 let built = null, items = [], run = null, parsed = null;
@@ -102,7 +103,7 @@ try {
     items.unshift({ id: 'run:exit', status: run.status === 0 ? 'PASS' : 'FAIL', detail: run.status === 0 ? 'Mesen exited 0 (every planned trial ran)' : `Mesen exited ${run.status}: ${(/^ERROR (.*)$/m.exec(run.stdout) ?? [])[1] ?? run.stderr}` });
   }
 } catch (e) {
-  finishAttempt(provPath, 'error', { error: { firstLine: String(e.message).split('\n')[0], message: String(e.stack ?? e.message).slice(0, 4000) } });
+  finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: String(e.message).split('\n')[0], message: String(e.stack ?? e.message).slice(0, 4000) } });
   console.error(`run_s1c: ${e.stack ?? e.message}`);
   cleanup();
   process.exit(2);
@@ -135,7 +136,7 @@ out(verdictLine);
 const chain = iso.chain();
 const statusOk = controlId ? [0, 5, 7, 8, 9] : [0];
 const chainProblems = auditChain(chain, [{ spec: PURPOSE, purpose: PURPOSE }], { statusOk });
-if (chainProblems.length) { console.error(`run_s1c: the Mesen invocation chain is unsound:\n  ${chainProblems.join('\n  ')}`); finishAttempt(provPath, 'error', { error: { firstLine: 'Mesen invocation chain unsound', message: chainProblems.join('; ') } }); cleanup(); process.exit(2); }
+if (chainProblems.length) { console.error(`run_s1c: the Mesen invocation chain is unsound:\n  ${chainProblems.join('\n  ')}`); finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: 'Mesen invocation chain unsound', message: chainProblems.join('; ') } }); cleanup(); process.exit(2); }
 const savesAfter = userSavesSnapshot();
 const untouched = JSON.stringify(savesBefore) === JSON.stringify(savesAfter);
 if (!untouched) { console.error('run_s1c: the user\'s own Mesen save directory CHANGED during the run'); cleanup(); process.exit(2); }
@@ -148,6 +149,8 @@ if (provPath) {
   const stamps = mesenStamp(MESEN, [...loaded], [...loaded].sort().map((p) => fileStamp(p)).filter(Boolean).map((f) => ({ ...f, path: f.path.startsWith(home) ? `<isolated-HOME>${f.path.slice(home.length)}` : f.path })));
   const planned = { row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, purpose: PURPOSE, romSha256: built.romSha256, luaSha256: built.luaSha256 };
   finishAttempt(provPath, 'built', {
+    productionVertical: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
+    consumed: consumedEvidence(tree), // what every build of this run CONSUMED: each engine copy and each loaded module verified as it was read (ringtree.mjs, the consumed-input guard); throws if no build went through the guard
     romSha256: built.romSha256, luaSha256: built.luaSha256, projectSha256: projectSha256(built.built.project), plan: { ...planned, sha256: sha256(JSON.stringify(planned)) },
     build: { streamRing: built.built.prov.streamRing, placement: built.built.prov.placement, resources: built.built.prov.resources, header: built.built.prov.header },
     counts, failed, verdictOk, mesenStatus: run.status, slice: SLICE, retained: { raw: retainedRaw },

@@ -1,0 +1,13 @@
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index a2d256a..c952f72 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4336,7 +4336,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     // 30), and the render-window nametable index sequence (vertical 0,1 -- end 2; the torus 0..3 -- end 4). Emitted on every
+     // build: equates occupy no bytes, and the torus values are the literals the fork replaced.
+     `STREAM_RING = ${ringMode}`,
+-    `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
++    `SW_RING_COL_LEN = 30`,
+     `SW_RW_NT_STEP = 1`,
+     `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
+     // Phase 3a slice S1. OAM_BUSY_ENABLED: the OAM-ready flag (engine/boot.asm), gated on

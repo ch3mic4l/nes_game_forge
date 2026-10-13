@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createStreamedProject } from '../../lib/streamedproject.js';
 import { scanEquates, resolveEquates } from '../../lib/equates.js';
-import { ROOT, makeTree, loadTree, sha256 } from './ringtree.mjs';
+import { ROOT, makeTree, loadTree, sha256, assertCellRing, verifyBuildDir, consumedSnapshot } from './ringtree.mjs';
 import { harnessFingerprint, projectSha256, writeAttempt, finishAttempt, nesasmStamp, hostStamp } from './ringprov.mjs';
 
 /** The six mapper/mirroring pairs of the acceptance table (plan 2.5). `ring` is the STREAM_RING value the pair must build with. */
@@ -90,7 +90,10 @@ function parseBuildLog(lines) {
  * prov is the S1a certificate-build record (plan review 3, obligation 2).
  */
 export async function buildCell({ tree, project, cell, gameType, label, provDir, requestedPlacement = null, links = {}, sabotage = null }) {
-  const loaded = await loadTree(tree);
+  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the prototype tree
+  assertCellRing(tree, cell);
+  const loaded = await loadTree(tree); // re-proves a ring-1 tree from the files on disk, NOW; the stamps carry that proof (loaded.proof)
+  const proof = loaded.proof;
   const stampLabel = label ?? cell?.id ?? 'x';
   const map0 = project.maps[0];
   const mapperOf = () => loaded.cartridge.resolveMapper(project.cartridge.mapper);
@@ -98,7 +101,7 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
   const provPath = writeAttempt(provDir, stampLabel, {
     kind: 'cell-build', cell: cell?.id ?? null, gameType, requestedPlacement, sabotage,
     links: { result: links.result ?? null, log: links.log ?? null },
-    head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches,
+    head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionVertical: proof,
     mapper: project.cartridge.mapper, mirroring: project.cartridge.mirroring, grid: `${map0.gridW}x${map0.gridH}`,
     harness: harnessFingerprint(), projectSha256: projectSha256(project), fixtureHashes: cachedFixtureHashes(), nesasm: nesasmStamp(), host: hostStamp()
   });
@@ -108,6 +111,9 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
     dir = fs.mkdtempSync(path.join(os.tmpdir(), `ring-cell-${stampLabel}-`));
     await loaded.saveProject(dir, project);
     const built = await loaded.buildProject({ dir, project, log: (l) => lines.push(l) });
+    // bound to the bytes this build CONSUMED (not to a check of the mutable tree before or after): the guard verified every engine source as it was copied, the loader every module as it was
+    // read, and here the copies the assembler read are hashed again. A ring-1 build that was not made through the guarded copy has no evidence and is refused.
+    const consumed = verifyBuildDir(tree, dir, project);
     const config = fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8');
     const constants = fs.readFileSync(path.join(dir, 'build/constants.asm'), 'utf8');
     const pending = new Map();
@@ -137,6 +143,9 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
       head: tree.head,
       trackedStatus: tree.status,
       patches: tree.patches,
+      treeKind: tree.kind,
+      productionVertical: proof,
+      consumed,
       mapper: project.cartridge.mapper,
       mirroring: project.cartridge.mirroring,
       header,
@@ -167,7 +176,7 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
     finishAttempt(provPath, 'built', prov);
     return { dir, romPath: built.romPath, fnsPath, config, symbols, fns, prov, provPath, rom, project };
   } catch (e) {
-    finishAttempt(provPath, 'error', { error: { firstLine: String(e.message).split('\n')[0], message: String(e.message).slice(0, 4000) }, resources: { buildLogLines: lines.length, buildLogTail: lines.slice(-12) } });
+    finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: String(e.message).split('\n')[0], message: String(e.message).slice(0, 4000) }, resources: { buildLogLines: lines.length, buildLogTail: lines.slice(-12) } });
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
     e.provPath = provPath;
     throw e;

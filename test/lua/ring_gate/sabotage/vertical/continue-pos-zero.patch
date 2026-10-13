@@ -1,0 +1,13 @@
+diff --git a/a/engine/save.asm b/b/engine/save.asm
+index 743f511..76ae408 100644
+--- a/a/engine/save.asm
++++ b/b/engine/save.asm
+@@ -634,5 +634,8 @@ continue_game:
+   sta <box_state
+   lda #ST_GAMEPLAY
+   sta <game_state
++  lda #0
++  sta <player_x
++  sta <player_y
+   jmp redraw_screen
+   .endif

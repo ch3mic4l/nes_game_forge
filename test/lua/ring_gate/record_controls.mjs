@@ -15,7 +15,7 @@ const cell = cellById('MMC1-V');
 const scene = laps({ ring: cell.ring, talkers: 'enter' });
 const { project, gridW, gridH } = ringProject({ cell, gameType: 'action', talkers: 'enter' });
 const ctx = { project, ring: cell.ring, gridW, gridH, typing: scene.expect.typing };
-const tree = makeTree({ ring: true });
+const tree = makeTree({ ring: cell.ring });
 const built = await buildCell({ tree, project, cell, gameType: 'action', label: 'record-controls' });
 const records = runSteps(bootRom(built.romPath), scene.steps);
 fs.rmSync(built.dir, { recursive: true, force: true });

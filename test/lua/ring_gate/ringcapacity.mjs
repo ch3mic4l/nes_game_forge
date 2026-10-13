@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { makeTree } from './ringtree.mjs';
+import { makeTreeSet } from './ringtree.mjs';
 import { CELLS, GAME_TYPES, ringProject } from './ringworld.mjs';
 
 /**
@@ -42,10 +42,10 @@ export async function maxAdmitted(tree, spec) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const tree = makeTree({ ring: true });
+  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree (vertical = production code, horizontal = prototype)
   const rows = [];
   for (const cell of CELLS) for (const gameType of GAME_TYPES) for (const talkers of RESOURCE_SHAPES) for (const bulk of gameType === 'rpg' && talkers === 'landing' ? [false, true] : [false]) {
-    const r = await maxAdmitted(tree, { cell, gameType, talkers, bulk });
+    const r = await maxAdmitted(trees.forCell(cell), { cell, gameType, talkers, bulk });
     rows.push({ cell: cell.id, ring: cell.ring, gameType, talkers, bulk, max: r.max, firstRefusal: r.firstProblem });
     console.log(`${cell.id.padEnd(7)} ring ${cell.ring} ${gameType.padEnd(6)} ${(talkers + (bulk ? '+bulk' : '')).padEnd(11)} max N = ${String(r.max).padStart(3)}  ${r.firstProblem ? '| N+1: ' + r.firstProblem.slice(0, 150) : ''}`);
   }
@@ -53,7 +53,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   for (const r of wrong) console.log(`MAX_N MISMATCH ${r.cell} ${r.gameType}: table ${MAX_N[r.cell][r.gameType]}, capacity check ${r.max}`);
   const j = process.argv.find((a) => a.startsWith('--json='))?.slice(7);
   if (j) fs.writeFileSync(j, JSON.stringify(rows, null, 1));
-  fs.rmSync(tree.root, { recursive: true, force: true });
+  trees.dispose();
   console.log(wrong.length ? `${wrong.length} MAX_N entries differ from the capacity check` : `MAX_N table matches the capacity check (${rows.filter((r) => r.talkers === 'none').length} entries)`);
   process.exit(wrong.length ? 1 : 0);
 }

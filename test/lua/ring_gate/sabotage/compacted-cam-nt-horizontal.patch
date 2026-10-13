@@ -24,13 +24,13 @@ index 24c538e..86dea13 100644
    sta <cam_nt
    dec <cam_dirty
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 99490a6..6141231 100644
+index 7b910e3..b2298b3 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4318,8 +4318,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
-     `STREAM_RING = ${ringMode}`,
+@@ -4333,8 +4333,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
      `SW_RING_COL_LEN = ${ringMode === 1 ? 15 : 30}`,
      `SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`,
+     // vertical 0,1 (end 2), horizontal 0,2 (end 4)
 -    `SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`,
 -    `SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`,
 +    `SW_RW_NT_STEP = 1`,

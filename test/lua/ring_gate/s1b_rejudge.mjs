@@ -12,13 +12,23 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { rejudgeRecord } from './s1bsuccessor.mjs';
-import { auditStamp } from './ringprovindex.mjs';
+import { auditStamp, isHistoricalStamp } from './ringprovindex.mjs';
+import { PRE_C2_BASELINE } from './ringtree.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const [logDir, provDir, outDir] = process.argv.slice(2).map((p) => (p ? path.resolve(p) : p));
 if (!logDir || !provDir || !outDir) { console.error('usage: s1b_rejudge.mjs <orig-log-dir> <orig-prov-dir> <out-dir>'); process.exit(2); }
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const shaFile = (f) => sha(fs.readFileSync(f));
+// The historical waiver of the tree-provenance audit is for the pre-C2 S1b certificate and nothing else: a provenance directory holding any stamp that is not one of its (baseline 5138c1f,
+// kinds the old certificate contains) is refused BEFORE anything is written -- a current-baseline (cd7a9f8) stamp must go through the full audit (ringprovindex.mjs), never through this tool.
+const foreign = fs.readdirSync(provDir).filter((x) => x.endsWith('.json') && x !== 'INDEX.json').sort()
+  .map((x) => ({ x, st: JSON.parse(fs.readFileSync(path.join(provDir, x), 'utf8')) })).filter(({ st }) => !isHistoricalStamp(st));
+if (foreign.length) {
+  console.error(`s1b_rejudge: ${provDir} holds ${foreign.length} stamp(s) that are not the pre-C2 S1b certificate (baseline ${PRE_C2_BASELINE.slice(0, 7)}, kinds cell-build / ring0-build / ring0-identity-comparison / s1b-witness); the historical waiver does not apply to them:`);
+  for (const { x, st } of foreign.slice(0, 10)) console.error(`  ${x}: baseline ${String(st.baseline).slice(0, 12)}, kind ${st.kind}`);
+  process.exit(2);
+}
 if (fs.existsSync(outDir) && fs.readdirSync(outDir).length) { console.error(`${outDir} is not empty`); process.exit(2); }
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -64,9 +74,9 @@ for (const f of fs.readdirSync(provDir).filter((x) => x.endsWith('.json') && x !
   if (rec) {
     swapped++;
     const view = { ...st, counts: rec.successor.counts, verdictOk: rec.successor.verdictOk, links: { ...st.links, result: path.join(outDir, rec.file), log: st.links.log } };
-    problems.push(...auditStamp(view, f, exists));
+    problems.push(...auditStamp(view, f, exists, undefined, { historicalTree: true })); // a pre-C2 certificate: its tree was the old baseline + the S1 prototype
     index.results[rec.file] = rec.successor.sha256;
-  } else problems.push(...auditStamp(st, f, exists));
+  } else problems.push(...auditStamp(st, f, exists, undefined, { historicalTree: true }));
 }
 for (const why of refusals) problems.push(`reconciliation refused: ${why}`);
 index.counts = { stamps: audited, successorViews: swapped, refused: refusals.length, problems: problems.length };

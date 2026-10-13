@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
-import { makeTree } from './ringtree.mjs';
+import { makeTree, refreshProof, consumedEvidence, consumedSnapshot } from './ringtree.mjs';
 import { CELLS, GAME_TYPES } from './ringworld.mjs';
 import { prepareRing } from './ringcli.mjs';
 import { runWitness, plannedInvocations, SIZES } from './ringwork.mjs';
@@ -58,7 +58,7 @@ const label = `s1b-${sabotage ? `sab-${sabotage}-` : ''}${fault ? `fault-${fault
 // patched tree's own normalized project): an action project has no battle bank, so the predicate is false whatever the text volume. The scene carrying 3,000 characters
 // of never-reached text (what forces an RPG's overlay into its battle bank) is built, and its capacity verdict reported: resident or refused, never banked.
 if (placement === 'banked' && gt === 'action') {
-  const tree = makeTree({ ring: true });
+  const tree = makeTree({ ring: cell.ring });
   const info = await prepareRing({ cellId: cell.id, gt, sizes: SIZES, wide: true, bulk: BULK, tree, n: 4 });
   const base = pathToFileURL(tree.root).href;
   const sp = await import(`${base}/main/build/streamplacement.js`), sh = await import(`${base}/shared/project.js`), gen = await import(`${base}/main/build/generate.js`), cart = await import(`${base}/shared/cartridge.js`);
@@ -80,12 +80,12 @@ const iso = openIsolatedHome();
 const { home, loaded } = iso;
 const mesenCtx = iso.ctx;
 
-const tree = makeTree({ ring: true, extra: sabotage ? [sabotage] : [] });
+const tree = makeTree({ ring: cell.ring, extra: sabotage ? [sabotage] : [] });
 const provDir = flag('prov-dir');
 const links = { result: flag('json') ? path.resolve(flag('json')) : null, log: flag('log') ? path.resolve(flag('log')) : null };
 const provPath = writeAttempt(provDir, label, {
   kind: 's1b-witness', cell: cell.id, gameType: gt, placement, sabotage: sabotage ?? null, fault: fault ?? null, specs: specSel, links,
-  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
+  head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionVertical: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
 });
 let items = [], perSpec = [], cellInfo = null, bound = null;
 const sweepCache = new Map();
@@ -119,7 +119,7 @@ try {
   items = judgeCell({ perSpec, ctx: jctx });
   bound = jctx.boundOut ?? null;
 } catch (e) {
-  finishAttempt(provPath, 'error', { error: { firstLine: String(e.message).split('\n')[0], message: String(e.stack ?? e.message).slice(0, 4000) } });
+  finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: String(e.message).split('\n')[0], message: String(e.stack ?? e.message).slice(0, 4000) } });
   console.error(`run_s1b: ${e.stack ?? e.message}`);
   cellInfo?.dispose?.(); fs.rmSync(tree.root, { recursive: true, force: true }); iso.dispose();
   process.exit(2);
@@ -152,7 +152,7 @@ const chain = iso.chain();
 const specsRun = SPECS.filter((x) => specSel.includes(x.name));
 const plannedInv = specsRun.flatMap(plannedInvocations);
 const chainProblems = auditChain(chain, plannedInv);
-if (chainProblems.length) { console.error(`run_s1b: the Mesen invocation chain is unsound:\n  ${chainProblems.join('\n  ')}`); finishAttempt(provPath, 'error', { error: { firstLine: 'Mesen invocation chain unsound', message: chainProblems.join('; ') } }); process.exit(2); }
+if (chainProblems.length) { console.error(`run_s1b: the Mesen invocation chain is unsound:\n  ${chainProblems.join('\n  ')}`); finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: 'Mesen invocation chain unsound', message: chainProblems.join('; ') } }); process.exit(2); }
 const savesAfter = userSavesSnapshot();
 const untouched = JSON.stringify(savesBefore) === JSON.stringify(savesAfter);
 if (!untouched) { console.error('run_s1b: the user\'s own Mesen save directory CHANGED during the run'); process.exit(2); }
@@ -175,6 +175,8 @@ if (provPath) {
   const stamps = mesenStamp(MESEN, [...loaded], [...loaded].sort().map((p) => fileStamp(p)).filter(Boolean).map((f) => ({ ...f, path: f.path.startsWith(home) ? `<isolated-HOME>${f.path.slice(home.length)}` : f.path })));
   const planned = { cell: cell.id, gameType: gt, placement, n: result.n, specs: perSpec.map((s) => ({ name: s.name, kind: s.spec.kind, romSha256: s.romSha256, invocations: plannedInvocations(specsRun.find((x) => x.name === s.name)).map((i) => i.purpose) })) };
   finishAttempt(provPath, 'built', {
+    productionVertical: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
+    consumed: consumedEvidence(tree), // what every build of this run CONSUMED: each engine copy and each loaded module verified as it was read (ringtree.mjs, the consumed-input guard); throws if no build went through the guard
     romSha256: sha256(JSON.stringify(planned)), projectSha256: sha256(JSON.stringify(perSpec.map((s) => s.romSha256))),
     plan: { ...planned, sha256: sha256(JSON.stringify(planned)) }, counts, expect, verdictOk, gateFailed, gateFailures: gateCtl.numeric.length, operationalFailures: gateCtl.operational.length, sabotage: sabotage ?? null, fault: fault ?? null,
     retained: result.retained, emulators: { mesen: stamps, jsnes: jsnesStamp() }, mesenChain: chain, userSavesUntouched: untouched,

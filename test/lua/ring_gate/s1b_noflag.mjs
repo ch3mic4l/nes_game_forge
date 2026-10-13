@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // S1b part C: the two G-gate builders (sw_manifest_scene.mjs / run_sw_manifest.mjs and run_sw_move_manifest.mjs) gained ring selection flags. With the flag
 // ABSENT each must produce byte-identical output to what it produced before: this records, then checks, the SHA-256 of every artifact a set of no-flag
-// configurations emits (the scene ROM, the symbol file, the RENDERED Lua script, the normalized project).
-//   node test/lua/ring_gate/s1b_noflag.mjs record <file.json>     (taken from the tree BEFORE the flags were added: handoff-next/s1b-noflag-before.json)
+// configurations emits (the scene ROM, the symbol file, the RENDERED Lua script, the normalized project). The baseline is the C2 tree's output, so a pass proves flag-absent
+// output is unchanged since C2; it does not re-prove the flags' original inertness (that was checked against the 5138c1f recording, kept as evidence).
+//   node test/lua/ring_gate/s1b_noflag.mjs record <file.json>     (the tracked baseline, test/lua/ring_gate/noflag/s1b-cd7a9f8.json, was recorded from a detached cd7a9f8 (S2 commit C2) worktree)
 //   node test/lua/ring_gate/s1b_noflag.mjs check <file.json>      exit 0 = every artifact equals the recorded hash, 1 = a difference, 2 = usage
 import fs from 'node:fs';
 import os from 'node:os';

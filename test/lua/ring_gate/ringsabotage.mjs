@@ -7,13 +7,21 @@
 // not on trust: the runner still attempts the build and requires it to fail with the predeclared message; a build that succeeds contradicts
 // the declaration (exit 1) and a different error is an unexpected error (exit 2).
 
+/**
+ * The rings a sabotage has a patch for (sabotage/<name>.patch = ring 2, sabotage/vertical/<name>.patch = ring 1). Since S2 the vertical ring runs on C2's shipped code, which has
+ * no row-strip fork, so a sabotage of that fork has no vertical form: a (sabotage, vertical cell) combination for it is N/A, proved by the vertical tree not carrying the code
+ * (prov_unit.mjs pins this table against the patch files).
+ */
+export const SABOTAGE_RINGS = { 'wrap-row-32': [2] };
+export const sabotageRings = (name) => SABOTAGE_RINGS[name] ?? [1, 2];
+
 /** identity[name](cell, gameType, banked) -> 'catch' | 'pass' */
 export const IDENTITY_OUTCOME = {
   // SW_RING_COL_LEN = 30 on every ring: wrong for the vertical ring (wants 15), the horizontal ring's own value
   'strip-len-30-vertical': (cell) => (cell.ring === 1 ? 'catch' : 'pass'),
   // the wrap compare operands are literals: wrap-col-30 equals the horizontal geometry (30), wrap-row-32 equals the vertical geometry (32)
   'wrap-col-30': (cell) => (cell.ring === 1 ? 'catch' : 'pass'),
-  'wrap-row-32': (cell) => (cell.ring === 2 ? 'catch' : 'pass'),
+  'wrap-row-32': (cell) => (cell.ring === 2 ? 'catch' : 'pass'), // the vertical form does not exist (SABOTAGE_RINGS): that cell is N/A, never built
   // a destination-byte change: not an operand row 1 reads
   'dest-plus08-vertical': () => 'pass',
   // STEP 1 / END 4 differ from both geometries (vertical 1/2, horizontal 2/4)

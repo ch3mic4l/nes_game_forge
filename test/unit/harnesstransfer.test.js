@@ -1,7 +1,8 @@
 // The harness-transfer certificate (test/lua/sw_harness_transfer.mjs, test/lua/sw_transfer_lib.mjs, test/lua/sw_transfer_worker.mjs).
 // Two kinds of test live here, kept apart (phase 3b S2 C1, review F1 and Chris's 2026-10-11 ruling):
 //   CURRENT EVIDENCE   what test/fixtures/harness-transfer/ holds now and what the fresh curve needs. The fresh curve was measured by the live harness, so the live
-//                      directory holds NO certificate and the curve is accepted through test/fixtures/identity-cert/s2-c1-metadata.json; a stale or forged artifact
+//                      directory holds NO certificate and the curve is accepted through the CURRENT identity certificate, test/fixtures/identity-cert/s2c2.json (C2's; the
+//                      C1 certificate s2-c1-metadata.json stays checked in as a historical one that no longer authorizes the live sources); a stale or forged artifact
 //                      presented as active evidence is refused.
 //   HISTORICAL CONTROLS the validator itself, exercised against the retired certificate, its archive and the old curve bytes (test/fixtures/harness-transfer/retired/):
 //                      the untouched certificate validates with zero problems under a historical new-side source context, and every rejecting control mutates it

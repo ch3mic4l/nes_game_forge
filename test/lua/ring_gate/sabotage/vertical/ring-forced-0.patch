@@ -1,0 +1,13 @@
+diff --git a/a/main/build/generate.js b/b/main/build/generate.js
+index a2d256a..a962fec 100644
+--- a/a/main/build/generate.js
++++ b/b/main/build/generate.js
+@@ -4085,7 +4085,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+   // Phase 3b S2: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
+   // streamRingMode). Mode 2 (horizontal) is the S3 row fork, which this engine does not carry: refuse it here even though
+   // validateProject already does, so a caller that reaches the generator another way never assembles a half-forked ROM.
+-  const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
++  const ringMode = 0;
+   if (ringMode === 2) {
+     throw new Error(
+       'Build panel: this project streams a map on a board with horizontal mirroring, which needs the horizontal two-nametable ' +

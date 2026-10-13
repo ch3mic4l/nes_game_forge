@@ -2,7 +2,7 @@
 // result's own items and recomputes every claim from them against the CURRENT declarations (s1ccontrols.mjs), so a result that is missing, empty, contradictory or for another run
 // cannot be certified by a stamp that says it passed. Pure (no fs, no emulator); the provenance audit (ringprovindex.mjs) and the gate (s1c_gate.mjs) both call it, and the unit
 // tests mutate synthetic records against it.
-import { CONTROLS, CELL_IDS, MMC3_CELLS, REQUIRED_ITEMS, UNSOUND_IDS, CONTROL_EXIT_OK, BUILDS, controlBuilds, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
+import { CONTROLS, CELL_IDS, MMC3_CELLS, REQUIRED_ITEMS, UNSOUND_IDS, CONTROL_EXIT_OK, BUILDS, controlBuilds, controlHasForm, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
 
 export const LEGAL_STATUS = ['PASS', 'FAIL', 'UNMEASURED'];
 const LABEL = /^s1c-r([568])-(?:ctl-(.+)-)?((?:MMC1|MMC3|U512)-[VH])-(action|rpg)-(resident|banked)$/;
@@ -15,6 +15,7 @@ export function decodeLabel(label) {
   const d = { row: Number(row), cell, gt, placement, control: control ?? null, ring: cell.endsWith('-V') ? 1 : 2 };
   if (d.control === null ? label !== positiveLabel(d.row, cell, gt, placement) : (!(d.control in CONTROLS) || label !== controlLabel(d.control, cell, gt, placement))) return null;
   if (d.control !== null && CONTROLS[d.control].row !== d.row) return null;
+  if (d.control !== null && !controlHasForm(d.control, d.ring)) return null; // a control with no form on this ring is N/A, not a run the matrix declares
   if (d.row === 8 && !MMC3_CELLS.includes(cell)) return null;
   if (d.control !== null && !controlBuilds(d.control).some(([g, p]) => g === gt && p === placement)) return null;
   if (!CELL_IDS.includes(cell) || !BUILDS.some(([g, p]) => g === gt && p === placement)) return null;

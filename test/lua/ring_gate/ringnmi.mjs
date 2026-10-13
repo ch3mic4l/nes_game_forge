@@ -549,7 +549,7 @@ export async function buildNmiRing({ cell, gt = 'action', placement = 'resident'
   if (mutation && !(mutation in MUTATIONS)) throw new Error(`unknown --mutation ${mutation}: ${Object.keys(MUTATIONS).join(', ')}`);
   if (breakMode && !['chunk4', 'mixed3'].includes(breakMode)) throw new Error(`unknown --break mode: ${breakMode}`);
   const own = !tree;
-  const t = tree ?? makeTree({ ring: true, extra: sabotage ? [sabotage] : [] });
+  const t = tree ?? makeTree({ ring: cell.ring, extra: sabotage ? [sabotage] : [] });
   const banked = placement === 'banked';
   const { project } = ringProject({ cell, gameType: gt, n: 4, talkers: 'none', start: { screen: 0, x: 120, y: 120 }, bulkText: bulkText ?? (banked ? 3000 : 100) });
   const stamp = label ?? `s1c-nmi-${sabotage ? `sab-${sabotage}-` : ''}${mutation ? `mut-${mutation}-` : ''}${breakMode ? `brk-${breakMode}-` : ''}${cell.id}-${gt}-${placement}`;

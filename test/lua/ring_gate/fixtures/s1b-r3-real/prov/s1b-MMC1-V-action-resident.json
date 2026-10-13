@@ -1,0 +1,2754 @@
+{
+ "schema": "ring-prov-3",
+ "label": "s1b-MMC1-V-action-resident",
+ "status": "built",
+ "attempt": {
+  "n": 1,
+  "pid": 3888257,
+  "startedAt": "2026-10-07T15:59:43.182Z"
+ },
+ "kind": "s1b-witness",
+ "cell": "MMC1-V",
+ "gameType": "action",
+ "placement": "resident",
+ "sabotage": null,
+ "fault": null,
+ "specs": [
+  "walk",
+  "touch+1",
+  "touch+2",
+  "touch+3",
+  "touch+4",
+  "touch+5",
+  "touch+6",
+  "touch+7",
+  "say",
+  "stand",
+  "edge",
+  "heavy",
+  "warp",
+  "chase",
+  "heavy14",
+  "mv-say",
+  "mv-lead",
+  "mv-flash",
+  "mv-wait",
+  "seam-walk",
+  "seam-move"
+ ],
+ "links": {
+  "result": "/home/chris/nes_game_forge/handoff-next/s1b-r3-logs/s1b-MMC1-V-action-resident.json",
+  "log": "/home/chris/nes_game_forge/handoff-next/s1b-r3-logs/s1b-MMC1-V-action-resident.log"
+ },
+ "head": "589978581204eeca69fda0ae747b5c190289b00a",
+ "trackedStatus": "clean",
+ "baseline": "5138c1f0c33107016a90423da17dcbb33d8697ca",
+ "patches": [
+  {
+   "name": "01-ring-select.patch",
+   "sha256": "0a88e97d059e4225f40b8240b9f3039566aec614632de337b742c4208513f9b2"
+  },
+  {
+   "name": "02-ring-engine.patch",
+   "sha256": "0412aef5c7328f9ad4dd157af1a37df6591b9aea71d49d84303c60d2c43c2c7c"
+  },
+  {
+   "name": "03-player-far-branch.patch",
+   "sha256": "c41944ec72108164d3548974a733cf4e1516e60f6bf598a9d77fb1401383800e"
+  }
+ ],
+ "harness": {
+  "main/build/battletables.js": "88f7b7ea6e3a390fad3c27573b88d680bcc4ae2eb73aeff60d5e2c33f9a7c5c7",
+  "main/build/generate.js": "65442ff0c1cc62ef38bcc97a1f777394488e6859b1e5699440cabcbe201b473b",
+  "main/build/nesasm.js": "ab38d873f61367576358266c0098c7a92a691004cba0441621ab781243d1462e",
+  "main/build/pipeline.js": "6622f74b5331c1ce95d7d0b89a767fb0539d2c3260f03828bb076b6d908807cc",
+  "main/build/songcompile.js": "817ae16c959b945c83fbe8df2128f43a10f9cecda93b51b7861bdb9cc070d34b",
+  "main/build/streamed.js": "af5d67c435e40ea0ccd5ca4d605f187dc5ed25e6ca7bad6c62339bde01602619",
+  "main/build/streamplacement.js": "065a73a5993839dc70164428c01a718b60d9a5051b3921c12c90023f556766e0",
+  "main/build/symbols.js": "4608f2347f7aaf272f874ef200f562d2e3b80fadcb3af0e72d4b1d14192bc42a",
+  "main/build/textcompile.js": "fa7fbb804085273d4636fb4feadc9607f6aca88b58bda3e6e9eb3d030cd6a50f",
+  "main/paths.js": "0ba6cf88e1f3a3ff9d6175e7be644c8c9f6a3403992eabdfb4896a64dc4d25c3",
+  "main/project-io.js": "27fd08ba00d787ff1946579e6010bbe7ecbf9ea7443b89f79bbdcd62b3d3d927",
+  "main/savequeue.js": "9371793b08151266337d9d8297f594f71b993826d2d8c6153e30648c9d38a796",
+  "renderer/emulator/core/controller.js": "195631f7e73678d94a55fda2bf04af64ce773bcaa96575dcb692219ddf13f46f",
+  "renderer/emulator/core/cpu.js": "efbc3071930c51e2c941f26303aee8d4807733709009d605089b71b380c4211f",
+  "renderer/emulator/core/gamegenie.js": "b8ca28be7c4953b32f0540b9020ccec90492854d39212095f885c1ca412b4a63",
+  "renderer/emulator/core/mappers/index.js": "cd23c2d2d89978dd1286c020c85e63ceb33af8c57240737684830024a2db2cd7",
+  "renderer/emulator/core/mappers/mapper0.js": "16cc0ce0a9db679d91756476c9b922ce1472f4a835907b5a36423ba1934a76a7",
+  "renderer/emulator/core/mappers/mapper1.js": "4a9bf2fe36ceb428468ffbb805f12b1285d48d2fe1d5baac432a4f21b1bac9a3",
+  "renderer/emulator/core/mappers/mapper11.js": "55e9dac59c012f8760a9b2406d2939b45df8e8f2a1fa9d0b12264677a6239f37",
+  "renderer/emulator/core/mappers/mapper118.js": "2dc43359822d4d9d5cbd0d2fe77470e128d49572ae3783571d754cdf12487c36",
+  "renderer/emulator/core/mappers/mapper119.js": "c6630461de528d7c9bc2cfccb7d5376538958ebf5c5785f3d3e507330d8394a4",
+  "renderer/emulator/core/mappers/mapper140.js": "58dc11fe83607d5326b6ddf9e8a7ba097daa57ddc58e559a328c632081f6ed5b",
+  "renderer/emulator/core/mappers/mapper180.js": "84130258171496e1eef9bcfd81133abd10243b61ecff8a6f45b412b28cbe608b",
+  "renderer/emulator/core/mappers/mapper2.js": "7043eb84393af01962ec16ebf0c7bd2ef2e427c38e0ffeecea77ea6b5644206a",
+  "renderer/emulator/core/mappers/mapper240.js": "459d3f6348800997b2d47c71c4469ae0f0671b69a1cd7b407a588bd8e4d0c81c",
+  "renderer/emulator/core/mappers/mapper241.js": "313ab7503bc802fc6a8fd646e57f0d169586f5271e73f6161d75d6d468105fe5",
+  "renderer/emulator/core/mappers/mapper3.js": "2db7add36ec5db614895fbf2282e7a8c3828644977feea5a28743f8ff142343a",
+  "renderer/emulator/core/mappers/mapper30.js": "6d2d5fd3c7e6589f2c542e3cf8de670ff69a670d95195db563b5cd7ed4539ca7",
+  "renderer/emulator/core/mappers/mapper34.js": "07268a4115ec372a706dff4ae59c853d30df3cb9fe3e5bb9c5ac4bea70548c58",
+  "renderer/emulator/core/mappers/mapper38.js": "d4f5629e43d79a5788f83930a1f9f3ff31614f00d8b490e53d17d973bb22b459",
+  "renderer/emulator/core/mappers/mapper4.js": "fc2960de5f39ed6e9553d686402db69cecd2cfb6192d2ac0480d52bcaa198ad9",
+  "renderer/emulator/core/mappers/mapper5.js": "6ac5f47d9313726de16d7f9fee3919ba028e0498edf14d90beae348a4cb7ad4f",
+  "renderer/emulator/core/mappers/mapper66.js": "e057ee195f834cea4ba2c2c66506436b500ff384d65c43fb333ce49a0178cf73",
+  "renderer/emulator/core/mappers/mapper7.js": "6e9aa39d260a3483b8b157ca0e13c1000fcccf6683e422418f50bc82942ae84f",
+  "renderer/emulator/core/mappers/mapper71.js": "52ccba23f5090bd6473b186c1b3a8dfad7bf8e241e3a06be1961dd3068c50173",
+  "renderer/emulator/core/mappers/mapper79.js": "80a0a77730ee0d83d4a635fab11a02c0db55923f7db6cc31ccdf1ea576659e9a",
+  "renderer/emulator/core/mappers/mapper9.js": "eebba4b5ac0eab3dff4fc141439efa8b5a7f9b43c36ba67f3829eab9e4c97cfb",
+  "renderer/emulator/core/mappers/mapper94.js": "d99e43da3e1ee7e147446ba63a944e23ac3adae73e857188fafc942b9c03a345",
+  "renderer/emulator/core/nes.js": "08119b28aa390992806a88cb4dc5aa467e6d39fdd3cc2cb11fdb22a5d4f5dc7b",
+  "renderer/emulator/core/papu/channel-dm.js": "6558a04121700ac048d41ce67b475067bde610743480d560b2c8625ad6a2e526",
+  "renderer/emulator/core/papu/channel-noise.js": "738c93f713c6f109adecba1b1eb8f71c1520c389a9b65ad954646aaf55ad48f2",
+  "renderer/emulator/core/papu/channel-square.js": "6898c7a422ee4f7eddc3f220d340967b9d62915962ffabfc629860909b18205e",
+  "renderer/emulator/core/papu/channel-triangle.js": "c5a820f87e5966c9c1b7499ff27c521e577493d5b2976086b8aedfea2eec7566",
+  "renderer/emulator/core/papu/index.js": "cee32db923400c429d8a662594b5bae1e50ef971841ab8875b31c89ebe616ebd",
+  "renderer/emulator/core/ppu/index.js": "e6c33f00fb83ab652dc821ef368ef6e32595d1dc537ac20cedd6cb34d6024485",
+  "renderer/emulator/core/ppu/nametable.js": "c1e74842d1eb1c5a0627af773b250ac19ed39ad6acd1400e14ee4d32d1f3ce30",
+  "renderer/emulator/core/ppu/palette-table.js": "f6373b46eee7f9c077be67883d2086bd860c055fd8c39d24fb449319fee157b1",
+  "renderer/emulator/core/rom.js": "7165b7e50f5df468f9e71b079e19020540f5924553231cc6f673f492d09b0729",
+  "renderer/emulator/core/tile.js": "a44c370cfde874e0abb944fe4a43972458286b95c9f9286b9686c207a95fa5ac",
+  "renderer/emulator/core/utils.js": "3e97884bae801319ac802378ace60591f489dec533aec2e26663685ab08f378c",
+  "shared/audio.js": "4f9f62311a56bfbadee7cb03fbb14e56d92c28f9114acc6d1d26d81cdeb51bd1",
+  "shared/cartridge.js": "27ec051c1978f654c459233ab0b68ddea8d3ac8057b65828649f2c9f79f4fb8a",
+  "shared/chr.js": "2570faccb59879ab11d1257151e0a71a0c64aedb50f4e13410e2ad7c1274613d",
+  "shared/eventrules.js": "8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72",
+  "shared/font.js": "93f6955ced2bc9419450d9bd73ccef9fd85e685ec897ccfa32529bc3ff213ee9",
+  "shared/library/authoring.js": "b480bfb165eb4beac5c24321a2412d861fa8512cc384f7a7f4d6d5e187ef13b2",
+  "shared/library/index.js": "d7a3d20c3c97b01ae89d4c8f87dfb2be17a5f7c9e3e44a8cb2fb01b7aa73cb5f",
+  "shared/library/monster/bat.js": "38fcbdc3b4d5f99e22a3e22cdbac0f0860d80164fdee66ee264f9375f67086da",
+  "shared/library/monster/index.js": "5f8729317845729cee0bcb2ed743efa37b4125650b4523984a2f32c96d1f0a10",
+  "shared/library/monster/skeleton.js": "041239a71e4731f30266d30ee551e60cf2f3529da82ed51b0de086f27726a0b2",
+  "shared/library/monster/slime.js": "1438288ad4046c9d23be3e5ea1d32ecffaf3d1daa6f59bd0e6bf712de32f74e4",
+  "shared/library/pickup/coin.js": "c624ed9cde7106fb389f4e0ff86990990b7bcba221f1ee2765497335daae0604",
+  "shared/library/pickup/index.js": "68a1aaeeae6e127cf7c579b111bcbbcab243f79c8f0a0875be97e92f9fbfbd43",
+  "shared/library/pickup/key.js": "c680b15a62eb88c7d37a02afc58debaa1828b4f0dbb3055187382a2b2fb6e5e5",
+  "shared/library/pickup/potion.js": "f3624e11a8660f79a6da5e9bb35b874ead1385df3fa7078ba49db93cb12babff",
+  "shared/library/pickup/scroll.js": "91afaddc1b3a9118bf95590a1238b260f3fc7c66b5caa17312408244a1f69683",
+  "shared/library/sfx/door.js": "31f40158bd03e9e0bb19dab574843e45c759d096d7a395ee8f6f10fe00e99c75",
+  "shared/library/sfx/error.js": "2ec554ad99462ddb674b2cd711f2567605b143617da98ce3d6d60ad524b7042c",
+  "shared/library/sfx/heal.js": "c7adf8e7eb61bd7fe872c0d10e9971e99ff04de2754b5498abe1c65dbccd7cd1",
+  "shared/library/sfx/hit.js": "d5e036fb561087dc5e070c8b0a84de926ff333dfe3183b29c113946c72f6ff75",
+  "shared/library/sfx/hurt.js": "4407f52d26c7342381208405c36f9c5951682516b6552fb4f3d2b9aa77c7e8c8",
+  "shared/library/sfx/index.js": "df56610f275a741c675b1e3d77b6363147dbecf88b7831759a5e7e2a9ae47c7f",
+  "shared/library/sfx/jump.js": "fc8a433dc83edb42418592ad361111746d2a432b88e07034812d3d1d10074b19",
+  "shared/library/sfx/menu.js": "4f87d067399166e10aad76d03706a1f3997fc5e21f4737d706363cfa12542b9f",
+  "shared/library/sfx/pickup.js": "08091b6676f9f5e28e9e40a04ec006344bc3a0c7815374ddc63b118f595e0c9b",
+  "shared/library/song/ambient-loop.js": "3303453520cadcb27cf404f634dffb2a057ca0f25dbe64c5bf13cb3a13d37c03",
+  "shared/library/song/index.js": "74d5693677a44b09993f43e67e3a5218398c95e14c8a86a3f2647b6c243253a1",
+  "shared/library/song/title-jingle.js": "752405a39c08bd0141e662d1910869ad31a1331ef6f2360e6f9ff76b72ecb927",
+  "shared/library/terrain/dirt-path.js": "8fc333611c06729552c702b22218e6fdf5d7388cfcfd52ef3e64af49a1b0af20",
+  "shared/library/terrain/grass-plains.js": "630390720f7b71448ae4ecb513b8c65f0607f61ef64458c9e6b6808370f75275",
+  "shared/library/terrain/index.js": "083f660fa94dd43a7af94cf32add16ecf14ece9eda9c8e81af3f6409c477cab4",
+  "shared/library/terrain/shallow-water.js": "3ca6ce6e94d8043e6de361cbeb7d36c446841b76048c755925a08028648e0318",
+  "shared/library/terrain/stone-floor.js": "0a30d948399039aa50934b9b108b9860bbdcd48ef26439c420dfffc89e1b3471",
+  "shared/library/terrain/wood-planks.js": "806157d787e184332bd1753dc5032cf43e2a3b8af5c25994c683c74534fd73b3",
+  "shared/nespalette.js": "15237252bf2d72d62bf7a8a2e6415de401985b79ca19ecf2b801c1d8f387fd9a",
+  "shared/project.js": "3acec03d11455769fb05443d92fb7ce2914f97c6594e4127cdf877d6523260d9",
+  "shared/save.js": "9779d2b0a0b2c42a4364c210ff25181c789a32f102195bbe37bb5e034b9aae14",
+  "shared/starters/authoring.js": "3acea909adb6e4ba1aedf0c04bb7fe7b53135cce76022b10c516bb7aaedc8bef",
+  "shared/starters/blank-action.js": "fe73ff0fde1d44ed0c2d8e2d6481cc237c69581e52f744658bc2d8ed4e5dccbf",
+  "shared/starters/blank-rpg.js": "3c1e9834c339e7a3e50231b7dcc3b151deeb03401c8db522e4286fe1d0b764b1",
+  "shared/starters/dungeon.js": "5155a43f74c251c89bb9d74b6355ea71d6d316b584124ccb9190f503974dba2d",
+  "shared/starters/figures.js": "678327bef4bc3fb1114fbb4e7a1c1b9b5f80ffeca0cd3c940e64df65990424ba",
+  "shared/starters/index.js": "f41c4e4fbbd64cc5c6d048f88f6985e0592a06cdc6eb0e60dac61aba16514be8",
+  "shared/starters/overworld.js": "a11c66ed514af10c9d32bef548cfab4b9e6151c32df44d1102431ce2df016573",
+  "shared/starters/rpg.js": "aad76a2fbcffe6b7fab7bc87c18fcb5d38166c3143e039a80548f6b72bcde1dc",
+  "shared/streambound.js": "5e1a8c93c1b1b9cd17f629dfd8075683ed8bac325ab2b7065f5b98c15f79a350",
+  "shared/streamlayout.js": "6a99b1940c2923c2e4f70c34fb70214090870baead4520b754c617d0a4f65dc2",
+  "test/lib/callroutine.js": "8e8283a4fcb9e072d1e2fdd96540edc6290e274d3de4bc8a9e5fe34a2d58f17c",
+  "test/lib/enginefingerprint.js": "ac78d2e32f6cacf71050512e56ad5e773f4eab73a04edf81d3eb69dcb864dbfe",
+  "test/lib/equates.js": "b53ca0c352147b82e4c2b9c9cda5677feb43905f305d962e2d09701ace4c45dc",
+  "test/lib/ringoracle.js": "77ae51e7695416f3e22d7bf604c9f92d1383a789ce542a70218c001320d19eac",
+  "test/lib/streamcamera.js": "4ef405d680e0cdce1f0b0d224cf7038148567abb6444b8506e5b3960e554d388",
+  "test/lib/streamedmovecam.js": "a19841c5c169568f6aaf04b88a2a00170a9c513d3343d6c5e83730884ec4e695",
+  "test/lib/streamedproject.js": "26903a99a13e3c5bacd269790cda637d0dcd3b579f8f927161c1e42fae5f9009",
+  "test/lua/ring_gate/01-ring-select.patch": "0a88e97d059e4225f40b8240b9f3039566aec614632de337b742c4208513f9b2",
+  "test/lua/ring_gate/02-ring-engine.patch": "0412aef5c7328f9ad4dd157af1a37df6591b9aea71d49d84303c60d2c43c2c7c",
+  "test/lua/ring_gate/03-player-far-branch.patch": "c41944ec72108164d3548974a733cf4e1516e60f6bf598a9d77fb1401383800e",
+  "test/lua/ring_gate/fixture-hashes-before.txt": "ea6638143ef8f9de235c9e8088102b44a8ebbc96e1acf39d1d056eb85f5db4da",
+  "test/lua/ring_gate/fixture-hashes-r4-before.txt": "495514d28a123af46d7a26b094ce299cb0729d60b2c525c6054e0caa2084ac5b",
+  "test/lua/ring_gate/fixture-hashes.mjs": "e12060a4ae3e62467024ce877f3a7adfb0a60781e4ba9081f24fb8e2b0fa3823",
+  "test/lua/ring_gate/iso_unit.mjs": "0fc5f9ace22cf3bab18544c960df7810ea7d9892064eacd535de2fee17d8dbbf",
+  "test/lua/ring_gate/judge_unit.mjs": "1b739b8793dabed35ce18591ec721e4b45b5bc26a3f03e6ce8741c63ea2cf681",
+  "test/lua/ring_gate/prov_unit.mjs": "e45883713bc3f5c387af60370eea688b28494bd8cc370f22c72c5da570396d45",
+  "test/lua/ring_gate/record_controls.mjs": "9978dbe260ef511bfd9adc20dc384efa692914019ce3dc6d851a5284883f32c2",
+  "test/lua/ring_gate/regen_patches.mjs": "4b3546076d314d8dc23c9b6fffc62680da177fb32589b812e29558833d8b21f9",
+  "test/lua/ring_gate/repro_battle_slot5.mjs": "dbb8d56f2b547dd7a06e27d9c27e0c77fe93d433f01c94dfe9d4d9bc6462cd3a",
+  "test/lua/ring_gate/repro_continue_y.mjs": "61414f801306a9581ea6f069c4493a3ad35e722c7af2bc7a78131b61f2799b28",
+  "test/lua/ring_gate/ring_oracle.lua.template": "73760f0951a4232eb40dac1e30c02898c415deb3cff135f2fb726dc42aece8d0",
+  "test/lua/ring_gate/ringaddr.mjs": "7d4627861b79c8b6640d98e08d821a5c0231e582529c0695ccdb8a00348e079e",
+  "test/lua/ring_gate/ringcampaign.mjs": "8975b17a8deeff0ddb428251910cff582d70d884804ec261267582db5b51cc0b",
+  "test/lua/ring_gate/ringcapacity.mjs": "d98ce868f1d4e2207dcaba37fbb7b4b08869a9c968ffee0e87409b11ab1eb023",
+  "test/lua/ring_gate/ringcli.mjs": "58d9bb54b3eadd135ca00502175438440774d92b31ee869afb3a1949eb5eb8cb",
+  "test/lua/ring_gate/ringcount.mjs": "83d8d6c36a3f906203cbc6e5ed3b010cc6349f9c561a92124b61ecc610fbd764",
+  "test/lua/ring_gate/ringdialogue.mjs": "c1d275096558c683a8376fbdeabecbaf314dba9e1d63d22720063974e8c8a65f",
+  "test/lua/ring_gate/ringhome.mjs": "0491b8167fb8e71abeafa2632d049d0231c12e930818266b5e48b3baa28522f6",
+  "test/lua/ring_gate/ringidentity.mjs": "68dd564ac48e4297d8d170264881a0afabb63d865d879fc7d4066294f83922b3",
+  "test/lua/ring_gate/ringjobs.mjs": "93a2cb32497d3341a0938e0fce1b3518393c082e428f7f6b59eeba608367187a",
+  "test/lua/ring_gate/ringjudge.mjs": "8b3daa2f853ea3cf7b419729f5c2c5f12abe4636ef13db827e2d5460b353f564",
+  "test/lua/ring_gate/ringlabels.mjs": "d0caa644a7c29d39f3ea641fbfb079dd646f4ff9f064422bdd454cde7ad9b67f",
+  "test/lua/ring_gate/ringprov.mjs": "25127c7990f8e908c85183a12e8014687c309171a39e7f0888a8ff57d5923f35",
+  "test/lua/ring_gate/ringprovindex.mjs": "19f24d64f07d5dd19de9e3dd1fe09286eee0def17abd16deaf94cbfefb2dd3cf",
+  "test/lua/ring_gate/ringredraw.mjs": "6e1d906333544d14bcaa758cf451a85b9bf85dc8f597fd3017253f5468c07367",
+  "test/lua/ring_gate/ringrun_jsnes.mjs": "b1ea3701772f202ae4f684ddccab0c26c9920416ae343d0065e070e0b7f943cb",
+  "test/lua/ring_gate/ringrun_mesen.mjs": "ce9f369b96c59a3d1dbe1fa4e4de2ed6f0006b18a3dfd4d0b0770f64e9d67d38",
+  "test/lua/ring_gate/ringsabotage.mjs": "221068d43286943a3e2c240870a5443f21b734271fabe3b3835048726e7e753f",
+  "test/lua/ring_gate/ringscene.mjs": "e69bbcf00a441366c4195339c3561dba0398bdb31f703ab9275d01f024e38c25",
+  "test/lua/ring_gate/ringseam.mjs": "e6516e1a24df33507bd2eb24422781804c231a240f2542508e3e622ea1cd6793",
+  "test/lua/ring_gate/ringshake.mjs": "b19bef09784fd6b4c1191c23370ae3685066e41494c8e776ee049da6112ab898",
+  "test/lua/ring_gate/ringsweep.mjs": "d272c1e49fdaaab803ff027d2b97cdcabb89d3dbcb29b4c0830b7d9db4e0b418",
+  "test/lua/ring_gate/ringtree.mjs": "0cde82a2365ab9fe38ecb19728bda71514117024bbfb007194ba1348df224a82",
+  "test/lua/ring_gate/ringwitness.mjs": "f8f2bc62e54458f46c1163fc213be64aae36adf0375d5a4f2bcaeef9dda4d76f",
+  "test/lua/ring_gate/ringwork.mjs": "e7b5c757dfc0a81c6d490eaeeed1d93e45aecd158e4b9b67fbd3b8a496715ecf",
+  "test/lua/ring_gate/ringworld.mjs": "00fb3b657d7bc586145296866e74f2683aec6456e3e2fd6287fe318120e7d900",
+  "test/lua/ring_gate/run_campaign.mjs": "996f690b07174eb2fa9b1084dc86739813ed0b0edfd5e81ccd50fed480f5e7cf",
+  "test/lua/ring_gate/run_identity.mjs": "00657c1cc05b6cd95e8645fed1b5da54b6deea9034d2431d308aba24270ffb55",
+  "test/lua/ring_gate/run_matrix.mjs": "d022c6b84ae54e60b4b779c24ec1c1aa0be03bd6773504a3457c86b4f00d98e4",
+  "test/lua/ring_gate/run_oracle.mjs": "6687c81459e3a6314030af7648f0e540ccf48d0bdef137373cb60d593fe3947e",
+  "test/lua/ring_gate/run_s1b.mjs": "e64154707c643336f799320757ea0c30134e0104c533f676bbb3c48d05581765",
+  "test/lua/ring_gate/s1b_coverage.mjs": "abcf7d53f9cf922ead6b04545ced77f9fa8b6e65e384b33cbe7e52f3b65c52a6",
+  "test/lua/ring_gate/s1b_noflag.mjs": "bca78c3923dc01610e074617ef84c7d40cdfefacddc07981e6c368557c7628da",
+  "test/lua/ring_gate/s1b_tables.mjs": "aa940627c697a2f9495e80ea68e3fb959c7ddc1cb756ec4c46d43d79088a7908",
+  "test/lua/ring_gate/s1b_unit.mjs": "116c2bbc0f3bf586d9f95c7feff51c34071d6ac7f27c50695ec924e24a9de632",
+  "test/lua/ring_gate/s1bagree.mjs": "fab08f3ac26fc899d809d726c0cef40216e94390b24fdf8b39c9eb51732a824d",
+  "test/lua/ring_gate/s1bbound.mjs": "250531febc1d553ce6501a19ca5633bb03d5c55627531239c94330c8f6bb32e4",
+  "test/lua/ring_gate/s1bcost.mjs": "25b006e42f8f62642c4e90cdf75c8141835f1d3769996a71118c4059832a2c0c",
+  "test/lua/ring_gate/s1bcover.mjs": "b207ca769f264ad58fb45e351bbfae839ebaa72ca4889cf529aaa447452d8be8",
+  "test/lua/ring_gate/s1bjudge.mjs": "12dde4adb3c30401eb61cdaf6783059972c4b57bc0e3292b0f447ee5ce333020",
+  "test/lua/ring_gate/s1bspecs.mjs": "1ca84b06cdabefcc02c6e8ba0c142c1fd82682adbcac0feb4c4766f8c0f61e2c",
+  "test/lua/ring_gate/sabotage/battle-return-no-render.patch": "4a299ffc242d00b4e5e80658ca823309d8f3d438a24cf55f1cf7fe965cf57626",
+  "test/lua/ring_gate/sabotage/blk-hi-drop.patch": "733ce910cf0136319872cd56180ee277d2503fa16bd4cc24a830514603a527eb",
+  "test/lua/ring_gate/sabotage/camhi-mask-7f.patch": "e95c38d6b6478b3d2f094349b5b7869cd4f91bb99e26cf65fa63414f95317c2a",
+  "test/lua/ring_gate/sabotage/compacted-cam-nt-horizontal.patch": "beb4e8256d780cc9ee11e6a10feca7f73f7a79114d68fd038ebe110ca0062c5b",
+  "test/lua/ring_gate/sabotage/continue-pos-zero.patch": "c994016d8a63c012e78bf0126c3d4ffda2a0e83ae2c3f85150aeb7544e6a9f97",
+  "test/lua/ring_gate/sabotage/dest-plus08-vertical.patch": "ab67a42de03e748483d776ac1987612e6a5048a20a7bb64389a14cdc52bf6224",
+  "test/lua/ring_gate/sabotage/dlg-attr-nomask.patch": "9b2581fb6e75fed2e6bc1a7571e4f99a8f1c9d5fe3312df298c1e42ed6009bd3",
+  "test/lua/ring_gate/sabotage/dlg-attr-offset-n32.patch": "53c581916ca3bbe44f1bf2e37d09883676db631b1ddc2eb0a06ada270d8c1df8",
+  "test/lua/ring_gate/sabotage/forced-banked.patch": "1c54e1624279c27dd116e91a16a97e362bda6d330efd22c074cd4b489db280cb",
+  "test/lua/ring_gate/sabotage/instant-text.patch": "64114f721a401ffff9acdbd0579a6285d3050d51fd30240f6ece7aceaf55b643",
+  "test/lua/ring_gate/sabotage/move-scroll-stale.patch": "74795d6b4ea3705496880ff77ed2baeb5b1219778765a5bc39b77262a194b1ef",
+  "test/lua/ring_gate/sabotage/no-walk-h.patch": "71962926489286ae80a6c22ebaf5f613f04acc01012c1c4a64c727cc2ec21c20",
+  "test/lua/ring_gate/sabotage/no-walk-v.patch": "fa3ee12de36590dbba65e01e78bb99a9fd41d10ee49bbea753e012bfcf78cf82",
+  "test/lua/ring_gate/sabotage/pad-mainline-over.patch": "52bcc273d9b97889b49adc213eb2ff80a4ea5115630731220b0f5b787c4dc4f6",
+  "test/lua/ring_gate/sabotage/pad-mainline-under.patch": "06ca275c2c5d4f74e86a36cbc8e5ca579673a865de0eed2122c643bd1073401a",
+  "test/lua/ring_gate/sabotage/pjg-lag-7.patch": "f29486554181d65fb6909c0e793e304aa7ca3cb67edb578670e3ed134dc11ab9",
+  "test/lua/ring_gate/sabotage/pjg-no-col-local.patch": "48237fdc153aa2b159d7431b9da7b03c0d1c52bd1e6a20f4c4bfe7ace19be7bd",
+  "test/lua/ring_gate/sabotage/pjg-no-row-local.patch": "4fc2e5da181f292c15600cd986c297cb10e33c05c4aed22b7201124ce07d8209",
+  "test/lua/ring_gate/sabotage/region-carry-23.patch": "4f27de90475887acdedef8ee90c6a906d3901e7fba97243acb48c554bf0ea765",
+  "test/lua/ring_gate/sabotage/render-four-nts.patch": "50c5b539dd234267062fcd4aa66d8e2132e52ce2cb536adfe97f9564a7e14d66",
+  "test/lua/ring_gate/sabotage/ring-forced-0.patch": "5595b7b1cf6c492ff54177e9cbaddd53c4222975bbe249748cc59f6ea5af8bb0",
+  "test/lua/ring_gate/sabotage/shake-no-nt-flip.patch": "174da674554ba0ed34e42c350e27f9333b2c121cdd635989b0c6c4884d11e385",
+  "test/lua/ring_gate/sabotage/shake-nt-eor2.patch": "e8ef265ac16d5676eba82e8188e2902f9a3b81b40fe7e808701537158591c315",
+  "test/lua/ring_gate/sabotage/strip-len-30-vertical.patch": "cef4f010b75b5ee7a6833d70f40a999c08ff0cae51f8a3dbacdb7e81d988bbe1",
+  "test/lua/ring_gate/sabotage/strip-src-eor1.patch": "315566d96e0f1275e48da7cc49c384545f77ee18d1e262350da6af5cc8bfb316",
+  "test/lua/ring_gate/sabotage/wrap-col-30.patch": "2c347a086af5d9b6d73a03263da3f1bef532cf4df6a9f780553c81a50adc4b50",
+  "test/lua/ring_gate/sabotage/wrap-row-32.patch": "024aa8cb84916eeb6291d259f8a380af61ae37beef85defd28337198aba26bb2",
+  "test/lua/ring_gate/sabotage/wrong-glyph.patch": "30d41ec1d142c1b4e8d5b2797aae8459468a8e364e102ebbc84fdffa2803ec1d",
+  "test/lua/run_sw_manifest.mjs": "46d0cf00736c418197acd1ef931e763eeae29d4d2032a6e040a0a83bfe2a6fd8",
+  "test/lua/run_sw_move_manifest.mjs": "29e00fb196f387ed8386c3e55e3b4bbfa049f942e96cc81636e521c59634a364",
+  "test/lua/sw_bound_sweep.mjs": "c932e1676290965f1348a9894b7eee62827366eb28e5b302d32fa9d105844039",
+  "test/lua/sw_close_scenarios.mjs": "b02a0ebfd5271133b2c4078fbbbf6314312d3ba924224b99d056f0bfd940f039",
+  "test/lua/sw_compact_actors.mjs": "af82950d8541519e79d4675a472a554ea061ded4fd0e25aaa416b92ff8a67605",
+  "test/lua/sw_compact_root.mjs": "a155e3eca12b01555c905d1af6f37385b2e7f8df7b0c88fec48cfd11b5754cdf",
+  "test/lua/sw_manifest_scene.mjs": "57bcfd684886a9f4384202e6c9e563d8c770697bb4463a027b4e2d751e1aa84b",
+  "test/lua/sw_move_policy.mjs": "eb07b2c3b6f2ec822e8c12bb4e2c63914f43f9a234874eb91a6325fff7a544b0",
+  "test/lua/sw_provenance.mjs": "99812edb69a8d56a32c6b1e9943c2bcbed0922eb248a9a1dda6b0488fff86a77",
+  "test/lua/sw_sweep_mutate.mjs": "3564536c38a15c99ac549456bd7c46e57b4d20b24febab811e024a073c687fc3"
+ },
+ "nesasm": {
+  "path": "/usr/local/bin/nesasm",
+  "sha256": "ebc1755d807517e8c8b75a2d372d40c13e7c1a630eea44eeb9d5ca4b574957eb",
+  "bytes": 133416
+ },
+ "host": {
+  "os": "Ubuntu 24.04.5 LTS",
+  "kernel": "7.0.0-38-generic",
+  "arch": "x64",
+  "node": "v22.23.3"
+ },
+ "results": [
+  {
+   "scene": "s1b-MMC1-V-action-resident",
+   "emu": "mesen+jsnes",
+   "counts": {
+    "PASS": 168,
+    "FAIL": 1,
+    "UNCERTIFIED": 11,
+    "N/A": 1
+   },
+   "expect": "pass",
+   "verdictOk": false,
+   "gateFailed": false,
+   "mesenInvocations": 22,
+   "userSavesUntouched": true,
+   "emulatorStamp": {
+    "emulator": "Mesen2 --testRunner",
+    "binary": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+    "binarySha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+    "binaryBytes": 72568,
+    "siblingHostSha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+    "siblingFiles": {
+     "Mesen": {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+      "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+      "bytes": 72568
+     },
+     "Mesen.dll": {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+      "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+      "bytes": 15868928
+     },
+     "MesenCore.so": {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/MesenCore.so",
+      "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+      "bytes": 14452416
+     },
+     "Mesen.runtimeconfig.json": {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.runtimeconfig.json",
+      "sha256": "60a629c0973ab3fa5e5108a26cb84dc25f821ad210013b9514a17091d3ae5719",
+      "bytes": 471
+     },
+     "Mesen.deps.json": {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.deps.json",
+      "sha256": "a8c20d6eedfb681b38e96add647bd9f74c65bc1b7149d09e585dc653ab4dc286",
+      "bytes": 28356
+     }
+    },
+    "runtimeConfig": {
+     "tfm": "net8.0",
+     "framework": {
+      "name": "Microsoft.NETCore.App",
+      "version": "8.0.0"
+     },
+     "configProperties": {
+      "MVVMTOOLKIT_ENABLE_INOTIFYPROPERTYCHANGING_SUPPORT": true,
+      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false,
+      "System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault": false
+     }
+    },
+    "host": {
+     "os": "Ubuntu 24.04.5 LTS",
+     "kernel": "7.0.0-38-generic",
+     "arch": "x64",
+     "node": "v22.23.3"
+    },
+    "loadedFiles": [
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+      "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+      "bytes": 2067968
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+      "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+      "bytes": 1065984
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+      "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+      "bytes": 77824
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+      "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+      "bytes": 122440
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+      "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+      "bytes": 72568
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+      "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+      "bytes": 15868928
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+      "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+      "bytes": 329744
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+      "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+      "bytes": 437808
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+      "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+      "bytes": 140816
+     },
+     {
+      "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+      "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+      "bytes": 1344592
+     },
+     {
+      "path": "/tmp/s1b-home-jthaQ7/.config/Mesen2/MesenCore.so",
+      "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+      "bytes": 14452416
+     },
+     {
+      "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+      "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+      "bytes": 299600
+     },
+     {
+      "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+      "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+      "bytes": 11723264
+     },
+     {
+      "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+      "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+      "bytes": 7067048
+     },
+     {
+      "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+      "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+      "bytes": 317352
+     },
+     {
+      "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+      "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+      "bytes": 14452416
+     }
+    ],
+    "loadedCoreSha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+    "coreLoadedFromSibling": true
+   }
+  }
+ ],
+ "finishedAt": "2026-10-07T16:09:05.639Z",
+ "romSha256": "0e76a8335f6515246d767519b7a6a712272821ef5fb459253381181b00e10fdf",
+ "projectSha256": "31f059a441a01c2d4f8e8e7e55807e971cf1aff0a5f4ef44415ad8a19b12e67e",
+ "plan": {
+  "cell": "MMC1-V",
+  "gameType": "action",
+  "placement": "resident",
+  "n": 255,
+  "specs": [
+   {
+    "name": "walk",
+    "kind": "manifest",
+    "romSha256": "5521f356532d5265154ff8e10d904661224470a7e0b1b4644022f6767c000211",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+1",
+    "kind": "manifest",
+    "romSha256": "e3ba639369f401ce3aa70799e7be46e9d28f9904d012f002cbd0f6d43b7321b0",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+2",
+    "kind": "manifest",
+    "romSha256": "4674e0ace391fb228645770ee14dc2cfd85d1af7b173a0fc032fee5afee7b5ec",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+3",
+    "kind": "manifest",
+    "romSha256": "1186ed7a7d2fe559ba049ad2a0d0c5ddc5598a35e54b8a2031cd0fe3bd8b7c45",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+4",
+    "kind": "manifest",
+    "romSha256": "ab4c05f8a85af60cc5ba042965ef42233a1c4df6bfeb4a29c7e6806d81fd7b9e",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+5",
+    "kind": "manifest",
+    "romSha256": "1f656031d61b6561d897483b9f58a62ac1bcd8cd4449969766b764c24ab158af",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+6",
+    "kind": "manifest",
+    "romSha256": "347c8d7b99159c6d26dd242da9cc9c34badcdd66fff794037c9b21a7da0dc9a3",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "touch+7",
+    "kind": "manifest",
+    "romSha256": "31049ac7a375f41a60473e9c1bf78c8211c32b4455a505f77b5e6c3bc8e0b824",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "say",
+    "kind": "manifest",
+    "romSha256": "8d773e032cd491138dfcc08ecb7e450c4c7ff8b508801dfd28252b43030d6107",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "stand",
+    "kind": "manifest",
+    "romSha256": "6dcb5ae8edc7c46bc6215db387e131a7c975d1ce517fcc8f3772e6295576506c",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "edge",
+    "kind": "manifest",
+    "romSha256": "5521f356532d5265154ff8e10d904661224470a7e0b1b4644022f6767c000211",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "heavy",
+    "kind": "manifest",
+    "romSha256": "786a1afb38b95205f415c4fac4c0714ea752e0c267c0b9acede93f7ec50f9b16",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "warp",
+    "kind": "manifest",
+    "romSha256": "407ec5848299655363ea9808e1b5933cce441c0192ad223018a94e1fd6bf68af",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "chase",
+    "kind": "manifest",
+    "romSha256": "d3fb03ba1626e557624d63fcef0e3a2480be881b26986bf1a53604bcf4e739c7",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "heavy14",
+    "kind": "manifest",
+    "romSha256": "8153360e230d104379ba42bc11859647800df9087d982ddc1843adf073bb0693",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "mv-say",
+    "kind": "move",
+    "romSha256": "362f1af285421ca2dff5c77f5adaefd911f3a99a6c106a986febb9e76c4d18fa",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "mv-lead",
+    "kind": "move",
+    "romSha256": "aa49d456f3b3398cb1df2197d9432e1d9854abd0547393dbde24d7ab25778a69",
+    "invocations": [
+     "calibration",
+     "witness"
+    ]
+   },
+   {
+    "name": "mv-flash",
+    "kind": "move",
+    "romSha256": "dfe9c41915f4bcc21a55e88526c125d2849f9b28ce4322b24f0a0555c1143cef",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "mv-wait",
+    "kind": "move",
+    "romSha256": "ba88d56c7946de59398a56fea39c529873cdd0f995f0b71ddfbdd42b67c304e9",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "seam-walk",
+    "kind": "manifest",
+    "romSha256": "495b84e26452aec7fe670c7b67acbfcfbd4e4f6b298ff9dd1733bcad3b90fc05",
+    "invocations": [
+     "witness"
+    ]
+   },
+   {
+    "name": "seam-move",
+    "kind": "move",
+    "romSha256": "6a9ec9b3217976fef0f2d400b8001c1092735e578168749022e6ee839ff40747",
+    "invocations": [
+     "witness"
+    ]
+   }
+  ],
+  "sha256": "0e76a8335f6515246d767519b7a6a712272821ef5fb459253381181b00e10fdf"
+ },
+ "counts": {
+  "PASS": 168,
+  "FAIL": 1,
+  "UNCERTIFIED": 11,
+  "N/A": 1
+ },
+ "expect": "pass",
+ "verdictOk": false,
+ "gateFailed": false,
+ "gateFailures": 0,
+ "operationalFailures": 0,
+ "retained": {
+  "bodies": {
+   "file": "s1b-MMC1-V-action-resident.json.bodies.json.gz",
+   "sha256": "511caf040d818627cfcf7a0bfc4dc3f33b812c6f076c7bc1eca9e508934c7436",
+   "bytes": 351133
+  },
+  "sweeps": {
+   "file": "s1b-MMC1-V-action-resident.json.sweeps.json.gz",
+   "sha256": "34d8f46f56ec666f235eca3be684684908fb29693a05f5ea653884f5b3cdaf95",
+   "bytes": 124291
+  }
+ },
+ "emulators": {
+  "mesen": {
+   "emulator": "Mesen2 --testRunner",
+   "binary": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "binarySha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+   "binaryBytes": 72568,
+   "siblingHostSha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+   "siblingFiles": {
+    "Mesen": {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    "Mesen.dll": {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    "MesenCore.so": {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    "Mesen.runtimeconfig.json": {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.runtimeconfig.json",
+     "sha256": "60a629c0973ab3fa5e5108a26cb84dc25f821ad210013b9514a17091d3ae5719",
+     "bytes": 471
+    },
+    "Mesen.deps.json": {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.deps.json",
+     "sha256": "a8c20d6eedfb681b38e96add647bd9f74c65bc1b7149d09e585dc653ab4dc286",
+     "bytes": 28356
+    }
+   },
+   "runtimeConfig": {
+    "tfm": "net8.0",
+    "framework": {
+     "name": "Microsoft.NETCore.App",
+     "version": "8.0.0"
+    },
+    "configProperties": {
+     "MVVMTOOLKIT_ENABLE_INOTIFYPROPERTYCHANGING_SUPPORT": true,
+     "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+     "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false,
+     "System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault": false
+    }
+   },
+   "host": {
+    "os": "Ubuntu 24.04.5 LTS",
+    "kernel": "7.0.0-38-generic",
+    "arch": "x64",
+    "node": "v22.23.3"
+   },
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "/tmp/s1b-home-jthaQ7/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    }
+   ],
+   "loadedCoreSha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+   "coreLoadedFromSibling": true
+  },
+  "jsnes": {
+   "emulator": "jsnes (vendored core)",
+   "coreSha256": "5893c187569856b2a6ad6af3dae35089bf413a66ce3fd62816372d929ae55b47",
+   "patchesDoc": "917dfb7cc9d7757bffb3dad55b0986612418845c57ea84637b337dca2dca847d"
+  }
+ },
+ "mesenChain": [
+  {
+   "n": 1,
+   "spec": "walk",
+   "purpose": "witness",
+   "pid": 3888722,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6664,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 2,
+   "spec": "touch+1",
+   "purpose": "witness",
+   "pid": 3890434,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6451,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 3,
+   "spec": "touch+2",
+   "purpose": "witness",
+   "pid": 3890896,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6706,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 4,
+   "spec": "touch+3",
+   "purpose": "witness",
+   "pid": 3891466,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6194,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 5,
+   "spec": "touch+4",
+   "purpose": "witness",
+   "pid": 3891907,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6802,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 6,
+   "spec": "touch+5",
+   "purpose": "witness",
+   "pid": 3892334,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6686,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 7,
+   "spec": "touch+6",
+   "purpose": "witness",
+   "pid": 3892770,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6022,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 8,
+   "spec": "touch+7",
+   "purpose": "witness",
+   "pid": 3893251,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6098,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 9,
+   "spec": "say",
+   "purpose": "witness",
+   "pid": 3893636,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 8584,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 10,
+   "spec": "stand",
+   "purpose": "witness",
+   "pid": 3895324,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 3431,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 11,
+   "spec": "edge",
+   "purpose": "witness",
+   "pid": 3896691,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 9013,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 12,
+   "spec": "heavy",
+   "purpose": "witness",
+   "pid": 3897152,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 6872,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 13,
+   "spec": "warp",
+   "purpose": "witness",
+   "pid": 3898533,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 3898,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 14,
+   "spec": "chase",
+   "purpose": "witness",
+   "pid": 3899298,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5720,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 15,
+   "spec": "heavy14",
+   "purpose": "witness",
+   "pid": 3899968,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5567,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 16,
+   "spec": "mv-say",
+   "purpose": "witness",
+   "pid": 3900584,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5895,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 17,
+   "spec": "mv-lead",
+   "purpose": "calibration",
+   "pid": 3901305,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5661,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 18,
+   "spec": "mv-lead",
+   "purpose": "witness",
+   "pid": 3901485,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5538,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 19,
+   "spec": "mv-flash",
+   "purpose": "witness",
+   "pid": 3902156,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5592,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 20,
+   "spec": "mv-wait",
+   "purpose": "witness",
+   "pid": 3902808,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5346,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 21,
+   "spec": "seam-walk",
+   "purpose": "witness",
+   "pid": 3903340,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 4795,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  },
+  {
+   "n": 22,
+   "spec": "seam-move",
+   "purpose": "witness",
+   "pid": 3903999,
+   "homeSeen": "<isolated-HOME>",
+   "exe": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+   "settingsSha256": "acd1194ee8574f246c27c99d063cb1d94437e19fbd67c2933ea3edcfa4d97bc0",
+   "status": 0,
+   "signal": null,
+   "ms": 5592,
+   "loadedFiles": [
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Base.dll",
+     "sha256": "3ce9912a537029d821c49a0382b40738320398fb732cfaa0cf32e430e52a8613",
+     "bytes": 2067968
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Avalonia.Controls.dll",
+     "sha256": "2d88f5f706e2a15126ea87fd1841ef334cdca109d4cd35d483cd63d09948d3d9",
+     "bytes": 1065984
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Dock.Model.dll",
+     "sha256": "18dcb5e1c7057ffb83d1736cf76c44fbe33cf6d571244c1a1fa22682bb6d09b2",
+     "bytes": 77824
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/HarfBuzzSharp.dll",
+     "sha256": "951fdc1c6db0bad84ae9329297dec0fcd38e1105ee477479ec66b8900e2f3bb5",
+     "bytes": 122440
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen",
+     "sha256": "073efb9df1e27128d9f11e19f448f9d036adab7f9e0e7050b8d0086cb28d42fe",
+     "bytes": 72568
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen.dll",
+     "sha256": "cc830ee5048970fbf876d951bdcde0292e4d338fc76a9d62e5f8aae1ef85bbc9",
+     "bytes": 15868928
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/ReactiveUI.dll",
+     "sha256": "63467aec49d87113fbf0ff88e102646a93646d74546c5dc41432eb6318f40dd8",
+     "bytes": 329744
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/SkiaSharp.dll",
+     "sha256": "17ee1284313749f73a5cf5f309318d831741a8d6d397c998c5fc6485843c28bb",
+     "bytes": 437808
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Splat.dll",
+     "sha256": "95d30538f9dadcfb755764a545b09e8a27f496afe52957d9d525aaab23ae64c6",
+     "bytes": 140816
+    },
+    {
+     "path": "/home/chris/Downloads/Mesen2/bin/linux-x64/Release/System.Reactive.dll",
+     "sha256": "626b01d9a0a19edaf345f2fb1cbf549d4f8cb725c06ea7898133f0bcd65449c3",
+     "bytes": 1344592
+    },
+    {
+     "path": "<isolated-HOME>/.config/Mesen2/MesenCore.so",
+     "sha256": "bf59e551a29a5e6ca46def144bad203999ebfea978ae5acc124117aa0a3cecb5",
+     "bytes": 14452416
+    },
+    {
+     "path": "/usr/lib/dotnet/host/fxr/9.0.20/libhostfxr.so",
+     "sha256": "1f783945f784cdd8422edb9992f5926a8dcf3689c237bb8b8049d4e6f5bb1ab7",
+     "bytes": 299600
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/System.Private.CoreLib.dll",
+     "sha256": "ea97963e8e8df64238695fe22646d00cf6876bf6047d4a9d454288da9cf43937",
+     "bytes": 11723264
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libcoreclr.so",
+     "sha256": "3a3205862c1ed1df2fd62d31f721040e7a1f6e87285aa62e060607e786d3dd01",
+     "bytes": 7067048
+    },
+    {
+     "path": "/usr/lib/dotnet/shared/Microsoft.NETCore.App/8.0.31/libhostpolicy.so",
+     "sha256": "1eb517851c6d859d1adc4890ae4e2c3b83d6530c2a027834d692fbde966d511a",
+     "bytes": 317352
+    }
+   ],
+   "isolated": true
+  }
+ ],
+ "userSavesUntouched": true
+}

@@ -1,0 +1,13 @@
+diff --git a/a/engine/streamworld.asm b/b/engine/streamworld.asm
+index 3c194bc..96bf325 100644
+--- a/a/engine/streamworld.asm
++++ b/b/engine/streamworld.asm
+@@ -2951,7 +2951,7 @@ sw_fcw_blkx_shift:
+   clc
+   adc sw_tmp
+   sta sw_tmp3                   ; camBlockX lo
+-  lda sw_tmp2
++  lda #0
+   adc #0
+   sta sw_tmp4                   ; camBlockX hi
+   lda sw_tmp3

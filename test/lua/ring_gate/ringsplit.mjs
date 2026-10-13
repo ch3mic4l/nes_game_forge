@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeTree, sha256 } from './ringtree.mjs';
+import { makeTree, sha256, readTreeText } from './ringtree.mjs';
 import { ringProject, buildCell } from './ringworld.mjs';
 import { spawnMesen } from './ringnmi.mjs';
 
@@ -185,12 +185,12 @@ export async function buildSplitRing({ cell, gt = 'action', placement = 'residen
   if (!cell.id.startsWith('MMC3')) throw new Error(`row 8 is MMC3-only; ${cell.id} is ${cell.mapper}`);
   if (sabotage && !(sabotage in SPLIT_SABOTAGES)) throw new Error(`unknown row-8 sabotage ${sabotage}: ${Object.keys(SPLIT_SABOTAGES).join(', ')}`);
   const own = !tree;
-  const t = tree ?? makeTree({ ring: true });
+  const t = tree ?? makeTree({ ring: cell.ring });
   const sab = sabotage ? SPLIT_SABOTAGES[sabotage] : null;
   const { project } = ringProject({ cell, gameType: gt, n: 4, talkers: 'none', start: { screen: 0, x: 120, y: 120 }, bulkText: placement === 'banked' ? 3000 : 100 });
-  const banks = fs.readFileSync(path.join(t.root, 'engine/banks.asm'), 'utf8');
+  const banks = readTreeText(t, 'engine/banks.asm');
   const overrides = [{ name: 'banks.asm', text: once(banks, STOCK_PSB, harnessPsb(sab?.psb ?? {}), 'switch_prg_bank (MMC3)') }];
-  if (sab?.file) overrides.push({ name: sab.file, text: sab.edit(fs.readFileSync(path.join(t.root, `engine/${sab.file}`), 'utf8')) });
+  if (sab?.file) overrides.push({ name: sab.file, text: sab.edit(readTreeText(t, `engine/${sab.file}`)) });
   project.code = { overrides, files: [] };
   const stamp = label ?? `s1c-split-${sabotage ? `sab-${sabotage}-` : ''}${cell.id}-${gt}-${placement}`;
   const built = await buildCell({ tree: t, project, cell, gameType: gt, label: stamp, provDir, links, requestedPlacement: placement, sabotage: null });
@@ -199,7 +199,7 @@ export async function buildSplitRing({ cell, gt = 'action', placement = 'residen
     for (const n of [...RAM_NAMES, 'SPL_BOX', 'FONT_R1', 'ST_GAMEPLAY', 'BOX_MT_ROW']) if (!sym.has(n)) throw new Error(`${n} did not resolve out of this build's own constants.asm/config.inc`);
     for (const n of FNS) if (!Number.isFinite(built.fns[n])) throw new Error(`${n} is not a symbol of this build (SPLIT_ENABLED off, or the harness did not assemble)`);
     // the harness bytes live where nothing else does: no equate of this build's constants.asm covers $07E0-$07EF
-    const constants = fs.readFileSync(path.join(t.root, 'engine/constants.asm'), 'utf8');
+    const constants = readTreeText(t, 'engine/constants.asm');
     for (const m of constants.matchAll(/^(\w+)\s*=\s*\$([0-9A-Fa-f]+)\b[^\n]*$/gm)) {
       const a0 = parseInt(m[2], 16);
       const sz = /@size=(\w+)/.exec(m[0]);

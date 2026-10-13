@@ -1,0 +1,12 @@
+diff --git a/a/engine/text.asm b/b/engine/text.asm
+index eb41095..c6429fc 100644
+--- a/a/engine/text.asm
++++ b/b/engine/text.asm
+@@ -477,6 +477,7 @@ text_type_name_done:
+ text_type_name:
+   .endif
+ text_type_glyph:
++  lda #$A0
+   jsr text_put_char
+   jsr msg_advance
+   inc <msg_col
