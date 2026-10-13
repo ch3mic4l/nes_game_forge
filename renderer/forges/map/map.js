@@ -34,6 +34,7 @@ import {
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText, projectUsesEffectiveTitle } from '../../../shared/font.js';
 import {
+  DOOR_LANDING_DEFAULT,
   RPG_LIMITS,
   isMonsterActor,
   mapEncounterFormation,
@@ -1381,7 +1382,7 @@ export function mount(container, app) {
           type: 'number',
           min: 0,
           max: 240,
-          value: entity.props?.toX ?? 112,
+          value: entity.props?.toX ?? DOOR_LANDING_DEFAULT,
           title: 'Landing x',
           onchange: (event) => setProp('toX', Math.max(0, Math.min(240, Number(event.target.value))))
         }),
@@ -1389,7 +1390,7 @@ export function mount(container, app) {
           type: 'number',
           min: 0,
           max: 224,
-          value: entity.props?.toY ?? 112,
+          value: entity.props?.toY ?? DOOR_LANDING_DEFAULT,
           title: 'Landing y',
           onchange: (event) => setProp('toY', Math.max(0, Math.min(224, Number(event.target.value))))
         })

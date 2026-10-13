@@ -160,11 +160,13 @@ export function createStreamedProject({
     project.sprites.actors.push({ name: 'Mover', behavior: 'npc', hp: 1, damage: 0 });
     const screen = streamedMap.screens[moveScreen];
     screen.entities = screen.entities ?? [];
+    // Historical evidence: pinned before DOOR_LANDING_DEFAULT (the shipping default is 112), so the inert
+    // NPC's unused landing bytes are written explicitly as 0 to stay byte-identical.
     screen.entities.push({
       actorId,
       x: moveX,
       y: moveY,
-      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: moveCommands }] } }
+      props: { toX: 0, toY: 0, event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: moveCommands }] } }
     });
   }
   if (mixed) {
@@ -185,11 +187,12 @@ export function createStreamedProject({
     const screen = streamedMap.screens[i % streamedMap.screens.length];
     screen.entities = screen.entities ?? [];
     const commands = withSave ? [{ op: 'say', text }, { op: 'save' }] : [{ op: 'say', text }];
+    // Historical evidence: see the Mover above -- explicit 0 landing bytes keep the pinned ROMs.
     screen.entities.push({
       actorId,
       x: 16 + (i % 8) * 24,
       y: 16 + (Math.floor(i / 8) % 8) * 24,
-      props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
+      props: { toX: 0, toY: 0, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
     });
   });
   return project;

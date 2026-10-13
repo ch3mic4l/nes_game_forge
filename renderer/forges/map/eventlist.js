@@ -19,7 +19,8 @@ import {
   flatScreens,
   canTalk,
   BEHAVIORS,
-  RPG_LIMITS
+  RPG_LIMITS,
+  DOOR_LANDING_DEFAULT
 } from '../../../shared/project.js';
 import { describeCommand, describeCondition } from './events.js';
 
@@ -73,7 +74,7 @@ export function buildEventIndex(project, context) {
 
       if (actor?.behavior === 'door') {
         const target = screens[props.toScreen ?? 0];
-        detail.push(`→ ${target?.label ?? `screen ${props.toScreen ?? 0}`} at ${props.toX ?? 0},${props.toY ?? 0}`);
+        detail.push(`→ ${target?.label ?? `screen ${props.toScreen ?? 0}`} at ${props.toX ?? DOOR_LANDING_DEFAULT},${props.toY ?? DOOR_LANDING_DEFAULT}`);
       }
       if (props.event) {
         props.event.pages.forEach((page, position) => {

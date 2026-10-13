@@ -213,7 +213,10 @@ export function mount(container, app) {
     setBusy(true);
     app.setStatus('Building…');
 
-    // The pipeline reads the project from disk, so save first.
+    // Save first so a failed save stops the build. buildProject is handed the in-memory project, not
+    // the file: what keeps a door's landing in the ROM and in the saved file in agreement is the
+    // generators' defaults being normalizeEntity's (DOOR_LANDING_DEFAULT), not this save. (That is the
+    // only field this promises; buildProject does not otherwise normalize.)
     if (store.dirty) {
       write('Saving project…');
       if (!(await app.saveProject())) {

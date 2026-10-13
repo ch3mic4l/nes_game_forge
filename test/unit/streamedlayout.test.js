@@ -165,7 +165,7 @@ test('a 3x2 map: every screen decodes to its own terrain, entities, bindings and
   }
   assert.deepEqual(d.screen(0, 1, 1).entities, [
     { actor: 1, x: 10, y: 20, target: 5, toX: 3, toY: 4, event: 42, trigger: 1, hideSwitch: 6 },
-    { actor: 9, x: 200, y: 100, target: 0, toX: 0, toY: 0, event: 255, trigger: 2, hideSwitch: 255 }
+    { actor: 9, x: 200, y: 100, target: 0, toX: 112, toY: 112, event: 255, trigger: 2, hideSwitch: 255 }
   ]);
   assert.deepEqual(d.screen(0, 2, 1).entities.map((e) => e.actor), [4]);
   assert.deepEqual(d.screen(0, 0, 0).entities, []);

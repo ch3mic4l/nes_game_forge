@@ -351,3 +351,13 @@ and deviations from the prototype patches (`test/lua/ring_gate/02-ring-engine.pa
   PPU write trace (no `$28xx`/`$2Cxx` write) the judge cannot see because it reads through the mirror. The sabotages and the file that catches each
   are in `handoff-next/s2-c2/sabotage.log` of the round-1 report; C3 rebaselines the ring gate onto C2 (section 2.4, "Two ring trees") and re-runs S1's cells,
 so the vertical rows certify the production vertical ring at C2.
+
+## 8. The S2 certificate is stale for the door landing-default fix (2026-10-12)
+
+The S2 certificate (section 3, reviewed at `6322c22`) is intact but **stale for the commit that gives a placed door's landing coordinates a default**
+(`DOOR_LANDING_DEFAULT` in `shared/project.js`, read by `generate.js` and `streamed.js`; those files are in the ring harness fingerprint). On this tree
+`ringprovindex.mjs --verify` still passes on the archived index, but `run_sw_ring_gate.sh` reports GATE FAIL on fingerprints only: 1803 stale-fingerprint
+stamps, 0 FAIL or UNMEASURED cells, 0 unexpected jobs, 0 audit problems. By Chris's ruling of 2026-10-12 the stamps are not restamped and the fingerprint is
+not weakened; there is **no current GATE PASS** for this tree, and S3's final full matrix recertifies. The no-flag baselines (`s1b-cd7a9f8.json`,
+`s1c-cd7a9f8.json`) and the pinned identity ROM hashes keep their historical bytes: the test builders that model inert NPCs write `toX: 0, toY: 0`
+explicitly, so only a placement that leaves the fields out takes the new default.

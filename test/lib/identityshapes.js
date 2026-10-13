@@ -37,11 +37,14 @@ function addNpc(project, screen, name, commands) {
   const actorId = project.sprites.actors.length;
   project.sprites.actors.push({ name, behavior: 'npc', hp: 1, damage: 0 });
   screen.entities = screen.entities ?? [];
+  // Historical evidence: this shape's ROMs were pinned before DOOR_LANDING_DEFAULT (the shipping default is
+  // 112), so the inert NPC's unused landing bytes are written explicitly as 0 to stay byte-identical.
+  const landing = { toX: 0, toY: 0 };
   screen.entities.push({
     actorId,
     x: 96,
     y: 96,
-    props: commands ? { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } : {}
+    props: commands ? { ...landing, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } : landing
   });
 }
 

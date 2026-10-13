@@ -116,7 +116,8 @@ import {
   projectWithoutNameToken,
   projectNeedsHeroDefault,
   projectNeedsNameSeed,
-  streamedBoardProblems
+  streamedBoardProblems,
+  DOOR_LANDING_DEFAULT
 } from '../../shared/project.js';
 import {
   streamRegionsPerRow,
@@ -4800,8 +4801,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
           entity.x,
           entity.y,
           target,
-          entity.props?.toX ?? 0,
-          entity.props?.toY ?? 0,
+          entity.props?.toX ?? DOOR_LANDING_DEFAULT,
+          entity.props?.toY ?? DOOR_LANDING_DEFAULT,
           text.eventFor.get(entity) ?? NO_EVENT,
           // Which trigger this placement gets is the actor's behaviour question
           // as well as the author's, and `availableTriggers` is the single

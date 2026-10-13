@@ -1,8 +1,8 @@
 // The harness-transfer certificate (test/lua/sw_harness_transfer.mjs, test/lua/sw_transfer_lib.mjs, test/lua/sw_transfer_worker.mjs).
 // Two kinds of test live here, kept apart (phase 3b S2 C1, review F1 and Chris's 2026-10-11 ruling):
 //   CURRENT EVIDENCE   what test/fixtures/harness-transfer/ holds now and what the fresh curve needs. The fresh curve was measured by the live harness, so the live
-//                      directory holds NO certificate and the curve is accepted through the CURRENT identity certificate, test/fixtures/identity-cert/s2c2.json (C2's; the
-//                      C1 certificate s2-c1-metadata.json stays checked in as a historical one that no longer authorizes the live sources); a stale or forged artifact
+//                      directory holds NO certificate and the curve is accepted through the CURRENT identity certificate, test/fixtures/identity-cert/s2c3-door.json (the door
+//                      landing-default fix's; the C1 and C2 certificates stay checked in as historical ones that no longer authorize the live sources); a stale or forged artifact
 //                      presented as active evidence is refused.
 //   HISTORICAL CONTROLS the validator itself, exercised against the retired certificate, its archive and the old curve bytes (test/fixtures/harness-transfer/retired/):
 //                      the untouched certificate validates with zero problems under a historical new-side source context, and every rejecting control mutates it
@@ -97,18 +97,22 @@ test('current evidence: the live directory holds no harness-transfer certificate
   assert.notEqual(nowCurve.provenance.harness, CERT.oldHarness, 'the fresh curve is not the one the retired certificate recorded');
 });
 
-test('current evidence: the fresh curve is accepted through the C2 identity certificate, not a transfer; removing it, or moving the harness, refuses', () => {
+test('current evidence: the fresh curve is accepted through the door-landing identity certificate, not a transfer; removing it, or moving the harness, refuses', () => {
   const transfers = liveTransfers(nowCtx, ROOT);
   const verdicts = checkCertificates(path.join(ROOT, CERT_DIR_REL), { ...nowCtx, transfers });
-  const meta = verdicts.find((v) => v.file === 's2c2.json');
-  assert.ok(meta, 'the C2 identity certificate is checked in');
+  const meta = verdicts.find((v) => v.file === 's2c3-door.json');
+  assert.ok(meta, 'the door-landing identity certificate is checked in');
   assert.deepEqual(meta.problems, []);
+  // C2's certificate certified the generator C2 committed; the door-landing default changed the generator, so it is history now and may only fail on that one binding
+  const c2 = verdicts.find((v) => v.file === 's2c2.json');
+  assert.ok(c2, 'the C2 identity certificate stays checked in as history');
+  assert.deepEqual(c2.problems, ["the certificate's current generator fingerprint is not the live generator"]);
   // C1's metadata certificate certified the engine C1 committed; C2 changed the engine, so it is history now and may only fail on exactly those two bindings
   const c1 = verdicts.find((v) => v.file === 's2-c1-metadata.json');
   assert.ok(c1, 'the C1 metadata certificate stays checked in as history');
   assert.deepEqual(c1.problems, ["the certificate's current engine fingerprint is not the live engine", "the certificate's current generator fingerprint is not the live generator"]);
   assert.equal(transfers.length, 0);
-  assert.equal(curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts, transfers }).via, 'certificate s2c2.json');
+  assert.equal(curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts, transfers }).via, 'certificate s2c3-door.json');
   // the generator was edited after the sweep (the margin edit): the sweep's records reach it only through that certificate, so without it the curve is refused
   assert.notEqual(liveNow.generator, nowCurve.provenance.generator, 'precondition: the live generator is not the recorded one');
   const without = curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts: verdicts.filter((v) => v.file !== meta.file), transfers });

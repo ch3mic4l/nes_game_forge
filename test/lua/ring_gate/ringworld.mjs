@@ -52,9 +52,10 @@ export function ringProject({ cell, gameType = 'action', n = 4, talkers = 'enter
       if (talkers === 'landing' && s !== (start.screen ?? 0)) return;
       const actorId = project.sprites.actors.length;
       project.sprites.actors.push({ name: `Talker ${s}`, behavior: 'npc', hp: 1, damage: 0 });
+      // Historical evidence: pinned before DOOR_LANDING_DEFAULT (the shipping default is 112), so the inert NPC's unused landing bytes are written explicitly as 0.
       screen.entities.push({
         actorId, x: 200, y: 40,
-        props: { trigger: 'enter', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: `RING SCREEN ${s}` }] }] } }
+        props: { toX: 0, toY: 0, trigger: 'enter', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: `RING SCREEN ${s}` }] }] } }
       });
     });
   }
@@ -65,7 +66,8 @@ export function ringProject({ cell, gameType = 'action', n = 4, talkers = 'enter
     project.sprites.actors.push({ name: 'Bulk', behavior: 'npc', hp: 1, damage: 0 });
     const commands = [];
     for (let i = 0; i * 100 < bulkText; i++) commands.push({ op: 'say', text: `BULK ${i} `.padEnd(100, String.fromCharCode(65 + (i % 26))) });
-    map.screens[map.screens.length - 1].entities.push({ actorId, x: 232, y: 216, props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } });
+    // (the same explicit 0 landing bytes as the Talkers above)
+    map.screens[map.screens.length - 1].entities.push({ actorId, x: 232, y: 216, props: { toX: 0, toY: 0, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } });
   }
   project.project.startMap = 0;
   project.project.startScreen = start.screen ?? 0;

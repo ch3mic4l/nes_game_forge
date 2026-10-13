@@ -27,18 +27,20 @@ export function buildCloseDeadlineProject({ gameType = 'rpg', gridH = 2, talkerS
   p.sprites.actors.push({ name: 'Flasher', behavior: 'npc', hp: 1, damage: 0 });
   const screen = streamed.screens[talkerScreen];
   screen.entities = screen.entities ?? [];
+  // Historical evidence: pinned before DOOR_LANDING_DEFAULT (the shipping default is 112), so both inert
+  // NPCs' unused landing bytes are written explicitly as 0 to stay byte-identical.
   screen.entities.push({
     actorId: talker,
     x: TALKER_X,
     y: TALKER_Y,
-    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hello there, traveler.' }] }] } }
+    props: { toX: 0, toY: 0, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hello there, traveler.' }] }] } }
   });
   // far from the talker, never reached: it exists so the Flash command is in the project
   screen.entities.push({
     actorId: flasher,
     x: 40,
     y: 40,
-    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }] }] } }
+    props: { toX: 0, toY: 0, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }] }] } }
   });
   const { mapBase } = flattenScreens(p);
   p.project.startScreen = mapBase[1] + talkerScreen;

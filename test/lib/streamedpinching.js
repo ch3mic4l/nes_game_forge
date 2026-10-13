@@ -117,11 +117,13 @@ export function buildPinching(variant = 'nosave', { twin = false } = {}) {
     p.sprites.actors.push({ name: 'Observer', behavior: 'npc', hp: 1, damage: 0 });
     screen.entities = screen.entities ?? [];
     slot = screen.entities.length;
+    // Historical evidence: pinned before DOOR_LANDING_DEFAULT (the shipping default is 112), so the inert
+    // NPC's unused landing bytes are written explicitly as 0 to stay byte-identical.
     screen.entities.push({
       actorId,
       x: OBSERVER_X,
       y: OBSERVER_Y,
-      props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: observerCommands(variant) }] } }
+      props: { toX: 0, toY: 0, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: observerCommands(variant) }] } }
     });
   }
   return { project: p, slot };

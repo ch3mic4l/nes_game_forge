@@ -128,11 +128,13 @@ export function placeCommittedDialogue(project, { linesPerEntity = 1 } = {}) {
     project.sprites.actors.push({ name: `Talker${actorId}`, behavior: 'npc', hp: 1, damage: 0 });
     screen.entities = screen.entities ?? [];
     const commands = chunk.map((text) => ({ op: 'say', text }));
+    // Historical evidence: pinned before DOOR_LANDING_DEFAULT (the shipping default is 112), so the inert
+    // NPC's unused landing bytes are written explicitly as 0 to stay byte-identical.
     screen.entities.push({
       actorId,
       x: 32,
       y: 32,
-      props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
+      props: { toX: 0, toY: 0, trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
     });
     const page = screen.entities[screen.entities.length - 1].props.event.pages[0];
     sayCommands.push(...page.commands);

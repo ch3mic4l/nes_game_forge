@@ -7,7 +7,7 @@
 // behind that same refusal); pinned by test/unit/streamedlayout.test.js against the independent
 // test/lib/streamdecoder.js.
 
-import { LIMITS } from '../../shared/project.js';
+import { LIMITS, DOOR_LANDING_DEFAULT } from '../../shared/project.js';
 import {
   STREAM_TERRAIN_BYTES,
   STREAM_ENTITY_FIELDS,
@@ -78,8 +78,8 @@ export function emitStreamedScreenRecord(screen, map, total, entityFields, actor
       x: entity.x,
       y: entity.y,
       target: f.target,
-      toX: entity.props?.toX ?? 0,
-      toY: entity.props?.toY ?? 0,
+      toX: entity.props?.toX ?? DOOR_LANDING_DEFAULT,
+      toY: entity.props?.toY ?? DOOR_LANDING_DEFAULT,
       event: f.event,
       trigger: f.trigger,
       hideSwitch: entity.props?.hideSwitch ?? 0xff

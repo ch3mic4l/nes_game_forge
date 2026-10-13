@@ -247,6 +247,12 @@ export function storageIndex(frame, row, col) {
 // the project-wide screen count both derive from it, so they cannot drift apart.
 const SCREEN_CEILING = 255;
 
+// Where a door lands the player on its destination screen when the author never set a landing
+// point: screen centre. The one writer -- normalizeEntity, both entity-record generators and the
+// Map Forge's door inspector and event list all read this, so a door placed this session and the
+// same door after save/reopen cannot disagree.
+export const DOOR_LANDING_DEFAULT = 112;
+
 export const LIMITS = {
   tilesPerTable: 256,
   metatiles: 64,
@@ -5169,8 +5175,8 @@ function normalizeEntity(raw, itemCtx = EMPTY_ITEM_CTX) {
       // compiled by nothing; `entityLabel` is what reads it.
       name: authorName(props.name),
       toScreen: clamp(props.toScreen, 0, 255, 0),
-      toX: clamp(props.toX, 0, 240, 112),
-      toY: clamp(props.toY, 0, 224, 112),
+      toX: clamp(props.toX, 0, 240, DOOR_LANDING_DEFAULT),
+      toY: clamp(props.toY, 0, 224, DOOR_LANDING_DEFAULT),
       dialogue,
       event,
       trigger,
