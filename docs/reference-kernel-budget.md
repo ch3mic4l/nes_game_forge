@@ -823,5 +823,16 @@ vertical (the ring build against the same project with `STREAM_RING` forced to 0
 | MMC1 / MMC3 / UNROM 512 | action | 2676 -> 2673 | 1755 / 1734 / 1563 |
 | MMC1 / MMC3 / UNROM 512 | rpg | 1445 -> 1442 | 1431 / 1242 / 1236 |
 
+**Phase 3b slice S3, commit C1 — the horizontal ring (kernel-hi +0, kernel-lo +3 beyond the vertical ring).** A horizontal ring (`projectStreamRing === 2`) is
+charged the shared ring allowance above plus `STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE` (0, a measured zero: the row-strip immediates keep their size) and
+`STREAMWORLD_RING_H_KERNEL_ALLOWANCE` (3, in `kernelCodeBytes`: `engine/player.asm`'s `beq cross_none` becomes `bne ring_far1` / `jmp cross_none`).
+Such a build cannot assemble with `STREAM_RING` forced to 0, so `test/unit/kernelbytes.test.js` equality-asserts two measurements: the engine forks against
+the same project with the ring forced to 0 and the far branch forced on (kernel-hi 3, kernel-lo 0), and the far branch alone on a non-streamed horizontal
+camera build (kernel-lo 3, kernel-hi 0). Free after C1 on MMC1 / MMC3 / UNROM 512 horizontal: action kernel-hi 2673, kernel-lo 1752 / 1731 / 1560; rpg
+kernel-hi 1442, kernel-lo 1428 / 1239 / 1233 (RPG kernel-hi is the tight lane).
+The same test also runs the absolute `assertCovers` check on the shipped horizontal ring on each of those six cells (actual / reserved kernel-lo code bytes: MMC1 action
+5999 / 6021, rpg 6323 / 6345; MMC3 action 6020 / 6042, rpg 6512 / 6534; UNROM 512 action 6188 / 6210, rpg 6512 / 6534 -- a 22-byte margin everywhere), which the delta
+assertions cannot see.
+
 The figures are those of the C2 worktree (the `S3b` tree plus the dlgwr removal) for the shapes `createStreamedProject` builds; the flat figure
 across the three boards and two game types is a measured result, not an assumption, so no `*_BY_MAPPER` split exists.

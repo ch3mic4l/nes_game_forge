@@ -1678,10 +1678,20 @@ sw_ssr_store:
   inc sw_probe_col_screen
 sw_ssr_noadv:
   lda ss_i
+  .if STREAM_RING
+sw_ring_row_cmp:
+  cmp #SW_RING_ROW_LEN
+  .else
   cmp #32
+  .endif
   bne sw_ssr_loop
   jsr sw_locate_current
+  .if STREAM_RING
+sw_ring_row_len:
+  lda #SW_RING_ROW_LEN
+  .else
   lda #32
+  .endif
   sta st_len
   lda #0
   sta st_cur
@@ -1730,7 +1740,12 @@ sw_ring_wrap_col:
   jmp sw_ns_wrapdone
 sw_ns_wrap32:
   lda st_vary
+  .if STREAM_RING
+sw_ring_wrap_row:
+  cmp #SW_RING_ROW_LEN
+  .else
   cmp #32
+  .endif
   bne sw_ns_wrapdone
   lda #0
   sta st_vary

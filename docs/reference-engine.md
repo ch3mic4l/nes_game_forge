@@ -860,6 +860,30 @@ full-redraw path), `streamringdialogue.test.js` (both live indices, split close)
 `streamringidentity.test.js`, and the named sabotages of `test/lua/run_ring_sabotage.mjs`. The scenes, interpreter and judge are the certified S1
 prototype's (`test/lua/ring_gate/`); C3 re-certifies the production code against S1's cells.
 
+### The horizontal ring (phase 3b slice S3, commit C1)
+
+A streamed board with **horizontal mirroring** has live nametables `$2000` and `$2800` (indices {0,2}) and is a 16 x 30-block **ring**: `streamRingMode`
+returns 2, `projectStreamRing` passes it through, and it becomes `STREAM_RING = 2`. The Y axis scrolls and X is dead, so the cached `cam_nt` is the
+same uncompacted parity index (`n = 2*(screenRow&1) + (screenCol&1)` takes {0,2}) and `engine/streamdialog.asm` is unchanged. The `STREAM_RING` forks of
+the vertical ring above apply (the column fork and the render-window step), plus three more, each an indented `.if STREAM_RING` with the torus line in
+the `.else`:
+
+| Fork | Mode 2 value | Mode 0 / 1 value | Labels (immediate pinned from the ROM) |
+| --- | --- | --- | --- |
+| row strip builder compare | `SW_RING_ROW_LEN` = 16 (one screen) | 32 | `sw_ring_row_cmp` |
+| row strip `st_len` load | `SW_RING_ROW_LEN` | 32 | `sw_ring_row_len` |
+| row strip wrap of `st_vary` | `SW_RING_ROW_LEN` | 32 | `sw_ring_wrap_row` |
+
+`SW_RING_ROW_LEN` is 32 on mode 1 so a vertical ring assembles the torus bytes at these sites. `SW_RW_NT_STEP` is 2 and `SW_RW_NT_END` 4 on mode 2. The
+row strip reads one screen (one `sw_goto`, one restore); nothing is ever addressed to `$24xx`/`$2Cxx`. The dead-axis rules: a row strip never arms
+on `gridH == 1` and a column strip never on `gridW == 1`, and the camera never moves X. `engine/player.asm`'s `cross_left_cut` tail needs a far branch
+(`bne ring_far1` / `jmp cross_none`) under `.if STREAM_RING` inside `.if !CAMERA_SLIDE_H`, because `cross_none` is out of a plain `beq`'s range on a
+horizontal-camera ring. The close frame is one five-packet structure with `vram_len` 84 (the vertical ring's is split across the seam, 87).
+`validateProject` still refuses every two-nametable streamed board, so this too is reachable only through `test/lib/ringbypass.js`. Tests:
+`streamringh.test.js` (selection, refusal, assembly on 3 boards x 2 game types, operand readback, allowance), `streamringhstrip.test.js`,
+`streamringhoracle.test.js`, `streamringhredraw.test.js`, `streamringhdialogue.test.js`, `streamringhclose.test.js`, `streamringhfar.test.js` (the far branch's condition, on an ordinary screen of a mixed project), and the `h-*` sabotages of
+`test/lua/run_ring_sabotage.mjs`. Design record: `docs/design-streamed-worlds-phase3b.md`, section 9.
+
 ### Rules moved from CLAUDE.md, The engine
 
 Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.

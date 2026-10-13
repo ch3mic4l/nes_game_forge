@@ -196,7 +196,9 @@ import {
   TALKER_KERNEL_HI_ALLOWANCE,
   TALKER_CROSS_CALLS_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_RING_KERNEL_HI_ALLOWANCE,
-  STREAMWORLD_RING_KERNEL_ALLOWANCE
+  STREAMWORLD_RING_KERNEL_ALLOWANCE,
+  STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_RING_H_KERNEL_ALLOWANCE
 } from '../../main/build/streamplacement.js';
 import { makeBypassTree, loadBypassTree, buildThrough } from '../lib/ringbypass.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
@@ -5460,6 +5462,72 @@ test(
           STREAMWORLD_RING_KERNEL_ALLOWANCE,
           `${mapper.name} ${gameType}: real kernel-lo cost of the ring fork != STREAMWORLD_RING_KERNEL_ALLOWANCE (${STREAMWORLD_RING_KERNEL_ALLOWANCE})`
         );
+      }
+    }
+  }
+);
+
+// Phase 3b S3 (C1): STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE / STREAMWORLD_RING_H_KERNEL_ALLOWANCE are what the HORIZONTAL ring (STREAM_RING = 2) costs on top of
+// the shared fork the S2 test above measures, charged only to a build whose STREAM_RING is 2. A horizontal ring build with the generated STREAM_RING forced to 0
+// does not assemble at all (engine/player.asm's cross_left_cut tail needs the far branch, which only the STREAM_RING arm carries), so the cost is measured in two
+// halves, each with everything else identical:
+//   * the engine forks: the ring build against the SAME horizontal project with STREAM_RING forced to 0 AND the far-branch arm forced on -- the row strip's
+//     immediates (same size) and the render-index step: kernel-hi = the shared STREAMWORLD_RING_KERNEL_HI_ALLOWANCE + STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE, kernel-lo 0;
+//   * the far branch: a NON-streamed horizontal-mirroring camera build of the same board and game type (the plain `beq` assembles there), with the far-branch arm
+//     forced on against as shipped: kernel-lo = STREAMWORLD_RING_H_KERNEL_ALLOWANCE, kernel-hi 0.
+// Measured on every board a horizontal ring can run on (MMC1, MMC3, UNROM 512 non-four-screen) x both game types.
+test(
+  'phase 3b S3: STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE and STREAMWORLD_RING_H_KERNEL_ALLOWANCE equal the real kernel cost of the horizontal ring on MMC1, MMC3 and UNROM 512 horizontal, both game types',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const FAR_ON = { file: 'engine/player.asm', from: '  .if STREAM_RING\n  bne ring_far1', to: '  .if 1\n  bne ring_far1' };
+    const shippedTree = makeBypassTree({ sabotage: null });
+    const flatTree = makeBypassTree({ sabotage: null, edits: [{ file: 'main/build/generate.js', from: '`STREAM_RING = ${ringMode}`', to: '`STREAM_RING = 0`' }, FAR_ON] });
+    const farOnTree = makeBypassTree({ sabotage: null, edits: [FAR_ON] });
+    t.after(() => {
+      shippedTree.dispose();
+      flatTree.dispose();
+      farOnTree.dispose();
+    });
+    const [shipped, flat, farOn] = await Promise.all([loadBypassTree(shippedTree), loadBypassTree(flatTree), loadBypassTree(farOnTree)]);
+    const usedOf = async (loaded, project, mapper) => {
+      const built = await buildThrough(loaded, project);
+      t.after(() => fsp.rm(built.dir, { recursive: true, force: true }));
+      const { kernelHiBank, kernelLoBank } = prgLayout(mapper);
+      const row = (bank) => {
+        const line = built.log.find((l) => new RegExp(`^BANK\\s+${bank}\\s`).test(l));
+        assert.ok(line, `${mapper.name}: no usage row for bank ${bank}`);
+        const [, used, free] = line.match(/(\d+)\/\s*(\d+)\s*$/);
+        return { used: Number(used), free: Number(free) };
+      };
+      const hi = row(kernelHiBank);
+      const lo = row(kernelLoBank);
+      // measureCodeBytes' own derivation: the kernel-lo bank's usage minus everything assembled before `reset` (the lookup tables).
+      const resetMatch = (await fsp.readFile(built.symbolPath, 'utf8')).match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m);
+      assert.ok(resetMatch, `${mapper.name}: reset should be a named symbol in game.fns`);
+      return { hi, lo, codeBytes: lo.used - (parseInt(resetMatch[1], 16) - 0xc000) };
+    };
+    for (const id of [1, 4, 30]) {
+      const mapper = resolveMapper(id);
+      for (const gameType of ['action', 'rpg']) {
+        const project = createStreamedProject({ gameType, mapper: id, mirroring: 'horizontal', gridW: 1, gridH: 4, camera: true });
+        const ring = await usedOf(shipped, project, mapper);
+        // The absolute check (docs/reference-kernel-budget.md: a new allowance needs one on each game type and board it is charged to): the shipped
+        // horizontal ring's real kernel code against what kernelCodeBytes reserves for it, with the standard KERNEL_SLACK band.
+        console.log(`${mapper.name} ${gameType} horizontal ring: kernel code ${ring.codeBytes} of ${shipped.generate.kernelCodeBytes(project, mapper)} reserved`);
+        assertCovers({ mapper, codeBytes: ring.codeBytes }, shipped.generate.kernelCodeBytes(project, mapper), `a horizontal ring (${gameType})`);
+        const forced = await usedOf(flat, project, mapper);
+        const plain = createStreamedProject({ gameType, mapper: id, mirroring: 'horizontal', gridW: 1, gridH: 4, camera: true });
+        for (const map of plain.maps) map.streamed = false;
+        const nearBranch = await usedOf(shipped, plain, mapper);
+        const farBranch = await usedOf(farOn, plain, mapper);
+        console.log(
+          `${mapper.name} ${gameType} horizontal ring: forks kernel-hi ${ring.hi.used - forced.hi.used} kernel-lo ${ring.lo.used - forced.lo.used}; far branch kernel-lo ${farBranch.lo.used - nearBranch.lo.used} kernel-hi ${farBranch.hi.used - nearBranch.hi.used}; free after: kernel-hi ${ring.hi.free}, kernel-lo ${ring.lo.free}`
+        );
+        assert.equal(ring.hi.used - forced.hi.used, STREAMWORLD_RING_KERNEL_HI_ALLOWANCE + STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE, `${mapper.name} ${gameType}: kernel-hi cost of the horizontal engine forks`);
+        assert.equal(ring.lo.used - forced.lo.used, STREAMWORLD_RING_KERNEL_ALLOWANCE, `${mapper.name} ${gameType}: kernel-lo cost of the horizontal engine forks`);
+        assert.equal(farBranch.lo.used - nearBranch.lo.used, STREAMWORLD_RING_H_KERNEL_ALLOWANCE, `${mapper.name} ${gameType}: kernel-lo cost of the far branch`);
+        assert.equal(farBranch.hi.used - nearBranch.hi.used, 0, `${mapper.name} ${gameType}: the far branch costs no kernel-hi`);
       }
     }
   }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Phase 3b S2 (C2) sabotage runner. For each named sabotage of test/lib/ringbypass.js (RING_SABOTAGES) it runs the ring test files with
+// Phase 3b S2 (C2) sabotage runner; S3 (C1) adds the horizontal ring's: a sabotage marked `side: 'h'` (test/lib/ringbypass.js) runs the horizontal files (FILES_H),
+// the others the vertical ones (FILES), and the unsabotaged control runs all of them. For each named sabotage of test/lib/ringbypass.js (RING_SABOTAGES) it runs the ring test files with
 // FORGE_RING_SABOTAGE=<name> -- every makeBypassTree() in those processes applies the edits to its mkdtemp COPY, never to the real tree -- and
 // records which tests failed. A sabotage that fails no test is a hole: exit 1. A sabotaged run is on the minimal matrix (MMC3 vertical, action) so a
 // sabotage costs about a minute; the unsabotaged control row clears FORGE_RING_SABOTAGE, so it runs the FULL matrix (every test of the seven files) and must pass.
@@ -17,6 +18,7 @@ const FILES = ['streamring', 'streamringidentity', 'streamringstrip', 'streamrin
 const args = process.argv.slice(2);
 const logFile = args.find((a) => a.startsWith('--log='))?.slice(6);
 const names = args.filter((a) => !a.startsWith('--'));
+const FILES_H = ['streamringh', 'streamringhstrip', 'streamringhoracle', 'streamringhdialogue', 'streamringhclose', 'streamringhredraw', 'streamringhfar'].map((f) => `test/unit/${f}.test.js`);
 const TRACE_SABOTAGES = { 'trace-attach-once': { note: 'the PPU write trace stays on the first PPU: a post-Continue alias write goes unseen' } };
 const ALL_SABOTAGES = { ...RING_SABOTAGES, ...TRACE_SABOTAGES };
 const run = names.length ? names : Object.keys(ALL_SABOTAGES);
@@ -28,7 +30,8 @@ const runOne = (name) => {
   const env = { ...process.env };
   delete env.FORGE_RING_SABOTAGE;
   delete env.FORGE_RING_TRACE_SABOTAGE;
-  let files = FILES;
+  let files = name && ALL_SABOTAGES[name].side === 'h' ? FILES_H : FILES;
+  if (!name) files = [...FILES, ...FILES_H];
   const flags = [];
   if (name in TRACE_SABOTAGES) {
     env.FORGE_RING_TRACE_SABOTAGE = 'attach-once';
@@ -42,9 +45,9 @@ const runOne = (name) => {
   return { status: r.status, pass, fail, failed };
 };
 
-say(`ring sabotage run ${new Date().toISOString()}  files: ${FILES.length}  matrix: MMC3 vertical, action (FORGE_RING_SABOTAGE set)`);
+say(`ring sabotage run ${new Date().toISOString()}  files: ${FILES.length} vertical + ${FILES_H.length} horizontal  matrix: MMC3 vertical / MMC3 horizontal, action (FORGE_RING_SABOTAGE set)`);
 const control = runOne(null);
-say(`CONTROL (no sabotage; the FULL matrix, every test of the seven files): pass ${control.pass} fail ${control.fail} exit ${control.status}`);
+say(`CONTROL (no sabotage; the FULL matrix, every test of the ${FILES.length + FILES_H.length} files): pass ${control.pass} fail ${control.fail} exit ${control.status}`);
 let holes = control.fail !== 0 || control.status !== 0 ? 1 : 0;
 for (const name of run) {
   const r = runOne(name);

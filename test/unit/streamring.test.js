@@ -4,9 +4,10 @@
 // streamringstrip.test.js; the byte cost is test/unit/kernelbytes.test.js; the four-screen byte identity is streamringidentity.test.js):
 //   * streamRingMode (shared/cartridge.js) is the single writer of the ring mode and gives the documented value for every
 //     board x mirroring;
-//   * validateProject STILL refuses every two-nametable streamed board, and the generator refuses mode 2 on its own;
-//   * config.inc carries STREAM_RING / SW_RING_COL_LEN / SW_RW_NT_STEP / SW_RW_NT_END on every build, with the torus values on a
-//     four-screen or non-streamed build;
+//   * validateProject STILL refuses every two-nametable streamed board (the real build path rejects both ring modes); the generator itself
+//     no longer refuses mode 2 (phase 3b S3, C1: the horizontal engine exists) and builds it through the bypass copy;
+//   * config.inc carries STREAM_RING / SW_RING_COL_LEN / SW_RING_ROW_LEN / SW_RW_NT_STEP / SW_RW_NT_END on every build, with the torus values on a
+//     four-screen or non-streamed build (the horizontal ring's values are pinned in streamringh.test.js);
 //   * the assembled fork operands ARE those constants (read back from the ROM through the ring labels), which a generator edit or an
 //     engine edit that left one immediate at 30 / 4 cannot satisfy;
 //   * the allowance is charged to the content ceiling exactly once, and only on a ring.
@@ -75,23 +76,23 @@ test('the real build path rejects a vertical streamed board (no flag, no bypass 
   await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /not implemented yet/);
 });
 
-test('the generator refuses a horizontal ring (mode 2) on its own, naming the Build panel -- validate bypassed', { skip }, async (t) => {
-  const tree = makeBypassTree({ sabotage: null });
-  t.after(() => tree.dispose());
-  const loaded = await loadBypassTree(tree);
+test('the real build path rejects a horizontal streamed board too, and the generator no longer carries its own mode-2 refusal', { skip }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-real-h-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   for (const mapper of STREAMABLE) {
     const project = ringProjectOf(mapper, 'horizontal');
-    // the bypass copy no longer refuses at validate: the only thing standing between this project and a half-forked ROM is the generator
-    assert.ok(!loaded.generate.checkCapacity(project).problems.some((p) => /not implemented yet/.test(p.message)), 'the bypass copy does not refuse at validate');
-    await assert.rejects(() => buildThrough(loaded, project), (e) => /^Build panel: .*horizontal mirroring.*not implemented yet/s.test(e.message), `${resolveMapper(mapper).name}`);
+    await saveProject(dir, project);
+    await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /not implemented yet/, resolveMapper(mapper).name);
   }
+  // the generator's S2 stop-gap (a thrown 'Build panel: ... horizontal mirroring' for mode 2) is gone: validate is the one refusal, and S4 lifts it
+  assert.ok(!/horizontal mirroring, which needs the horizontal two-nametable/.test(fs.readFileSync(new URL('../../main/build/generate.js', import.meta.url), 'utf8')));
 });
 
 // ---- the generated constants and the assembled fork -------------------------------------------------------------------------------------
 
-const TORUS = { STREAM_RING: 0, SW_RING_COL_LEN: 30, SW_RW_NT_STEP: 1, SW_RW_NT_END: 4 };
-const VERTICAL = { STREAM_RING: 1, SW_RING_COL_LEN: 15, SW_RW_NT_STEP: 1, SW_RW_NT_END: 2 };
-const RING_LABELS = ['sw_ring_col_cmp', 'sw_ring_col_len', 'sw_ring_wrap_col', 'sw_ring_nt_step', 'sw_ring_nt_end'];
+const TORUS = { STREAM_RING: 0, SW_RING_COL_LEN: 30, SW_RING_ROW_LEN: 32, SW_RW_NT_STEP: 1, SW_RW_NT_END: 4 };
+const VERTICAL = { STREAM_RING: 1, SW_RING_COL_LEN: 15, SW_RING_ROW_LEN: 32, SW_RW_NT_STEP: 1, SW_RW_NT_END: 2 };
+const RING_LABELS = ['sw_ring_col_cmp', 'sw_ring_col_len', 'sw_ring_wrap_col', 'sw_ring_row_cmp', 'sw_ring_row_len', 'sw_ring_wrap_row', 'sw_ring_nt_step', 'sw_ring_nt_end'];
 const fixed = (rom, addr) => rom[16 + rom[4] * 16384 - 0x4000 + (addr - 0xc000)]; // the fixed $C000-$FFFF window is the last 16 KB of PRG on every board
 const constantsOf = (symbols) => Object.fromEntries(Object.keys(TORUS).map((k) => [k, symbols.get(k)]));
 
@@ -119,6 +120,10 @@ test('config.inc: the ring constants on a vertical ring, a four-screen torus and
         assert.deepEqual(at('sw_ring_col_cmp'), [0xc9, VERTICAL.SW_RING_COL_LEN], `${label}: strip builder compare is cmp #15`);
         assert.deepEqual(at('sw_ring_col_len'), [0xa9, VERTICAL.SW_RING_COL_LEN], `${label}: st_len load is lda #15`);
         assert.deepEqual(at('sw_ring_wrap_col'), [0xc9, VERTICAL.SW_RING_COL_LEN], `${label}: wrap compare is cmp #15`);
+        // the row fork is present on a vertical ring but keeps the torus row length: its operands are the literals the fork replaced (the byte-identity argument)
+        assert.deepEqual(at('sw_ring_row_cmp'), [0xc9, 32], `${label}: row strip builder compare is cmp #32`);
+        assert.deepEqual(at('sw_ring_row_len'), [0xa9, 32], `${label}: row st_len load is lda #32`);
+        assert.deepEqual(at('sw_ring_wrap_row'), [0xc9, 32], `${label}: row wrap compare is cmp #32`);
         assert.deepEqual(at('sw_ring_nt_step'), [0x69, VERTICAL.SW_RW_NT_STEP], `${label}: render index step is adc #1`);
         assert.deepEqual(at('sw_ring_nt_end'), [0xc9, VERTICAL.SW_RW_NT_END], `${label}: render index end is cmp #2`);
       }

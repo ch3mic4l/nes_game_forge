@@ -536,9 +536,10 @@ function cutOverrun(text, start, end, what) {
   return text.slice(0, a) + text.slice(b + end.length);
 }
 
-/** Phase 3b S2 (C2): the vertical ring's `.if STREAM_RING ... .else <pre-ring lines> .endif` forks in engine/streamworld.asm, collapsed to their
- *  `.else` arm -- the engine as every earlier slice's baseline read. Exactly RING_FORKS forks must be found (a fifth, or a missing .else, throws). */
-export const RING_FORKS = 4;
+/** Phase 3b S2 (C2) and S3 (C1): the ring's `.if STREAM_RING ... .else <pre-ring lines> .endif` forks in engine/streamworld.asm (four for the vertical ring's
+ *  column strip, wrap and render sequence, three for the horizontal ring's row strip and wrap), collapsed to their `.else` arm -- the engine as every
+ *  earlier slice's baseline read. Exactly RING_FORKS forks must be found (an extra one, or a missing .else, throws). */
+export const RING_FORKS = 7;
 export function stripRingFromStreamworld(text) {
   const out = [];
   let state = 'none';

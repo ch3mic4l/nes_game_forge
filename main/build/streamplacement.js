@@ -645,7 +645,7 @@ export function streamworldDialogueBanked(project, mapper = resolveMapper(projec
 
 /**
  * Phase 3b S2: which streamed-ring geometry this project builds with -- 0 four-screen torus (every build before the ring
- * existed, byte-identical), 1 vertical two-nametable ring, 2 horizontal (refused by the generator until S3). THE single
+ * existed, byte-identical), 1 vertical two-nametable ring, 2 horizontal two-nametable ring. THE single
  * predicate for the generated STREAM_RING, the ring allowance below and every test: it asks shared/cartridge.js's
  * streamRingMode and nothing else, and only for a project that streams.
  */
@@ -662,6 +662,15 @@ export function projectStreamRing(project, mapper = resolveMapper(project.cartri
 // lives there, and the generated constants are equates.
 export const STREAMWORLD_RING_KERNEL_HI_ALLOWANCE = 3;
 export const STREAMWORLD_RING_KERNEL_ALLOWANCE = 0;
+
+// Phase 3b S3 (C1): what the HORIZONTAL ring (STREAM_RING = 2) costs on top of the shared ring fork above, charged only to a build whose STREAM_RING is 2.
+// The row-strip forks (compare, length load, wrap) are immediates that keep their size, so kernel-hi gains nothing beyond the shared render-index step
+// (STREAMWORLD_RING_KERNEL_HI_ALLOWANCE, which a horizontal ring is charged too): STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE is a measured 0. The one real
+// cost is engine/player.asm's far branch (`beq cross_none` -> `bne ring_far1` / `jmp cross_none`, 2 bytes -> 5) at the cross_left_cut tail, in kernel-lo:
+// +3. Measured (test/unit/kernelbytes.test.js) on MMC1, MMC3 and UNROM 512 horizontal, action and RPG: flat on every cell. A vertical ring never
+// assembles that branch (its camera slides on X, so the `.if !CAMERA_SLIDE_H` arm is not built) and is not charged it.
+export const STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE = 0;
+export const STREAMWORLD_RING_H_KERNEL_ALLOWANCE = 3;
 
 export function streamworldResidentHiBytes(project, mapper) {
   const usesMoveHere = projectUsesMove(project);
@@ -716,7 +725,8 @@ export function streamworldResidentHiBytes(project, mapper) {
       : STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE) +
     STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE +
     streamworldLandingBoundCacheHiBytes +
-    (projectStreamRing(project, mapper) !== 0 ? STREAMWORLD_RING_KERNEL_HI_ALLOWANCE : 0)
+    (projectStreamRing(project, mapper) !== 0 ? STREAMWORLD_RING_KERNEL_HI_ALLOWANCE : 0) +
+    (projectStreamRing(project, mapper) === 2 ? STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE : 0)
   );
 }
 

@@ -373,7 +373,8 @@ export function streamCapableTwoNametable(mapper, mirroringId) {
  * Which streamed-ring geometry a build uses (the single writer; main/build/generate.js emits it as STREAM_RING):
  * 0 = four-screen torus, 1 = vertical mirroring (32 x 15 blocks, an X ring), 2 = horizontal mirroring
  * (16 x 30 blocks, a Y ring). Derived from cameraAxes, never from a second reading of the mirroring string.
- * Phase 3b S2 ships mode 1 only: the generator refuses mode 2 (the row fork is S3).
+ * Mode 2's engine fork landed in phase 3b S3 (commit C1); validateProject still refuses every two-nametable streamed board
+ * until admission (S4), so both modes are reachable only through the test-only bypass copy (test/lib/ringbypass.js).
  */
 export function streamRingMode(mapper, mirroringId) {
   if (!streamCapableTwoNametable(mapper, mirroringId)) return 0;

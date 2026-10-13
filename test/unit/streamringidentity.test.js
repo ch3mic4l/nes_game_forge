@@ -10,6 +10,9 @@
 // The `.else` bodies themselves are pinned as literal text below (they ARE the pre-C2 lines), so the control cannot drift into agreeing with a
 // changed fork by construction.
 //
+// Phase 3b S3 (C1) adds the horizontal fork to engine/streamworld.asm (the row strip's compare, length and wrap) and one gated far branch to
+// engine/player.asm; the CONTROL collapses both files, so it is still the engine as it read before any ring existed.
+//
 // Wrong implementation caught ('torus-leak'): the fork leaking into a four-screen build -- any ring-only value or branch (a 29 where the torus
 // reads 30, an unconditional change to the render-window step, a generated constant that differs from the literal it replaced) that reaches STREAM_RING = 0.
 import test from 'node:test';
@@ -30,7 +33,15 @@ test('the collapsed (STREAM_RING = 0) arms of the fork are exactly the pre-ring 
   has('sw_ssc_noadv:\n  lda ss_i\n  cmp #30\n  bne sw_ssc_loop\n  jsr sw_locate_current        ; restore the CURRENT (player) screen\n  lda #30\n  sta st_len\n');
   has('  lda st_vary\n  cmp #30\n  bne sw_ns_wrapdone\n  lda #0\n  sta st_vary\n  jmp sw_ns_wrapdone\n');
   has('  bne sw_rw_arow_loop\n  inc sw_rw_nt\n  lda sw_rw_nt\n  cmp #4\n  beq sw_rw_done\n  jmp sw_rw_nt_loop\n');
-  assert.ok(!/\bsw_ring_/.test(text) && !/STREAM_RING|SW_RING_COL_LEN|SW_RW_NT_(STEP|END)/.test(text), 'no ring symbol survives the collapse');
+  has('sw_ssr_noadv:\n  lda ss_i\n  cmp #32\n  bne sw_ssr_loop\n  jsr sw_locate_current\n  lda #32\n  sta st_len\n');
+  has('sw_ns_wrap32:\n  lda st_vary\n  cmp #32\n  bne sw_ns_wrapdone\n');
+  assert.ok(!/\bsw_ring_/.test(text) && !/STREAM_RING|SW_RING_(COL|ROW)_LEN|SW_RW_NT_(STEP|END)/.test(text), 'no ring symbol survives the collapse');
+});
+
+test('the collapsed (STREAM_RING = 0) arm of the player.asm far branch is the plain pre-ring beq', () => {
+  const text = collapseRingFork(fs.readFileSync(path.join(ROOT, 'engine/player.asm'), 'utf8'));
+  assert.equal(text.split('cross_left_cut:\n  pla\n  .endif\n  .if !CAMERA_SLIDE_H\n  beq cross_none\n  .endif\n  .endif\n  .if !CAMERA_SLIDE_ENABLED\n').length - 1, 1, 'the pre-ring cross_left_cut tail');
+  assert.ok(!/ring_far1|STREAM_RING/.test(text), 'no ring symbol survives the collapse');
 });
 
 test('collapseRingFork refuses a shape it cannot resolve', () => {
@@ -42,7 +53,7 @@ test('collapseRingFork refuses a shape it cannot resolve', () => {
 
 test('STREAM_RING = 0: every fixture and every four-screen streamed shape assembles a ROM byte-identical to the pre-ring engine', { skip }, async (t) => {
   const current = makeBypassTree({ bypass: false });
-  const control = makeBypassTree({ bypass: false, sabotage: null, transforms: { 'engine/streamworld.asm': collapseRingFork } });
+  const control = makeBypassTree({ bypass: false, sabotage: null, transforms: { 'engine/streamworld.asm': collapseRingFork, 'engine/player.asm': collapseRingFork } });
   t.after(() => { current.dispose(); control.dispose(); });
   const [now, before] = await Promise.all([loadBypassTree(current), loadBypassTree(control)]);
   const shapes = [

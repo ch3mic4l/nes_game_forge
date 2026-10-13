@@ -361,3 +361,47 @@ stamps, 0 FAIL or UNMEASURED cells, 0 unexpected jobs, 0 audit problems. By Chri
 not weakened; there is **no current GATE PASS** for this tree, and S3's final full matrix recertifies. The no-flag baselines (`s1b-cd7a9f8.json`,
 `s1c-cd7a9f8.json`) and the pinned identity ROM hashes keep their historical bytes: the test builders that model inert NPCs write `toX: 0, toY: 0`
 explicitly, so only a placement that leaves the fields out takes the new default.
+
+## 9. Slice S3, commit C1: the horizontal ring in the shipped engine
+
+C1 carries the prototype's horizontal half (`test/lua/ring_gate/02-ring-engine.patch`, `03-player-far-branch.patch`) into production as `STREAM_RING = 2`
+(`docs/reference-engine.md`, "The horizontal ring"). It is still unreachable for a user: `validateProject` refuses every two-nametable streamed board
+(S4 lifts that), so the horizontal ring runs only through the test-only bypass copy. Section 7's statements that the generator refuses mode 2 and that the
+row-strip forks are not shipped describe C2 and are history: the generator refusal is gone and the row forks are in. What production does against the prototype patches (`01-ring-select.patch`, `02-ring-engine.patch`, `03-player-far-branch.patch`):
+
+- **The ring code is the prototype's, not a deviation from it.** The production diff of `engine/streamworld.asm` is exactly the hunks of
+  `02-ring-engine.patch` for that file (compared line by line in fix round 1), and `generate.js`'s ring edits are `01-ring-select.patch`'s: selection
+  through `streamRingMode`/`projectStreamRing`, the deleted mode-2 generator refusal, `SW_RING_ROW_LEN` and `SW_RW_NT_STEP`. So the three row forks guarded
+  by `.if STREAM_RING` (non-zero, with `SW_RING_ROW_LEN` emitted as 32 on mode 0 and mode 1, which is what keeps a vertical ring's row sites at the torus
+  literals and its ROM byte-identical to the one `803a252` built), the `SW_RW_NT_STEP` (2 on mode 2, 1 otherwise) and `SW_RW_NT_END` (2 on mode 1, 4 on mode 0
+  and 2) values, and the labels `sw_ring_row_cmp`, `sw_ring_row_len` and `sw_ring_wrap_row` (which a test reads back out of the assembled ROM; the wrap
+  compare is unreachable at run time on a 1 x N world, so the operand readback is its only pin) are all the prototype's. (The first round-1 report listed
+  selection, the non-zero guard and the labels as deviations; against these patches they are not.)
+- **The real differences** are: the far-branch comment (below) and the explanatory comments in `generate.js`; `validateProject`'s refusal is kept (the
+  prototype's `00-refusal-lift.patch` is not applied; admission is S4's), so the horizontal ring runs only through the test-only bypass copy; `engine/streamdialog.asm`
+  is untouched (as in the prototype, whose patches touch only `player.asm`, `streamworld.asm`, `generate.js` and `shared/project.js`); and what C1 adds around
+  the code (the allowance, the tests, the sabotages, the certificates).
+- **The far branch** (`engine/player.asm`, the `cross_left_cut` tail) sits under `.if STREAM_RING` nested inside the existing `.if !CAMERA_SLIDE_H`,
+  with the comment the prototype lacked, and only at the one site the prototype demonstrated. Every cell (3 boards x 2 game types) assembles; an
+  unfixed near branch is rejected by nesasm, which `streamringh.test.js` asserts. Torus and vertical builds keep the plain `beq`. The branch runs on an
+  ORDINARY screen of a mixed project, so its condition is pinned by `streamringhfar.test.js` (an ordinary screen with a left neighbour crosses, one with none
+  is blocked) and the `h-far-branch-inverted` sabotage; every other horizontal test walks streamed screens and passes with the condition reversed.
+- **Byte identity** of the vertical ring and the four-screen torus: `handoff-next/s3-c1/vertical_identity.mjs` compares `803a252` with this tree on 138
+  projects, **132 mode-1 builds plus 6 mode-0 controls**, the projects the S2 unit-test builders construct (laps, strips, seams, redraw paths, battle,
+  landings, dialogue, kernelbytes shapes, close frames), all byte-identical, with a negative control that differs. It does **not** cover the ring gate's
+  `run_s1b.mjs` workloads (`prepareRing` maximum-depth scenes, Move, bound-tile and chaser variants); nothing here claims those recipes. The four-screen
+  ROMs are covered by the 11,760-record certificate below.
+- **Allowance.** `STREAMWORLD_RING_H_KERNEL_ALLOWANCE` = 3 (kernel-lo, the far branch) and `STREAMWORLD_RING_H_KERNEL_HI_ALLOWANCE` = 0, charged on
+  `projectStreamRing === 2` only, on top of the shared ring fork. A horizontal build cannot assemble with `STREAM_RING` forced to 0, so the cost is measured
+  in two halves (`kernelbytes.test.js`): the engine forks against the same project with the ring forced to 0 and the far branch forced on, and the far
+  branch alone on a non-streamed horizontal camera build. Free after C1 (kernel-hi / kernel-lo): MMC1 action 2673 / 1752, rpg 1442 / 1428; MMC3 action
+  2673 / 1731, rpg 1442 / 1239; UNROM 512 action 2673 / 1560, rpg 1442 / 1233. The absolute check (`assertCovers`, on the shipped horizontal ring itself) holds
+  a 22-byte margin on every cell: actual / reserved kernel-lo code bytes MMC1 action 5999 / 6021, rpg 6323 / 6345; MMC3 action 6020 / 6042, rpg 6512 / 6534;
+  UNROM 512 action 6188 / 6210, rpg 6512 / 6534.
+- **Evidence** reuses the S2 machinery with no parallel oracle: the prototype scenes, interpreter and judge (`ringscene`, `ringredraw`, `ringdialogue`,
+  `ringrun_jsnes`, `ringjudge`) against the production engine through `ringbypass`, now ring-aware (live indices, alias range `$24xx`/`$2Cxx`). The close
+  frame is captured under jsnes at `main_loop_ready` (`test/lib/ringcloseframe.js`): five packets, `vram_len` 84, against the vertical ring's split 87.
+  Eleven `h-*` sabotages join `run_ring_sabotage.mjs`; each fails a horizontal test file.
+- **Not done here** (C2 and later): rebaselining the ring gate onto C1, the full matrix, the bound-curve sweep, the validate lift, RPG admission. The ring
+  certificate of section 8 stays stale; C1 adds a new four-screen ROM-identity certificate (`test/fixtures/identity-cert/s3c1-horizontal.json`, 11760 of
+  11760 records) and refreshes `test/fixtures/crossstage/exclusions-evidence.json` (only `prov.new.engine` and `prov.new.generator` change).

@@ -336,7 +336,13 @@ cross_left_cut:
   pla
   .endif
   .if !CAMERA_SLIDE_H
+  .if STREAM_RING
+  bne ring_far1                ; a horizontal ring's cross_none is out of a plain beq's range
+  jmp cross_none
+ring_far1:
+  .else
   beq cross_none
+  .endif
   .endif
   .endif
   .if !CAMERA_SLIDE_ENABLED

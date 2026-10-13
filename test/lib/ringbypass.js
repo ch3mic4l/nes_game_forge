@@ -30,7 +30,7 @@ export const RING_SABOTAGES = {
   'render-4-nts': { note: 'sw_render_window enumerates all four nametable indices', edits: [
     { file: 'main/build/generate.js', from: '`SW_RW_NT_END = ${ringMode === 1 ? 2 : 4}`', to: '`SW_RW_NT_END = 4`' }] },
   'render-step-2': { note: 'sw_render_window steps the index by 2 (the horizontal ring\'s sequence): nametable 1 is never drawn', edits: [
-    { file: 'main/build/generate.js', from: '`SW_RW_NT_STEP = 1`', to: '`SW_RW_NT_STEP = 2`' }] },
+    { file: 'main/build/generate.js', from: '`SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`', to: '`SW_RW_NT_STEP = 2`' }] },
   'shadow-n32': { note: 'sw_render_window stores the attribute shadow at n*32 instead of n*64', edits: [
     { file: 'engine/streamworld.asm', from: '  lda sw_rw_nt\n  asl a\n  asl a\n  asl a\n  asl a\n  asl a\n  asl a\n  sta <sw_rw_shadow_lo', to: '  lda sw_rw_nt\n  asl a\n  asl a\n  asl a\n  asl a\n  asl a\n  sta <sw_rw_shadow_lo' }] },
   'attr-hi-3-omitted': { note: 'the dialogue attribute address forgets the +3 that moves the nametable hi byte to its attribute table', edits: [
@@ -39,6 +39,29 @@ export const RING_SABOTAGES = {
     { file: 'engine/streamworld.asm', from: '  and #1\n  asl a\n  ora sw_tmp\n  sta <cam_nt\n  dec <cam_dirty', to: '  lda sw_tmp\n  asl a\n  sta <cam_nt\n  dec <cam_dirty' }] },
   'torus-leak': { note: 'the fork leaks into a four-screen build: the torus column compare reads 29 (only a STREAM_RING = 0 byte-identity test can see it)', edits: [
     { file: 'engine/streamworld.asm', from: '  .else\n  cmp #30\n  .endif\n  bne sw_ssc_loop', to: '  .else\n  cmp #29\n  .endif\n  bne sw_ssc_loop' }] },
+  // ---- phase 3b S3 (C1): the horizontal ring. `side: 'h'` = caught by the horizontal files (test/lua/run_ring_sabotage.mjs runs those). ----
+  'h-far-branch-omitted': { side: 'h', note: 'engine/player.asm keeps the plain beq cross_none the horizontal build cannot reach (the assembler refuses the build)', edits: [
+    { file: 'engine/player.asm', from: '  .if STREAM_RING\n  bne ring_far1', to: '  .if 0\n  bne ring_far1' }] },
+  'h-far-branch-inverted': { side: 'h', note: 'the far branch\'s condition is reversed (beq for bne): an ordinary screen with a left neighbour is refused and one with none takes the transition', edits: [
+    { file: 'engine/player.asm', from: '  .if STREAM_RING\n  bne ring_far1', to: '  .if STREAM_RING\n  beq ring_far1' }] },
+  'h-row-len-32': { side: 'h', note: 'SW_RING_ROW_LEN stays the torus 32 on a horizontal ring (the row strip keeps its two-screen length and wrap)', edits: [
+    { file: 'main/build/generate.js', from: '`SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`', to: '`SW_RING_ROW_LEN = 32`' }] },
+  'h-row-load-32': { side: 'h', note: 'only the row strip builder\'s st_len load keeps 32 (compare and wrap are 16)', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_ring_row_len:\n  lda #SW_RING_ROW_LEN', to: 'sw_ring_row_len:\n  lda #32' }] },
+  'h-wrap-32': { side: 'h', note: 'sw_nmi_stream\'s row wrap stays at the torus 32', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_ring_wrap_row:\n  cmp #SW_RING_ROW_LEN', to: 'sw_ring_wrap_row:\n  cmp #32' }] },
+  'h-wrap-30': { side: 'h', note: 'sw_nmi_stream\'s row wrap compares 30 (the column modulus) instead of the ring row length', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_ring_wrap_row:\n  cmp #SW_RING_ROW_LEN', to: 'sw_ring_wrap_row:\n  cmp #30' }] },
+  'h-camera-x-unfrozen': { side: 'h', note: 'the streamed camera\'s X extent clamp is lifted: the camera follows the player\'s X on a one-screen-wide world', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_fcw_x_nonneg:\n  lda sw_grid_w\n  sec\n  sbc #1\n  sta sw_tmp3', to: 'sw_fcw_x_nonneg:\n  lda #$FF\n  sec\n  sbc #1\n  sta sw_tmp3' }] },
+  'h-column-strip-reached': { side: 'h', note: 'the window\'s row arm calls the vertical ring\'s column strip builder on a horizontal build', edits: [
+    { file: 'engine/streamworld.asm', from: 'sw_win_arm_row_dec:\n  jsr sw_win_row_dec\n  lda win_row_screen\n  ldx win_row_local\n  jsr sw_stream_start_row', to: 'sw_win_arm_row_dec:\n  jsr sw_win_row_dec\n  lda win_row_screen\n  ldx win_row_local\n  jsr sw_stream_start_col' }] },
+  'h-close-split-16': { side: 'h', note: 'the dialogue run writer hard-codes a seam at tile column 16: a horizontal ring\'s close row is published in two packets', edits: [
+    { file: 'engine/streamdialog.asm', from: '  sta <sw_dlgw_tmp          ; r, transient -- no attr call is ever in flight\n                              ; here (see sw_dlgw_tmp\'s own comment above)\n  lda #32', to: '  sta <sw_dlgw_tmp          ; r, transient -- no attr call is ever in flight\n                              ; here (see sw_dlgw_tmp\'s own comment above)\n  lda #16' }] },
+  'h-cam-nt-compacted': { side: 'h', note: 'cam_nt carries the Y parity in bit 0 (a compacted {0,1} index instead of the parity index {0,2})', edits: [
+    { file: 'engine/streamworld.asm', from: '  and #1\n  asl a\n  ora sw_tmp\n  sta <cam_nt\n  dec <cam_dirty', to: '  and #1\n  ora sw_tmp\n  sta <cam_nt\n  dec <cam_dirty' }] },
+  'h-render-step-1': { side: 'h', note: 'sw_render_window steps the index by 1 (the vertical ring\'s sequence) on a horizontal ring: nametables 1 and 3, aliases of 0 and 2, are drawn', edits: [
+    { file: 'main/build/generate.js', from: '`SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`', to: '`SW_RW_NT_STEP = 1`' }] },
   'ring-flag-off': { note: 'the build is generated with STREAM_RING = 0: the unforked four-screen strip and render on a two-nametable board', edits: [
     { file: 'main/build/generate.js', from: '`STREAM_RING = ${ringMode}`', to: '`STREAM_RING = 0`' }] }
 };
