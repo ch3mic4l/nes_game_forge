@@ -85,7 +85,7 @@ function record(row) {
 }
 
 // One tree per orientation and lift form: a vertical cell is built through a production-vertical tree (C2's shipped forks), a horizontal cell through a production-horizontal tree (C1's shipped forks), each carrying the refusal lift
-// only where production still refuses the cell (an MMC1 or MMC3 action cell is admitted by production: its tree is BASELINE itself).
+// only where production still refuses the cell (an action cell on MMC1, MMC3 or UNROM 512 is admitted by production: its tree is BASELINE itself).
 const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 
 // ---- STREAM_RING=0: the six fixtures through the patched tree are byte-identical to the unpatched tree (every constituent build stamped). The patched tree is the

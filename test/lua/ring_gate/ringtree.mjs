@@ -4,11 +4,11 @@
 // fallback counted as a ring pass is the exact defect the row-1 identity cell exists to catch.
 //
 // Two kinds of ring tree, by STREAM_RING mode, each in two forms (lifted / unlifted). Phase 3b S2 rebaselined the gate onto C2's production vertical ring, S3 C2 onto C1's production
-// horizontal ring, S4a C2 onto the commit that admits the ring on MMC3 for action games, S4b C2 onto the one that admits it on MMC1; ALL of it is production code and the gate patches in only what production does not ship:
+// horizontal ring, S4a C2 onto the commit that admits the ring on MMC3 for action games, S4b C2 onto the one that admits it on MMC1, S4c C2 onto the one that admits it on UNROM 512; ALL of it is production code and the gate patches in only what production does not ship:
 //   ring 1 (vertical)   = BASELINE [+ 00-refusal-lift.patch when the cell needs it] (+ the sabotage's ring-1 form). The vertical ring's forks are C2's SHIPPED code, byte for byte.
 //   ring 2 (horizontal) = BASELINE [+ 00-refusal-lift.patch when the cell needs it] (+ the sabotage's ring-2 form). The horizontal ring's forks are C1's SHIPPED code, byte for byte
 //                         (the S1 prototype's 01-ring-select / 02-ring-engine / 03-player-far-branch are RETIRED: see RETIRED_PATCHES).
-// Whether a cell needs the lift is ONE question with ONE answer (`liftNeeded`): production itself refuses the cell, read from BASELINE's own streamRingAdmitted. An MMC1 or MMC3 action cell is admitted
+// Whether a cell needs the lift is ONE question with ONE answer (`liftNeeded`): production itself refuses the cell, read from BASELINE's own streamRingAdmitted. An action cell on any of the three two-nametable boards (MMC1, MMC3, UNROM 512) is admitted
 // by production, so its tree is BASELINE byte for byte (plus only a sabotage patch on a control job) -- the certificate then measures what a user builds, not a patched approximation of it.
 // `verifyProduction` rebuilds the EXACT expected content of a tree (BASELINE's blobs with the canonical, hashed patches applied in order) and requires every file of
 // the tree to equal it by git blob hash -- an edit inside a file a sabotage already declares is a mismatch too. `loadTree` re-proves it at every build, and the
@@ -25,7 +25,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const PATCH_DIR = path.join(ROOT, 'test/lua/ring_gate');
-/** The one non-sabotage patch a ring tree may carry: it lifts the validateProject refusals production STILL has (a board with no ring yet -- UNROM 512 -- and a game type the board's ring is not admitted for -- an RPG on MMC1 or MMC3). */
+/** The one non-sabotage patch a ring tree may carry: it lifts the one validateProject refusal production STILL has for a two-nametable ring: the game type the board's ring is not admitted for (`ringGame`, a streamed RPG on MMC1, MMC3 or UNROM 512; S5). */
 export const LIFT_PATCH = '00-refusal-lift.patch';
 /** The required patches (in application order) of a ring tree: the lift for a cell production refuses, nothing for a cell it admits. Sabotage forms come after, never before. */
 export const patchSetFor = (lifted) => (lifted ? [LIFT_PATCH] : []);
@@ -47,8 +47,8 @@ export const RETIRED_PATCHES = {
     shipped: [['engine/player.asm', ['ring_far1:', 'bne ring_far1']]], absent: [] }
 };
 const COPIED = ['engine', 'main', 'shared'];
-/** The certification baseline: the tree makeTree copies must equal it (S4b commit C1, 19ea33c: the production vertical AND horizontal rings, admitted on MMC1 and MMC3 for action games). */
-export const BASELINE = '19ea33cc46bb2fecab8b387f03c75d7ed7f5107c';
+/** The certification baseline: the tree makeTree copies must equal it (S4c commit C1, bb43a2c: the production vertical AND horizontal rings, admitted on UNROM 512, MMC1 and MMC3 for action games). */
+export const BASELINE = 'bb43a2cbd5127b91430aa162b7e8388409272143';
 /** The baseline the S1b certificate (rounds 1-3) was built at, before the rebaseline onto C2: the only baseline a historical re-judgment (s1b_rejudge.mjs) may carry. */
 export const PRE_C2_BASELINE = '5138c1f0c33107016a90423da17dcbb33d8697ca';
 
@@ -482,7 +482,7 @@ export function readTreeText(tree, rel) {
 
 /**
  * Throws unless `tree` is the tree of cell `cell`'s ring (a vertical cell is built only through the production-vertical tree, a horizontal one only through the production-horizontal tree) AND
- * of its lift form for `gameType` (an MMC1 or MMC3 action cell only through the unlifted tree, a UNROM 512 cell or an RPG on MMC1 / MMC3 only through the lifted one).
+ * of its lift form for `gameType` (an action cell on any two-nametable board only through the unlifted tree, an RPG on any of them only through the lifted one).
  */
 export function assertCellRing(tree, cell, gameType) {
   if (!cell || cell.ring === undefined) return;

@@ -1,26 +1,11 @@
 diff --git a/a/shared/project.js b/b/shared/project.js
-index ec44f0a..3cd7a38 100644
+index ae155f7..e856def 100644
 --- a/a/shared/project.js
 +++ b/b/shared/project.js
-@@ -6840,31 +6840,6 @@ export function streamedBoardProblems(project) {
-           'or vertical mirroring (action games) -- change the board in the Build panel, or remove ' +
-           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
-       );
--    } else if (!streamCapableFourScreen(mapper, mirroringId)) {
--      // The two-nametable ring (phase 3b). The ONE decision of which boards and game types it is admitted for is
--      // streamRingAdmitted (shared/cartridge.js, a datum per board) -- S4a admitted MMC3 and S4b MMC1 for action games; UNROM 512
--      // is S4c and an RPG is S5 -- so lifting a board or a game type is a data change there, never an edit here. Two
--      // refusals, because they read differently: this board has no ring yet, or it has one but not for this game type.
--      // Distinct from the !capable message above, which says "this board can never stream".
--      if (!streamRingBoardAdmitted(mapper, mirroringId)) {
--        add(
--          'capability',
--          'Build',
--          `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
--            `which only reaches the two-nametable ring -- not implemented yet on this board. Streamed maps work on ${ringBoards} with ` +
--            'horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring; change the board and ' +
--            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
--        );
+@@ -6857,15 +6857,6 @@ export function streamedBoardProblems(project) {
+             'horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring; change the board and ' +
+             'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
+         );
 -      } else if (!streamRingAdmitted(mapper, mirroringId, gameType)) {
 -        add(
 -          'ringGame',
@@ -30,7 +15,6 @@ index ec44f0a..3cd7a38 100644
 -            'are not implemented there yet. A streamed RPG needs UNROM 512 with four-screen mirroring today; change the board and ' +
 -            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
 -        );
--      }
+       }
      }
      for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message);
-     // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.
