@@ -95,8 +95,8 @@ function auditConsumed(st, name, expected, ring) {
  * The tree provenance of a build or run stamp (round-1 review, finding 2): a stamp that names the wrong baseline, the wrong ring's tree kind, patches other than the ring's required
  * set (names, ORDER and content hashes, checked against the canonical patch files) plus the one sabotage the stamp declares, or a production proof that is not the exact expected
  * content of BASELINE plus those patches, is refused -- a truthy head/baseline and an array of patches certify nothing. BOTH rings are production trees with the same proof, and the required
- * patch set is a function of the stamp's CELL and GAME TYPE (S4a C2): the refusal lift exactly when production refuses that cell (`liftNeeded`, from BASELINE's own streamRingAdmitted), so an MMC3
- * action stamp carries NO lift (its tree is BASELINE itself) and an MMC1 / UNROM 512 stamp or an MMC3 RPG stamp carries it. A stamp whose patches, proof or consumed evidence disagree with its cell is refused.
+ * patch set is a function of the stamp's CELL and GAME TYPE (S4a C2): the refusal lift exactly when production refuses that cell (`liftNeeded`, from BASELINE's own streamRingAdmitted), so an MMC1 or MMC3
+ * action stamp carries NO lift (its tree is BASELINE itself) and a UNROM 512 stamp or an RPG stamp on any two-nametable board carries it. A stamp whose patches, proof or consumed evidence disagree with its cell is refused.
  *   ring 1 (a -V cell)  treeKind 'production-vertical', patches = [00 when lifted] (+ the declared sabotage's ring-1 form), productionProof = the exact proof recomputed here from the patch files, consumed-input evidence.
  *   ring 2 (a -H cell)  treeKind 'production-horizontal', patches = [00 when lifted] (+ the sabotage's ring-2 form), the same proof and evidence. A 'prototype-horizontal' stamp is refused at this baseline: the
  *                       prototype tree was retired, and the only admissible old prototype stamps are the pre-C2 S1b certificate's, waived by auditStamp under their own historical baseline.

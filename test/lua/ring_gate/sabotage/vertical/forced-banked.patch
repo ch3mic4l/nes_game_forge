@@ -1,5 +1,5 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 7d549a8..ddae0bb 100644
+index 9badb8f..523706d 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
 @@ -4266,7 +4266,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {

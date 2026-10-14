@@ -57,12 +57,12 @@ function diffTrees(base, work, out, files) {
   fs.writeFileSync(out, text);
 }
 
-// ---------------------------------------------------------------- the patches (BASELINE = S4a C1: BOTH rings are production code, admitted on MMC3 for action games)
-// What production (S4a C1) does NOT ship, and the gate therefore still patches in -- only for a cell production refuses (ringtree.mjs liftNeeded):
-//   00  the validateProject refusals of a two-nametable streamed board that production still has: a board with no ring yet (MMC1, UNROM 512: kind 'capability') and a game type the board's ring is not
-//       admitted for (an RPG on MMC3: kind 'ringGame'). Both sit in ONE if/else-if block of streamedBoardProblems after the `!capable` branch; the lift deletes that block (the grid and dead-axis
+// ---------------------------------------------------------------- the patches (BASELINE = S4b C1: BOTH rings are production code, admitted on MMC1 and MMC3 for action games)
+// What production (S4b C1) does NOT ship, and the gate therefore still patches in -- only for a cell production refuses (ringtree.mjs liftNeeded):
+//   00  the validateProject refusals of a two-nametable streamed board that production still has: a board with no ring yet (UNROM 512 with horizontal or vertical mirroring: kind 'capability') and a game type the board's ring is not
+//       admitted for (an RPG on MMC1 or MMC3, and an RPG on UNROM 512 once that board is admitted: kind 'ringGame'). Both sit in ONE if/else-if block of streamedBoardProblems after the `!capable` branch; the lift deletes that block (the grid and dead-axis
 //       refusals that follow it stay).
-// A cell production admits (MMC3, an action game, both mirrorings) needs none: its tree is BASELINE itself.
+// A cell production admits (MMC1 or MMC3, an action game, both mirrorings) needs none: its tree is BASELINE itself.
 // The S1 prototype's horizontal half -- 01-ring-select (SW_RING_ROW_LEN, the mode-2 render step, the lift of generate.js's mode-2 refusal), 02-ring-engine (the row-strip
 // fork and the row wrap) and 03-player-far-branch -- is RETIRED: C1 ships all of it, line for line, so at this baseline each would be an empty patch. Their stage recipes are
 // deleted, not kept dead; main() proves the retirement instead (ringtree.mjs checkRetiredShipped: the production sources carry what each used to add, and the files are gone).
@@ -229,7 +229,7 @@ function main() {
   copyTree(cur);
   // stage patches: a -> b accumulates, patch k is the diff between the tree before and after stage k
   let before = path.join(tmp, 'work', 'a');
-  // the tree a sabotage is cut against: `unlifted` = BASELINE itself (an MMC3 action cell's tree), `lifted` = BASELINE after every stage (a cell production refuses)
+  // the tree a sabotage is cut against: `unlifted` = BASELINE itself (an MMC1 or MMC3 action cell's tree), `lifted` = BASELINE after every stage (a cell production refuses)
   const unlifted = path.join(tmp, 'snap-unlifted');
   fs.cpSync(path.join(tmp, 'work', 'a'), unlifted, { recursive: true });
   for (const stage of stages) {

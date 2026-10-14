@@ -1,15 +1,15 @@
 diff --git a/a/shared/project.js b/b/shared/project.js
-index 2e4dbf2..a36a74f 100644
+index ec44f0a..3cd7a38 100644
 --- a/a/shared/project.js
 +++ b/b/shared/project.js
-@@ -6837,31 +6837,6 @@ export function streamedBoardProblems(project) {
+@@ -6840,31 +6840,6 @@ export function streamedBoardProblems(project) {
            'or vertical mirroring (action games) -- change the board in the Build panel, or remove ' +
            '"streamed" (or set it to false) for this map in the project\'s map JSON.'
        );
 -    } else if (!streamCapableFourScreen(mapper, mirroringId)) {
 -      // The two-nametable ring (phase 3b). The ONE decision of which boards and game types it is admitted for is
--      // streamRingAdmitted (shared/cartridge.js, a datum per board) -- S4a admitted MMC3 for action games; MMC1 and UNROM 512
--      // are S4b/S4c and an RPG is S5 -- so lifting a board or a game type is a data change there, never an edit here. Two
+-      // streamRingAdmitted (shared/cartridge.js, a datum per board) -- S4a admitted MMC3 and S4b MMC1 for action games; UNROM 512
+-      // is S4c and an RPG is S5 -- so lifting a board or a game type is a data change there, never an edit here. Two
 -      // refusals, because they read differently: this board has no ring yet, or it has one but not for this game type.
 -      // Distinct from the !capable message above, which says "this board can never stream".
 -      if (!streamRingBoardAdmitted(mapper, mirroringId)) {
@@ -17,7 +17,7 @@ index 2e4dbf2..a36a74f 100644
 -          'capability',
 -          'Build',
 -          `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
--            'which only reaches the two-nametable ring -- not implemented yet on this board. Streamed maps work on MMC3 with ' +
+-            `which only reaches the two-nametable ring -- not implemented yet on this board. Streamed maps work on ${ringBoards} with ` +
 -            'horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring; change the board and ' +
 -            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
 -        );

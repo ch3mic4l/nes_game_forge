@@ -24,7 +24,7 @@ index 24c538e..86dea13 100644
    sta <cam_nt
    dec <cam_dirty
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 7d549a8..9585bfc 100644
+index 9badb8f..65754a0 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
 @@ -4342,7 +4342,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {

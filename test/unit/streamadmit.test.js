@@ -36,6 +36,7 @@ import {
 } from '../../shared/cartridge.js';
 import { saveIdentity } from '../../shared/save.js';
 import { checkCapacity, checkStreamedMapperSwitch, switchableMappers } from '../../main/build/generate.js';
+import { parse } from 'acorn';
 import { saveProject } from '../../main/project-io.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { makeBypassTree, loadBypassTree, buildThrough } from '../lib/ringbypass.js';
@@ -313,12 +314,48 @@ test('(d) reconcileCartridge on a mapper/mirroring change reconciles to a mirror
   s.cartridge.mirroring = 'fourscreen';
   reconcileCartridge(s);
   assert.equal(s.cartridge.mirroring, 'vertical');
-  // the Build panel's mirroring commit reconciles in the same commit (CLAUDE.md): pinned at the source, because the panel is DOM
-  const build = fs.readFileSync(path.join(ROOT, 'renderer/forges/build/build.js'), 'utf8');
-  const at = build.indexOf("store.commit('Change mirroring'");
-  assert.ok(at > 0, 'the mirroring commit exists');
-  const commit = build.slice(at, build.indexOf('});', at));
-  assert.match(commit, /draft\.cartridge\.mirroring = id;[\s\S]*reconcileCartridge\(draft\)/, 'the mirroring edit reconciles inside the same commit');
+});
+
+// The Build panel's mirroring <select> commits through `store.commit('Change mirroring', (draft) => {...})` and CLAUDE.md requires reconcileCartridge in that same commit. The panel is DOM
+// (renderer/forges/build/build.js cannot be mounted under node:test), so the callback is EXECUTED, not text-matched: acorn finds the commit call in the real source, the callback's own source is
+// compiled with only `id` (the selected value, a closure variable of the onchange handler) and the real reconcileCartridge bound, and it runs on real drafts. A commented-out assignment
+// (`draft.cartridge.mirroring = 'vertical'; // draft.cartridge.mirroring = id;` -- the S4b C1 review's escape of the old source-text pin), a dropped reconcile, or a reconcile before the
+// assignment each leave a different draft and fail below.
+function buildPanelMirroringCallback() {
+  const text = fs.readFileSync(path.join(ROOT, 'renderer/forges/build/build.js'), 'utf8');
+  const found = [];
+  const walk = (node) => {
+    if (!node || typeof node.type !== 'string') return;
+    const c = node.callee;
+    if (node.type === 'CallExpression' && c?.type === 'MemberExpression' && c.object?.name === 'store' && c.property?.name === 'commit' && node.arguments[0]?.value === 'Change mirroring') found.push(node.arguments[1]);
+    for (const k of Object.keys(node)) for (const v of Array.isArray(node[k]) ? node[k] : [node[k]]) if (v && typeof v === 'object') walk(v);
+  };
+  walk(parse(text, { ecmaVersion: 'latest', sourceType: 'module' }));
+  assert.equal(found.length, 1, "exactly one store.commit('Change mirroring', ...) in the Build panel");
+  assert.equal(found[0].type, 'ArrowFunctionExpression');
+  return new Function('reconcileCartridge', 'id', `return (${text.slice(found[0].start, found[0].end)});`);
+}
+test("(d) the Build panel's mirroring commit assigns the SELECTED mirroring and reconciles the same draft: the real callback, executed, on MMC1 and MMC3 drafts (a commented-out assignment, a dropped reconcile and a reconcile-first order are all caught)", () => {
+  const callback = (id) => buildPanelMirroringCallback()(reconcileCartridge, id);
+  for (const board of RING_BOARDS) {
+    const name = resolveMapper(board).name;
+    // vertical -> horizontal on a 1 x 1 streamed map (admitted on both mirrorings): the selection lands, and the draft is still admitted
+    const d = project({ mapper: board, mirroring: 'vertical', gridW: 1, gridH: 1 });
+    callback('horizontal')(d);
+    assert.equal(d.cartridge.mirroring, 'horizontal', `${name}: the callback assigns the selected mirroring`);
+    assert.deepEqual(kinds(d), [], `${name}: and the draft is still admitted`);
+    callback('vertical')(d);
+    assert.equal(d.cartridge.mirroring, 'vertical', `${name}: and back`);
+    // a mirroring the board does not have (a hand-edited or stale selection): the assignment lands and RECONCILE, in the same callback, takes it back to a ring mirroring
+    const f = project({ mapper: board, mirroring: 'horizontal', gridW: 1, gridH: 1 });
+    callback('fourscreen')(f);
+    assert.equal(f.cartridge.mirroring, 'vertical', `${name}: four-screen is not offered, reconcile falls back to vertical inside the same commit`);
+    assert.deepEqual(kinds(f), []);
+  }
+  // UNROM 512 does have four-screen: the selection must SURVIVE reconcile there (a reconcile that always reset the mirroring would pass the MMC1/MMC3 half above)
+  const u = project({ mapper: U512, mirroring: 'vertical', gridW: 4, gridH: 1 });
+  callback('fourscreen')(u);
+  assert.equal(u.cartridge.mirroring, 'fourscreen', 'UNROM 512 keeps the four-screen selection through reconcile');
 });
 
 // ---------------------------------------------------------------------------------------------------------------- (e) saves
