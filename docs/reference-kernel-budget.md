@@ -203,7 +203,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   at 3449 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
   equality-asserted by `kernelbytes.test.js`. Phase 2 slice 2b's Part D narrowed streaming to UNROM
   512 (`streamCapableFourScreen`) alone, so this is no longer measured per mapper; MMC1/MMC3 were
-  refused outright by `validateStreamedMaps` regardless of what this would measure there (phase 3b S4a admitted MMC3 action rings; the ring
+  refused outright by `validateStreamedMaps` regardless of what this would measure there (phase 3b S4a admitted MMC3 and S4b MMC1 action rings; the ring
   allowances are measured on every board, see "Phase 3b slice S2, commit C2" below). Re-measured
   up from 2050 to 2376 by this same slice's own landing-site resolver and render call sites
   (`sw_resolve_screen`, `sw_render_window`, `sw_locate_current`), then to 2432 by fix round 1's own

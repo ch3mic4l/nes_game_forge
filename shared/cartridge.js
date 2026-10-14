@@ -270,6 +270,8 @@ export const MAPPERS = [
     saveMedia: 'battery',
     // Streamed worlds (docs/design-streamed-worlds.md §2): a two-nametable ring (phase 3); no four-screen wiring.
     streamable: true,
+    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4b); see `streamRingAdmittedGameTypes`.
+    streamRingGameTypes: ['action'],
     supported: true,
     summary: 'Up to 128 KB of program and 128 KB of graphics: 16 tilesets and 7 screen banks.',
     hint: 'The mapper more NES games used than any other. Switches both graphics and screens, so pick it when you need both.'
@@ -388,8 +390,8 @@ export function streamRingMode(mapper, mirroringId) {
 /**
  * Which game types the two-nametable ring is ADMITTED for on this board (phase 3b S4): the board's own `streamRingGameTypes` datum,
  * the single writer of "may a user build a ring here". A board without the datum is not admitted for anything -- its ring is built only
- * through the test-only bypass copy (test/lib/ringbypass.js). S4b (MMC1) and S4c (UNROM 512) are one `streamRingGameTypes: ['action']`
- * line each, S5 adds 'rpg' to a board's list. Four-screen is a different ring (the torus) and does not ask this.
+ * through the test-only bypass copy (test/lib/ringbypass.js). S4a admitted MMC3 and S4b MMC1 (action games); S4c (UNROM 512) is one more
+ * `streamRingGameTypes: ['action']` line and S5 adds 'rpg' to a board's list. Four-screen is a different ring (the torus) and does not ask this.
  */
 export function streamRingAdmittedGameTypes(mapper) {
   return mapper?.streamRingGameTypes ?? [];
@@ -406,6 +408,14 @@ export function streamRingBoardAdmitted(mapper, mirroringId) {
 
 export function streamRingAdmitted(mapper, mirroringId, gameType) {
   return streamRingBoardAdmitted(mapper, mirroringId) && streamRingAdmittedGameTypes(mapper).includes(gameType);
+}
+
+/**
+ * The names of the boards the two-nametable ring is admitted on for a game type, in registry order ("MMC1 or MMC3"; "" when none is) --
+ * the one place a refusal message learns which boards work, so a later admission (S4c, S5) moves the text with the datum.
+ */
+export function streamRingAdmittedBoardNames(gameType) {
+  return MAPPERS.filter((mapper) => mapper.supported && streamRingAdmittedGameTypes(mapper).includes(gameType)).map((mapper) => mapper.name).join(' or ');
 }
 
 /** Either ring: is a `map.streamed` legal on this board and mirroring at all? */

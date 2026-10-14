@@ -360,11 +360,11 @@ const STREAMED_WARNINGS = [
   { id: 'board cannot stream (kind capability, error)', pinned: 'streamed.test.js "gating", streamedcapacity.test.js',
     fires: () => streamedBoardProblems(createStreamedProject({ mapper: 0, mirroring: 'horizontal' })).some((p) => p.kind === 'capability' && /cannot stream a world/.test(p.message)),
     docs: [['README.md', /UNROM 512 with four-screen mirroring/]] },
-  { id: 'board has no two-nametable ring yet (kind capability, error): MMC1 and UNROM 512 non-fourscreen', pinned: 'streamed.test.js "Part D item 1", streamadmit.test.js (a)',
-    fires: () => validateProject(createStreamedProject({ mapper: 1, mirroring: 'horizontal' })).some((p) => p.severity === 'error' && /two-nametable ring -- not implemented yet on this board/.test(p.message)),
-    docs: [['README.md', /MMC1 and UNROM 512 with horizontal or vertical mirroring, and a streamed RPG on any two-nametable board, are refused for now/]] },
+  { id: 'board has no two-nametable ring yet (kind capability, error): UNROM 512 non-fourscreen (S4c)', pinned: 'streamed.test.js "Part D item 1", streamadmit.test.js (a)',
+    fires: () => validateProject(createStreamedProject({ mapper: 30, mirroring: 'horizontal' })).some((p) => p.severity === 'error' && /two-nametable ring -- not implemented yet on this board/.test(p.message)),
+    docs: [['README.md', /UNROM 512 with horizontal or vertical mirroring, and a streamed RPG on any two-nametable board, are refused for now/]] },
   { id: 'a streamed RPG on a two-nametable board (kind ringGame, error): refused until S5', pinned: 'streamadmit.test.js (b)',
-    fires: () => streamedBoardProblems(createStreamedProject({ mapper: 4, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 })).some((p) => p.kind === 'ringGame' && p.where === 'Build' && /streamed RPGs are not implemented there yet/.test(p.message)),
+    fires: () => [4, 1].every((mapper) => streamedBoardProblems(createStreamedProject({ mapper, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 })).some((p) => p.kind === 'ringGame' && p.where === 'Build' && /streamed RPGs are not implemented there yet/.test(p.message))),
     docs: [['README.md', /a streamed RPG on any two-nametable board, are refused for now/], ['docs/reference-engine.md', /\*Ring game type\* \(`'ringGame'`/]] },
   { id: 'dead axis (kind deadAxis, error)', pinned: 'streamed.test.js "two-nametable: the dead axis"',
     fires: () => streamedBoardProblems(createStreamedProject({ mapper: 1, mirroring: 'horizontal', gridW: 6, gridH: 1 })).some((p) => p.kind === 'deadAxis'),
@@ -433,9 +433,9 @@ test('README streamed-worlds row: its figures are the ones the code carries', ()
   assert.match(flat, new RegExp(`up to ${LIMITS.projectScreens} screens in the whole project and ${LIMITS.streamedGrid} along a side`));
   assert.match(flat, /dash is ignored/);
   assert.match(flat, /vanish at the seam/);
-  // S4a: the MMC3 ring's two figures -- a row of up to LIMITS.streamedGrid screens under vertical mirroring, and a column of up to the board's 8 KB region count under horizontal
-  const regions = planStreamedRegions(createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 1 }), resolveMapper(4)).usable.length;
-  assert.match(flat, new RegExp(`a single row of up to ${LIMITS.streamedGrid} screens under vertical mirroring, or a single column of up to ${regions} under horizontal`));
+  // S4a / S4b: the ring's figures -- a row of up to LIMITS.streamedGrid screens under vertical mirroring, and a column of up to the board's 8 KB region count under horizontal (MMC3, then MMC1)
+  const regionsOf = (mapper) => planStreamedRegions(createStreamedProject({ mapper, mirroring: 'horizontal', gridW: 1, gridH: 1 }), resolveMapper(mapper)).usable.length;
+  assert.match(flat, new RegExp(`a single row of up to ${LIMITS.streamedGrid} screens under vertical mirroring, or a single column of up to ${regionsOf(4)} under horizontal on MMC3, ${regionsOf(1)} on MMC1`));
 });
 
 test('docs.test.js and this file agree on the doc set: CLAUDE.md pointers are tracked', () => {

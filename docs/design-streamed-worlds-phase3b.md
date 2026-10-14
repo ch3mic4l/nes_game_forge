@@ -4,7 +4,7 @@
 design below existed as three patches (`01-ring-select.patch`, `02-ring-engine.patch`, `03-player-far-branch.patch`) applied at
 test time to a `mkdtemp` copy of those three directories, and the gate in `test/lua/ring_gate/` measured that copy on every acceptance cell. (Since S2 the
 vertical half is production code, and since S3 C1 the horizontal half is too: the three patches are **retired** and deleted, see section 10; the gate now applies
-only `00-refusal-lift.patch` to a production tree; since S4a the lift is only needed for what production still refuses, section 11.) The
+only `00-refusal-lift.patch` to a production tree; since S4a / S4b the lift is only needed for what production still refuses, sections 11 and 13.) The
 streamed-map refusal for mirrored boards stayed on through S3. Slices S2 onward wire the design into the shipped engine; each lands its own allowance and
 proof docs. This file is a dated record: it names constants (`SW_RING_ROW_LEN`, the row fork's labels) that the S1 prototype's patches added and that production has carried since S3 C1.
 
@@ -572,3 +572,48 @@ The two MMC3 **action** cells measured on **unlifted production code** (the tree
 | row 9 | S1c controls caught as declared; `nmi-wrap-row-32` N/A | S1c controls caught as declared; `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` N/A |
 
 Every figure is identical to the S3 C2 certificate's for the same cell, where the tree was lifted (the logs for rows 4, 5 and 6 of these cells are byte-identical; row 8 differs by one frame, 2,105 and 1,551 there). The RPG and the other boards' cells are in section 3's per-build table, unchanged.
+
+
+## 13. Slice S4b, commit C1: the two-nametable ring admitted on MMC1, action games only
+
+C1 is admission again (`shared/`, `main/`, tests, docs): **no file under `engine/` changed**. It is section 11's change made for the second board: `validateProject` stops refusing the ring
+for **MMC1** with horizontal or vertical mirroring, for action games. The gate (`test/lua/ring_gate/`) is untouched and still lifts MMC1 by patch; S4b commit C2 rebaselines it onto this
+commit and makes the MMC1 action cells unpatched production.
+
+- **What is admitted.** An **action** project on **MMC1** with **horizontal or vertical** mirroring and the dead-axis shape the mirroring allows (N x 1 under vertical, 1 x N under
+  horizontal; grid and dead-axis refusals unchanged). One line: `streamRingGameTypes: ['action']` on the MMC1 entry of `shared/cartridge.js`, which is all `streamRingBoardAdmitted` and
+  `streamRingAdmitted` read. `streamedBoardProblems` states no board. Still refused: UNROM 512 with horizontal or vertical mirroring (S4c, `capability`) and a streamed RPG on MMC1 or
+  MMC3 (S5, `ringGame`; on UNROM 512 non-four-screen the board refusal comes first, one message).
+- **The refusal messages now follow the registry.** S4a typed "MMC3" into the two messages that list the boards that work. `streamRingAdmittedBoardNames(gameType)` (`shared/cartridge.js`)
+  now builds that list from the same datum, in registry order, and `streamedBoardProblems` interpolates it, so S4c and S5 move the text with the datum:
+  - board cannot stream at all [`capability`, Build]: "... or **MMC3 with horizontal or vertical mirroring (action games)** ..." became "... or **MMC1 or MMC3 with horizontal or vertical mirroring (action games)** ...".
+  - UNROM 512 non-four-screen [`capability`, Build] (MMC1 no longer reaches it): "... not implemented yet on this board. Streamed maps work on **MMC3 with** horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring ..."
+    became "... work on **MMC1 or MMC3 with** horizontal ... ".
+  - streamed RPG [`ringGame`, Build]: the text is unchanged and now fires on MMC1 as well ("... on MMC1 with vertical mirroring, which only reaches the two-nametable ring -- streamed RPGs are not implemented there yet ...").
+  - dead axis [`deadAxis`] and grid [`grid`], both Map Forge: unchanged, now live on MMC1 too. `docclaims.test.js` T4 pins the narrowed UNROM 512 refusal (with its README sentence) and that `ringGame` fires
+    on MMC1 and MMC3. The S4a review's advisory P3 (a board id hard-coded in `streamedBoardProblems` escaping the datum) was closed by S4a C2's "follows the registry datum" test; it now also covers
+    MMC1 and the message text, and a sabotage hard-codes `[1, 4]` in `streamedBoardProblems` to prove it.
+- **Audited, unchanged.** `reconcileCartridge` (MMC1 has no four-screen option, so a four-screen request falls back to `vertical`, an admitted ring; the Build panel's mirroring commit already reconciles in the same
+  commit), `switchableMappers` and `checkStreamedMapperSwitch` (the tiers are board properties; MMC1 is offered exactly where `streamedBoardProblems` accepts the moved project), `checkCapacity` and
+  `streamedCapacityProblems` (already per-board region counts), `main/build/streamplacement.js` and `shared/streamlayout.js` (no board logic; a comment only), `shared/save.js` (battery media is the same on MMC1 and
+  MMC3; mirroring is not in the save identity). MMC1's software mirroring (the serial control register, generated `MAPPER_MIRROR`) is the one thing that differs from MMC3: the save test below reads both
+  nametables after a Continue across a mirroring flip, which fails if the register keeps the old mirroring.
+- **Capacity, re-measured through the real path** (`handoff-next/s4b-c1/capacity.mjs`, log `capacity.log`):
+
+  | MMC1 action | largest that builds | smallest refused | refused by |
+  | --- | --- | --- | --- |
+  | vertical mirroring, N x 1 | **255** (the grid ceiling) | 256 | the grid ceiling, "at most 255", Map Forge |
+  | horizontal mirroring, 1 x N | **14** | **15** | `checkCapacity`: "The streamed maps need 15 of the 14 8 KB program regions MMC1 has free for world data", Map Forge |
+
+  The plan's scratch measurement (14 action screens on MMC1-H) is exactly the real refusal; MMC1 has 7 data banks (14 regions) against MMC3's 15 (30). Pinned by `streamadmit.test.js` (built at both
+  edges on both boards) and `streamedcapacity.test.js`.
+- **Saves (ruling 3), MMC1.** The S4a test pattern, extended rather than duplicated: a mirroring-only edit keeps `saveCompatToken` and `saveIdentity` (the only valid such edit is all streamed maps 1 x 1, as on
+  MMC3), a resize invalidates, and a save made on a vertical MMC1 ROM Continues on the horizontal one with both live nametables and attribute tables equal to the oracle (`ringoracle.js` through the gate's judge).
+- **Byte identity.** The six fixtures' hashes equal `handoff-next/fixture-hashes-r4-before.txt` before and after, and the ROMs of `sample`, `sample-rpg` and the four save-check fixtures built by `cli.js` equal those of
+  a `68f3097` worktree. The ring gate's MMC1 action builds -- **96 scenes** (49 on `MMC1-V`, 47 on `MMC1-H`), every `scenesFor(cell, 'action')` scene, resident placement -- build to the **same ROM bytes** from this
+  tree with no lift as from a `9b00c59` worktree with `00-refusal-lift.patch` applied (`handoff-next/s4b-c1/identity.mjs`, log `identity.log`: 96 EQUAL, 0 different).
+- **Certificates.** `shared/` and `main/build/` moved, so the generator fingerprint moved (`5b94bb9519d5 -> 614e1f1d678d`; the engine, `d5add2c0fc86`, did not): `test/fixtures/identity-cert/s4b-c1.json`
+  (`sw_identity_cert.mjs --dir=handoff-next/s2-c1/resweep`: 11760 of 11760 direct records matched, 832 reuses, 0 mismatches), and `exclusions-evidence.json` refreshed by `refresh_sw_exclusions.mjs` (340 refusals, 340
+  parent receipts, 159 parent scenes; `--control=scene` refused; only `prov.new.generator` changed). `s4a-c1.json` stays as history and `harnesstransfer.test.js` asserts its one stale binding.
+- **Not done here (C2).** `BASELINE` is still `9b00c59`; `00-refusal-lift.patch` still lifts MMC1 (and UNROM 512, RPG); no stamp was restamped. C2 rebaselines onto this commit, re-cuts the lift to UNROM 512
+  and `ringGame`, and runs the one matrix.

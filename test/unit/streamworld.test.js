@@ -66,10 +66,13 @@ test(
 );
 
 test('D.1 negative: any other board/mirroring refuses with the Forge-naming message, not a raw assembler error', () => {
-  const project = createStreamedProject({ mapper: 1, mirroring: 'vertical', gridH: 1 });
-  const errors = streamedErrors(project);
-  assert.ok(errors.length > 0);
-  assert.ok(errors.some((e) => /only reaches the two-nametable ring|streamCapableFourScreen|four-screen/i.test(e.message)));
+  // UNROM 512 vertical is the board that still has no two-nametable ring (S4c); MMC1 and MMC3 action rings are admitted (S4b, S4a), and NROM can never stream.
+  for (const [mapper, mirroring] of [[30, 'vertical'], [0, 'horizontal']]) {
+    const project = createStreamedProject({ mapper, mirroring, gridH: 1 });
+    const errors = streamedErrors(project);
+    assert.ok(errors.length > 0, `${mapper}/${mirroring}`);
+    assert.ok(errors.some((e) => /only reaches the two-nametable ring|cannot stream a world/i.test(e.message)), `${mapper}/${mirroring}`);
+  }
 });
 
 // ---------------------------------------------------------------- D.2: bound tiles

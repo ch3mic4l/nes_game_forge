@@ -4,7 +4,7 @@
 // streamringstrip.test.js; the byte cost is test/unit/kernelbytes.test.js; the four-screen byte identity is streamringidentity.test.js):
 //   * streamRingMode (shared/cartridge.js) is the single writer of the ring mode and gives the documented value for every
 //     board x mirroring;
-//   * validateProject still refuses MMC1 and UNROM 512 on a two-nametable board (S4a admitted MMC3 action; the real build path rejects the rest); the generator itself
+//   * validateProject still refuses UNROM 512 on a two-nametable board (S4a admitted MMC3 action and S4b MMC1 action; the real build path rejects the rest); the generator itself
 //     no longer refuses mode 2 (phase 3b S3, C1: the horizontal engine exists) and builds it through the bypass copy;
 //   * config.inc carries STREAM_RING / SW_RING_COL_LEN / SW_RING_ROW_LEN / SW_RW_NT_STEP / SW_RW_NT_END on every build, with the torus values on a
 //     four-screen or non-streamed build (the horizontal ring's values are pinned in streamringh.test.js);
@@ -53,32 +53,32 @@ test('projectStreamRing: 0 for a project that streams nothing, whatever its boar
   assert.equal(projectStreamRing(plain), 0, 'no streamed map -> no ring, even on a vertical-mirroring streamable board');
 });
 
-test('validateProject still refuses MMC1 and UNROM 512 on a two-nametable board (their ring is bypass-only until S4b/S4c); MMC3 action is admitted since S4a', () => {
+test('validateProject still refuses UNROM 512 on a two-nametable board (its ring is bypass-only until S4c); MMC3 (S4a) and MMC1 (S4b) action are admitted', () => {
   for (const mapper of STREAMABLE) {
     for (const mirroring of ['vertical', 'horizontal']) {
       const problems = validateProject(ringProjectOf(mapper, mirroring)).filter((p) => p.severity === 'error');
       const refused = problems.some((p) => /two-nametable ring -- not implemented yet/.test(p.message));
-      assert.equal(refused, mapper !== 4, `${resolveMapper(mapper).name} ${mirroring}: ${problems.map((p) => p.message).join(' | ') || 'no error at all'}`);
+      assert.equal(refused, mapper === 30, `${resolveMapper(mapper).name} ${mirroring}: ${problems.map((p) => p.message).join(' | ') || 'no error at all'}`);
     }
   }
   // and the real tree's build path refuses it too, not merely validate
-  const real = ringProjectOf(1, 'vertical');
+  const real = ringProjectOf(30, 'vertical');
   assert.ok(checkCapacity(real).problems.some((p) => p.severity === 'error' && /not implemented yet/.test(p.message)));
-  assert.ok(!checkCapacity(ringProjectOf(4, 'vertical')).problems.some((p) => p.severity === 'error'), 'MMC3 vertical action is admitted through the real path');
+  for (const admitted of [1, 4]) assert.ok(!checkCapacity(ringProjectOf(admitted, 'vertical')).problems.some((p) => p.severity === 'error'), `${resolveMapper(admitted).name} vertical action is admitted through the real path`);
 });
 
-test('the real build path rejects a vertical streamed MMC1 board (no flag, no bypass in the shipped tree)', { skip }, async (t) => {
+test('the real build path rejects a vertical streamed UNROM 512 board (no flag, no bypass in the shipped tree)', { skip }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-real-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const project = ringProjectOf(1, 'vertical');
+  const project = ringProjectOf(30, 'vertical');
   await saveProject(dir, project);
   await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /not implemented yet/);
 });
 
-test('the real build path rejects a horizontal streamed MMC1 / UNROM 512 board too, and the generator no longer carries its own mode-2 refusal', { skip }, async (t) => {
+test('the real build path rejects a horizontal streamed UNROM 512 board too, and the generator no longer carries its own mode-2 refusal', { skip }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-real-h-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  for (const mapper of STREAMABLE.filter((id) => id !== 4)) {
+  for (const mapper of STREAMABLE.filter((id) => id === 30)) {
     const project = ringProjectOf(mapper, 'horizontal');
     await saveProject(dir, project);
     await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /not implemented yet/, resolveMapper(mapper).name);
