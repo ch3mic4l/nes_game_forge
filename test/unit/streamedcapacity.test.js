@@ -5,8 +5,8 @@
 //
 // Phase 2 slice 2b, Part D item 1 (shared/project.js's streamedBoardProblems) later narrowed
 // "capable" to exactly one board+mirroring combination (UNROM 512, four-screen), sharing its
-// message's 'capability' kind with the original incapable-board message; phase 3b S4a / S4b widened it
-// to MMC3 and MMC1 action rings (streamRingAdmitted, shared/cartridge.js). The mapper-switch
+// message's 'capability' kind with the original incapable-board message; phase 3b S4a / S4b / S4c widened it
+// to MMC3, MMC1 and UNROM 512 action rings (streamRingAdmitted, shared/cartridge.js). The mapper-switch
 // preflight tests below were rewritten for each: see each test's own comment.
 
 import test from 'node:test';
@@ -268,8 +268,8 @@ test('the phase-1 "no engine yet" refusal is gone: a project clearing every Part
 });
 
 test('mapper-switch preflight: the checks in order, the real project untouched', () => {
-  // Phase 3b S4a/S4b: the 'capability' kind covers a board/mirroring that cannot stream or has no ring yet (UNROM 512 non-fourscreen, until S4c), 'ringGame'
-  // a board that has one but not for this game type (a streamed RPG on MMC3 or MMC1, until S5), and 'deadAxis' the grid shape. checkStreamedMapperSwitch
+  // Phase 3b S4a/S4b/S4c: the 'capability' kind covers a board/mirroring that cannot stream (NROM; MMC1 / MMC3 four-screen), 'ringGame'
+  // a board that has a ring but not for this game type (a streamed RPG on UNROM 512, MMC3 or MMC1, until S5), and 'deadAxis' the grid shape. checkStreamedMapperSwitch
   // asks them in that order, then the aggregate region check, and returns the first failing tier's messages.
   const build = (w, h, gameType = 'action') => {
     const p = blank(UNROM512, 'fourscreen');
@@ -287,25 +287,29 @@ test('mapper-switch preflight: the checks in order, the real project untouched',
   assert.match(refusals[0], /cannot stream a world/);
   assert.deepEqual(p, before);
 
-  // (1b) capability, "no ring on this board yet" (UNROM 512 non-fourscreen until S4c): this map is also 40 screens tall, which UNROM 512 under vertical
-  // mirroring could never stream up and down either way -- but the message returned is the board refusal, never a "screens tall" dead-axis message
-  // (capability pre-empts deadAxis).
+  // (1b) capability pre-empts deadAxis: a 40-screen-tall map on NROM (a board that can never stream) gets the board refusal, never a "screens tall" dead-axis
+  // message. (Since S4c no registered board is "a ring board without a ring": that refusal is reached only by removing a datum, in streamadmit.test.js.)
   p = build(4, 40);
   before = snapshot(p);
-  refusals = checkStreamedMapperSwitch(p, UNROM512, 'vertical');
+  refusals = checkStreamedMapperSwitch(p, 0, 'horizontal');
   assert.equal(refusals.length, 1);
-  assert.match(refusals[0], /only reaches the two-nametable ring -- not implemented yet on this board/);
+  assert.match(refusals[0], /cannot stream a world/);
   assert.ok(!/screens tall/.test(refusals[0]), 'the dead-axis message must not surface through this function while the board itself is refused');
   assert.deepEqual(p, before);
 
-  // (2) ringGame: an RPG streamed map on MMC3 (admitted for action only; MMC1 answers the same). Same tier as capability, so it pre-empts the dead axis too.
+  // (2) ringGame: an RPG streamed map on UNROM 512 vertical (admitted for action only; MMC3 and MMC1 answer the same). Same tier as capability, so it pre-empts the dead axis too.
   p = build(4, 40, 'rpg');
   before = snapshot(p);
-  refusals = checkStreamedMapperSwitch(p, MMC3, 'vertical');
+  refusals = checkStreamedMapperSwitch(p, UNROM512, 'vertical');
   assert.equal(refusals.length, 1);
   assert.match(refusals[0], /streamed RPGs are not implemented there yet/);
   assert.ok(!/screens tall/.test(refusals[0]));
   assert.deepEqual(p, before);
+  refusals = checkStreamedMapperSwitch(p, MMC3, 'vertical');
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /streamed RPGs are not implemented there yet/);
+  // ...and the RPG that already streams, on UNROM 512 four-screen, is not refused (the torus is not the ring)
+  assert.deepEqual(checkStreamedMapperSwitch(build(1, 20, 'rpg'), UNROM512, 'fourscreen'), []);
 
   // (3) deadAxis, now reachable: an action map 40 screens tall on MMC3 vertical passes both board tiers and fails the shape.
   p = build(4, 40);
@@ -324,6 +328,11 @@ test('mapper-switch preflight: the checks in order, the real project untouched',
   assert.equal(refusals.length, 1);
   assert.match(refusals[0], /screens tall/);
   assert.deepEqual(checkStreamedMapperSwitch(build(40, 1), MMC1, 'vertical'), []);
+  // (3c) and on UNROM 512 (S4c): the 40-tall action map is the dead-axis shape refusal, the 40 x 1 passes every tier
+  refusals = checkStreamedMapperSwitch(build(4, 40), UNROM512, 'vertical');
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /screens tall/);
+  assert.deepEqual(checkStreamedMapperSwitch(build(40, 1), UNROM512, 'vertical'), []);
 
   // (4) aggregate: a UNROM 512 four-screen map one screen taller than the board's own usable region count.
   const usable = usableFor(build(1, 1)).length;
@@ -346,11 +355,11 @@ test('mapper-switch preflight: the checks in order, the real project untouched',
 test('the preflight applies reconcileCartridge first: the post-switch shape is what is checked', () => {
   // Catches a preflight that checks the pre-reconcile clone. UNROM 512 has no mirroring option
   // named "bogus" (mirroringOptions, shared/cartridge.js); reconcileCartridge's own fallback
-  // rewrites an unrecognised mirroring to vertical. Item 1 now refuses every mirroring but
-  // four-screen on this board anyway, so the useful thing left to prove is that the message names
+  // rewrites an unrecognised mirroring to vertical. A 1 x 5 map is a dead-axis refusal on vertical
+  // mirroring (S4c admitted the UNROM 512 ring), so the useful thing to prove is that the message names
   // the RECONCILED value ("vertical"), not the literal candidate string passed in.
   const p = blank(UNROM512, 'fourscreen');
-  addMap(p, 5, 1, true);
+  addMap(p, 1, 5, true);
   const before = structuredClone(p);
   const probe = structuredClone(p);
   probe.cartridge.mirroring = 'bogus';
@@ -359,13 +368,14 @@ test('the preflight applies reconcileCartridge first: the post-switch shape is w
   const refusals = checkStreamedMapperSwitch(p, UNROM512, 'bogus');
   assert.equal(refusals.length, 1);
   assert.match(refusals[0], /UNROM 512 with vertical mirroring/);
+  assert.match(refusals[0], /screens tall/, 'the shape the reconciled (vertical) mirroring refuses');
   assert.deepEqual(p, before);
 });
 
 test('switchableMappers never offers a board to a streamed project that then fails validate, from any starting board', () => {
   // switchableMappers checks each candidate at the project's OWN current mirroring (main/build/generate.js's streamedWorld branch), never at a
-  // mirroring the candidate would itself need, and excludes the project's current mapper. Since phase 3b S4a / S4b the candidates that clear the
-  // streamed tiers are MMC1 and MMC3 (action, both ring mirrorings, a shape its dead axis allows) and UNROM 512 four-screen; a project on U512 four-screen
+  // mirroring the candidate would itself need, and excludes the project's current mapper. Since phase 3b S4a / S4b / S4c the candidates that clear the
+  // streamed tiers are UNROM 512, MMC1 and MMC3 (action, both ring mirrorings, a shape its dead axis allows) and UNROM 512 four-screen; a project on U512 four-screen
   // therefore has no OTHER board with four-screen wiring to move to (reconcileCartridge would change the mirroring, which is not lossless).
   // What this test pins is the safety direction: whatever is offered, the moved project validates with no streamed error -- never UI drift.
   const everyOfferedValidates = (p, from) => {
@@ -380,7 +390,7 @@ test('switchableMappers never offers a board to a streamed project that then fai
   };
   const p = blank(UNROM512, 'horizontal');
   addMap(p, 1, 5, true);
-  assert.deepEqual(everyOfferedValidates(p, UNROM512), [MMC1, MMC3], 'a 1 x 5 horizontal map is valid on MMC1 and MMC3 horizontal, and only there');
+  assert.deepEqual(everyOfferedValidates(p, UNROM512), [MMC1, MMC3], 'a 1 x 5 horizontal map is valid on MMC1 and MMC3 horizontal, and only there (the project is already on UNROM 512)');
   const onFourscreen = blank(UNROM512, 'fourscreen');
   addMap(onFourscreen, 1, 5, true);
   assert.deepEqual(everyOfferedValidates(onFourscreen, UNROM512), [], 'no OTHER board matches four-screen');
@@ -388,14 +398,14 @@ test('switchableMappers never offers a board to a streamed project that then fai
   addMap(fromMmc3, 1, 5, true); // 1 x 5 on vertical mirroring is invalid on every board (the dead axis); nothing may be offered
   assert.deepEqual(everyOfferedValidates(fromMmc3, MMC3), []);
   const fromMmc3Ok = blank(MMC3, 'vertical');
-  addMap(fromMmc3Ok, 5, 1, true); // valid on MMC3 vertical; MMC1 vertical is the other ring board (S4b) and is offered, UNROM 512 vertical has no ring yet
-  assert.deepEqual(everyOfferedValidates(fromMmc3Ok, MMC3), [MMC1]);
+  addMap(fromMmc3Ok, 5, 1, true); // valid on MMC3 vertical; UNROM 512 (S4c) and MMC1 (S4b) vertical are the other ring boards and are offered, in registry order
+  assert.deepEqual(everyOfferedValidates(fromMmc3Ok, MMC3), [UNROM512, MMC1]);
   const fromMmc1 = blank(MMC1, 'vertical');
-  addMap(fromMmc1, 5, 1, true); // valid on MMC1 (S4b); MMC3 vertical is the other ring board and is offered
-  assert.deepEqual(everyOfferedValidates(fromMmc1, MMC1), [MMC3]);
+  addMap(fromMmc1, 5, 1, true); // valid on MMC1 (S4b); UNROM 512 and MMC3 vertical are the other ring boards and are offered
+  assert.deepEqual(everyOfferedValidates(fromMmc1, MMC1), [UNROM512, MMC3]);
   const rpg = blank(MMC1, 'vertical');
   rpg.project.gameType = 'rpg';
-  addMap(rpg, 5, 1, true); // an RPG streamed map: MMC3 would be refused for it (ringGame), so it is not offered
+  addMap(rpg, 5, 1, true); // an RPG streamed map: UNROM 512 and MMC3 would be refused for it (ringGame), so neither is offered
   assert.deepEqual(everyOfferedValidates(rpg, MMC1), []);
   // Hand-written 6502 still short-circuits before any of that: unchanged.
   const coded = structuredClone(p);

@@ -290,22 +290,21 @@ test('gating: an unsupported board or mirroring is refused, naming the Build pan
   }
 });
 
-test('Part D item 1 (narrowed by S4a, S4b): UNROM 512 non-fourscreen is still "not yet on this board"; MMC3, MMC1 and UNROM 512 four-screen are not', () => {
-  // Catches item 1's restriction never firing at all, firing on a board S4a / S4b admitted (MMC3, MMC1), or firing on the one board it must not.
+test('Part D item 1 (narrowed by S4a, S4b, S4c): a board that cannot stream is refused naming the boards that can; every ring board and UNROM 512 four-screen are not', () => {
+  // Catches item 1's restriction never firing at all, firing on a board S4a / S4b / S4c admitted (MMC3, MMC1, UNROM 512), or firing on the one torus it must not.
   // The full board x mirroring x game type x grid table is test/unit/streamadmit.test.js.
   const allProblems = (p) => validateProject(p).filter((x) => /stream/i.test(x.message));
-  for (const [mapperId, mirroring] of [[30, 'vertical'], [30, 'horizontal']]) {
+  for (const [mapperId, mirroring] of [[0, 'vertical'], [0, 'horizontal']]) {
     const p = project(mapperId, mirroring);
     p.maps[0].streamed = true;
-    const found = allProblems(p).filter((x) => ITEM1_MESSAGE.test(x.message));
+    const found = allProblems(p).filter((x) => /cannot stream a world/.test(x.message));
     assert.equal(found.length, 1, `${mapperId}/${mirroring}`);
     assert.equal(found[0].severity, 'error');
     assert.equal(found[0].where, 'Build');
-    assert.match(found[0].message, /not implemented yet on this board/);
-    assert.match(found[0].message, /MMC1 or MMC3 with horizontal or vertical mirroring \(action games\)/, 'the message names the boards that work');
+    assert.match(found[0].message, /UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring \(action games\)/, 'the message names the boards that work');
     assert.ok(!/UNROM 512 with four-screen mirroring today/.test(found[0].message), 'the pre-S4a "four-screen only" wording is gone');
   }
-  for (const [mapperId, mirroring] of [[1, 'vertical'], [1, 'horizontal'], [4, 'vertical'], [4, 'horizontal'], [30, 'fourscreen']]) {
+  for (const [mapperId, mirroring] of [[1, 'vertical'], [1, 'horizontal'], [4, 'vertical'], [4, 'horizontal'], [30, 'vertical'], [30, 'horizontal'], [30, 'fourscreen']]) {
     const p = project(mapperId, mirroring);
     p.maps[0].streamed = true;
     assert.equal(allProblems(p).filter((x) => ITEM1_MESSAGE.test(x.message)).length, 0, `${mapperId}/${mirroring}`);

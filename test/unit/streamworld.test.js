@@ -65,13 +65,14 @@ test(
   }
 );
 
-test('D.1 negative: any other board/mirroring refuses with the Forge-naming message, not a raw assembler error', () => {
-  // UNROM 512 vertical is the board that still has no two-nametable ring (S4c); MMC1 and MMC3 action rings are admitted (S4b, S4a), and NROM can never stream.
-  for (const [mapper, mirroring] of [[30, 'vertical'], [0, 'horizontal']]) {
-    const project = createStreamedProject({ mapper, mirroring, gridH: 1 });
+test('D.1 negative: any other board/mirroring/game type refuses with the Forge-naming message, not a raw assembler error', () => {
+  // Every streamable board has a two-nametable ring for action games since S4c (UNROM 512), S4b (MMC1) and S4a (MMC3); what is still refused is a streamed RPG on one
+  // (S5) and a board that can never stream (NROM).
+  for (const [mapper, mirroring, gameType] of [[30, 'vertical', 'rpg'], [1, 'horizontal', 'rpg'], [0, 'horizontal', 'action']]) {
+    const project = createStreamedProject({ mapper, mirroring, gameType, gridH: 1 });
     const errors = streamedErrors(project);
-    assert.ok(errors.length > 0, `${mapper}/${mirroring}`);
-    assert.ok(errors.some((e) => /only reaches the two-nametable ring|cannot stream a world/i.test(e.message)), `${mapper}/${mirroring}`);
+    assert.ok(errors.length > 0, `${mapper}/${mirroring}/${gameType}`);
+    assert.ok(errors.some((e) => /only reaches the two-nametable ring|cannot stream a world/i.test(e.message)), `${mapper}/${mirroring}/${gameType}`);
   }
 });
 

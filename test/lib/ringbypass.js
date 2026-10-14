@@ -1,7 +1,7 @@
 // A TEST-ONLY way to build a two-nametable streamed project (phase 3b S2).
 //
-// validateProject still refuses a two-nametable streamed map on every board and game type that is not admitted yet (since S4a / S4b: MMC3 and MMC1 action are
-// admitted; UNROM 512 non-four-screen is "not implemented yet on this board", and any streamed RPG is refused until S5). A test
+// validateProject still refuses a two-nametable streamed map for every game type that is not admitted yet (since S4a / S4b / S4c: MMC3, MMC1 and UNROM 512 action are
+// admitted; any streamed RPG on a two-nametable board is refused until S5). A test
 // that needs one of those still refused builds, or the ring gate's scenes, go through a COPY of the product in which that refusal is neutralized: engine/ main/ shared/ and package.json are copied to a
 // mkdtemp directory, `shared/project.js` has the capability branch's condition replaced (asserted to match exactly once, so a refactor
 // of the refusal fails loudly instead of silently building nothing), and the copy's own buildProject is imported. There is no flag in the

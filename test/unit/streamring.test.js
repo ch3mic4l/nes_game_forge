@@ -4,14 +4,14 @@
 // streamringstrip.test.js; the byte cost is test/unit/kernelbytes.test.js; the four-screen byte identity is streamringidentity.test.js):
 //   * streamRingMode (shared/cartridge.js) is the single writer of the ring mode and gives the documented value for every
 //     board x mirroring;
-//   * validateProject still refuses UNROM 512 on a two-nametable board (S4a admitted MMC3 action and S4b MMC1 action; the real build path rejects the rest); the generator itself
+//   * validateProject admits action games on a two-nametable board of every streamable kind (S4a MMC3, S4b MMC1, S4c UNROM 512) and still refuses a streamed RPG there (S5; the real build path rejects it); the generator itself
 //     no longer refuses mode 2 (phase 3b S3, C1: the horizontal engine exists) and builds it through the bypass copy;
 //   * config.inc carries STREAM_RING / SW_RING_COL_LEN / SW_RING_ROW_LEN / SW_RW_NT_STEP / SW_RW_NT_END on every build, with the torus values on a
 //     four-screen or non-streamed build (the horizontal ring's values are pinned in streamringh.test.js);
 //   * the assembled fork operands ARE those constants (read back from the ROM through the ring labels), which a generator edit or an
 //     engine edit that left one immediate at 30 / 4 cannot satisfy;
 //   * the allowance is charged to the content ceiling exactly once, and only on a ring.
-// A two-nametable streamed board that S4a did not admit is built only through test/lib/ringbypass.js (a mkdtemp copy with the one validate refusal
+// A two-nametable streamed project that S4a / S4b / S4c did not admit (any RPG) is built only through test/lib/ringbypass.js (a mkdtemp copy with the one validate refusal
 // neutralized); no shipped flag exists, and the real tree still refuses (asserted below).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,37 +53,38 @@ test('projectStreamRing: 0 for a project that streams nothing, whatever its boar
   assert.equal(projectStreamRing(plain), 0, 'no streamed map -> no ring, even on a vertical-mirroring streamable board');
 });
 
-test('validateProject still refuses UNROM 512 on a two-nametable board (its ring is bypass-only until S4c); MMC3 (S4a) and MMC1 (S4b) action are admitted', () => {
+test('validateProject admits a streamed action ring on every streamable board (S4a MMC3, S4b MMC1, S4c UNROM 512) and refuses a streamed RPG on all of them (S5)', () => {
+  // Catches a board left behind by an admission (the old UNROM 512 "not implemented yet" refusal surviving), and an RPG admitted along with its board.
   for (const mapper of STREAMABLE) {
     for (const mirroring of ['vertical', 'horizontal']) {
       const problems = validateProject(ringProjectOf(mapper, mirroring)).filter((p) => p.severity === 'error');
-      const refused = problems.some((p) => /two-nametable ring -- not implemented yet/.test(p.message));
-      assert.equal(refused, mapper === 30, `${resolveMapper(mapper).name} ${mirroring}: ${problems.map((p) => p.message).join(' | ') || 'no error at all'}`);
+      assert.deepEqual(problems.map((p) => p.message), [], `${resolveMapper(mapper).name} ${mirroring} action`);
+      const rpg = validateProject(ringProjectOf(mapper, mirroring, { gameType: 'rpg' })).filter((p) => p.severity === 'error' && /two-nametable ring/.test(p.message));
+      assert.equal(rpg.length, 1, `${resolveMapper(mapper).name} ${mirroring} rpg`);
+      assert.match(rpg[0].message, /streamed RPGs are not implemented there yet/);
     }
   }
-  // and the real tree's build path refuses it too, not merely validate
-  const real = ringProjectOf(30, 'vertical');
-  assert.ok(checkCapacity(real).problems.some((p) => p.severity === 'error' && /not implemented yet/.test(p.message)));
-  for (const admitted of [1, 4]) assert.ok(!checkCapacity(ringProjectOf(admitted, 'vertical')).problems.some((p) => p.severity === 'error'), `${resolveMapper(admitted).name} vertical action is admitted through the real path`);
+  // and the real tree's build path agrees, not merely validate
+  for (const admitted of STREAMABLE) assert.ok(!checkCapacity(ringProjectOf(admitted, 'vertical')).problems.some((p) => p.severity === 'error'), `${resolveMapper(admitted).name} vertical action is admitted through the real path`);
 });
 
-test('the real build path rejects a vertical streamed UNROM 512 board (no flag, no bypass in the shipped tree)', { skip }, async (t) => {
+test('the real build path rejects a vertical streamed RPG on UNROM 512 (no flag, no bypass in the shipped tree)', { skip }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-real-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const project = ringProjectOf(30, 'vertical');
+  const project = ringProjectOf(30, 'vertical', { gameType: 'rpg' });
   await saveProject(dir, project);
-  await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /not implemented yet/);
+  await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /streamed RPGs are not implemented there yet/);
 });
 
-test('the real build path rejects a horizontal streamed UNROM 512 board too, and the generator no longer carries its own mode-2 refusal', { skip }, async (t) => {
+test('the real build path rejects a horizontal streamed RPG on UNROM 512 too, and the generator no longer carries its own mode-2 refusal', { skip }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-real-h-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   for (const mapper of STREAMABLE.filter((id) => id === 30)) {
-    const project = ringProjectOf(mapper, 'horizontal');
+    const project = ringProjectOf(mapper, 'horizontal', { gameType: 'rpg' });
     await saveProject(dir, project);
-    await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /not implemented yet/, resolveMapper(mapper).name);
+    await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /streamed RPGs are not implemented there yet/, resolveMapper(mapper).name);
   }
-  // the generator's S2 stop-gap (a thrown 'Build panel: ... horizontal mirroring' for mode 2) is gone: validate is the one refusal, and S4 lifts it board by board
+  // the generator's S2 stop-gap (a thrown 'Build panel: ... horizontal mirroring' for mode 2) is gone: validate is the one refusal, and S4 lifted it board by board
   assert.ok(!/horizontal mirroring, which needs the horizontal two-nametable/.test(fs.readFileSync(new URL('../../main/build/generate.js', import.meta.url), 'utf8')));
 });
 

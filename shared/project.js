@@ -6816,7 +6816,7 @@ export function streamedBoardProblems(project) {
   const mirroringId = project.cartridge.mirroring;
   const capable = streamCapable(mapper, mirroringId);
   const gameType = project.project?.gameType ?? 'action';
-  // The boards that work, from the registry datum: "MMC1 or MMC3" today, with "(action games)" because the datum is per game type.
+  // The boards that work, from the registry datum: "UNROM 512, MMC1 or MMC3" today, with "(action games)" because the datum is per game type.
   const ringBoards = streamRingAdmittedBoardNames('action');
   // Under a mirroring that is not four-screen, one axis cannot scroll and holds
   // exactly one screen of ring; cameraAxes is the single writer of which axis.
@@ -6836,16 +6836,18 @@ export function streamedBoardProblems(project) {
         'capability',
         'Build',
         `${name} is streamed, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring ` +
-          `cannot stream a world. Streamed maps need UNROM 512 with four-screen mirroring, or ${ringBoards} with horizontal ` +
-          'or vertical mirroring (action games) -- change the board in the Build panel, or remove ' +
+          `cannot stream a world. Streamed maps need ${ringBoards} with horizontal or vertical mirroring (action games), ` +
+          'or UNROM 512 with four-screen mirroring -- change the board in the Build panel, or remove ' +
           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
       );
     } else if (!streamCapableFourScreen(mapper, mirroringId)) {
       // The two-nametable ring (phase 3b). The ONE decision of which boards and game types it is admitted for is
-      // streamRingAdmitted (shared/cartridge.js, a datum per board) -- S4a admitted MMC3 and S4b MMC1 for action games; UNROM 512
-      // is S4c and an RPG is S5 -- so lifting a board or a game type is a data change there, never an edit here. Two
+      // streamRingAdmitted (shared/cartridge.js, a datum per board) -- S4a admitted MMC3, S4b MMC1 and S4c UNROM 512 for action
+      // games; an RPG is S5 -- so lifting a board or a game type is a data change there, never an edit here. Two
       // refusals, because they read differently: this board has no ring yet, or it has one but not for this game type.
-      // Distinct from the !capable message above, which says "this board can never stream".
+      // Since S4c every streamable board has a ring, so the first is reachable only for a board added without the datum
+      // (streamadmit.test.js removes the datum to exercise it). Distinct from the !capable message above, which says
+      // "this board can never stream".
       if (!streamRingBoardAdmitted(mapper, mirroringId)) {
         add(
           'capability',

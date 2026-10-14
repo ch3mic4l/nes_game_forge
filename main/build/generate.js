@@ -1530,7 +1530,7 @@ export const STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE = 8;
 // replaces a 2-byte `sta <flat_screen` with a 3-byte `jsr cross_set_screen`,
 // +1 byte each -- and all 8 always assemble: a streamed map only ever
 // reaches the build on UNROM 512 with four-screen mirroring or, since phase 3b S4a,
-// an action game on MMC3 or (S4b) MMC1 with a two-nametable ring (streamRingAdmitted, shared/cartridge.js). All 8 sites
+// an action game on MMC3, (S4b) MMC1 or (S4c) UNROM 512 with a two-nametable ring (streamRingAdmitted, shared/cartridge.js). All 8 sites
 // assemble regardless of which camera axis a mirroring leaves dead, so there is no
 // camera-axis-dependent variant to track here (the ring builds are measured, test/unit/kernelbytes.test.js).
 export const STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8;
@@ -4091,7 +4091,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
   const hasStreamed = streamedPlan !== null;
   // Phase 3b S2/S3: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
-  // streamRingMode): 1 vertical, 2 horizontal. validateProject admits only MMC3 and MMC1 action games on a ring (S4a / S4b, streamRingAdmitted),
+  // streamRingMode): 1 vertical, 2 horizontal. validateProject admits only MMC3, MMC1 and UNROM 512 action games on a ring (S4a / S4b / S4c, streamRingAdmitted),
   // so every other two-nametable build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
   const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
   const projA = projectUsesStreamedActors(project);

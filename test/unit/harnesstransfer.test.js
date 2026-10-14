@@ -1,8 +1,8 @@
 // The harness-transfer certificate (test/lua/sw_harness_transfer.mjs, test/lua/sw_transfer_lib.mjs, test/lua/sw_transfer_worker.mjs).
 // Two kinds of test live here, kept apart (phase 3b S2 C1, review F1 and Chris's 2026-10-11 ruling):
 //   CURRENT EVIDENCE   what test/fixtures/harness-transfer/ holds now and what the fresh curve needs. The fresh curve was measured by the live harness, so the live
-//                      directory holds NO certificate and the curve is accepted through the CURRENT identity certificate, test/fixtures/identity-cert/s4b-c1.json (phase 3b
-//                      S4b commit C1's; the S4a C1, S3 C1, door-landing, C1 and C2 certificates stay checked in as historical ones that no longer authorize the live sources); a stale or forged artifact
+//                      directory holds NO certificate and the curve is accepted through the CURRENT identity certificate, test/fixtures/identity-cert/s4c-c1.json (phase 3b
+//                      S4c commit C1's; the S4b C1, S4a C1, S3 C1, door-landing, C1 and C2 certificates stay checked in as historical ones that no longer authorize the live sources); a stale or forged artifact
 //                      presented as active evidence is refused.
 //   HISTORICAL CONTROLS the validator itself, exercised against the retired certificate, its archive and the old curve bytes (test/fixtures/harness-transfer/retired/):
 //                      the untouched certificate validates with zero problems under a historical new-side source context, and every rejecting control mutates it
@@ -97,17 +97,21 @@ test('current evidence: the live directory holds no harness-transfer certificate
   assert.notEqual(nowCurve.provenance.harness, CERT.oldHarness, 'the fresh curve is not the one the retired certificate recorded');
 });
 
-test('current evidence: the fresh curve is accepted through the S4b C1 identity certificate, not a transfer; removing it, or moving the harness, refuses', () => {
+test('current evidence: the fresh curve is accepted through the S4c C1 identity certificate, not a transfer; removing it, or moving the harness, refuses', () => {
   const transfers = liveTransfers(nowCtx, ROOT);
   const verdicts = checkCertificates(path.join(ROOT, CERT_DIR_REL), { ...nowCtx, transfers });
-  const meta = verdicts.find((v) => v.file === 's4b-c1.json');
-  assert.ok(meta, 'the S4b C1 identity certificate is checked in');
+  const meta = verdicts.find((v) => v.file === 's4c-c1.json');
+  assert.ok(meta, 'the S4c C1 identity certificate is checked in');
   assert.deepEqual(meta.problems, []);
-  // S4a C1's certificate certified the engine S4b left alone and the generator S4b changed (admission is shared/ and main/build/ only), so it is history and may only fail on the generator binding
+  // S4b C1's certificate certified the engine S4c left alone and the generator S4c changed (admission is shared/ and main/build/ only), so it is history and may only fail on the generator binding
+  const s4b = verdicts.find((v) => v.file === 's4b-c1.json');
+  assert.ok(s4b, 'the S4b C1 identity certificate stays checked in as history');
+  assert.deepEqual(s4b.problems, ["the certificate's current generator fingerprint is not the live generator"]);
+  // S4a C1's certificate certified the engine S4b and S4c left alone and the generator S4b (and then S4c) changed (admission is shared/ and main/build/ only), so it is history and may only fail on the generator binding
   const s4a = verdicts.find((v) => v.file === 's4a-c1.json');
   assert.ok(s4a, 'the S4a C1 identity certificate stays checked in as history');
   assert.deepEqual(s4a.problems, ["the certificate's current generator fingerprint is not the live generator"]);
-  // S3 C1's certificate certified the engine S4a left alone and the generator S4a (and then S4b) changed (admission is shared/ and main/build/ only), so it is history and may only fail on the generator binding
+  // S3 C1's certificate certified the engine S4a left alone and the generator S4a (then S4b, then S4c) changed (admission is shared/ and main/build/ only), so it is history and may only fail on the generator binding
   const s3 = verdicts.find((v) => v.file === 's3c1-horizontal.json');
   assert.ok(s3, 'the S3 C1 identity certificate stays checked in as history');
   assert.deepEqual(s3.problems, ["the certificate's current generator fingerprint is not the live generator"]);
@@ -124,7 +128,7 @@ test('current evidence: the fresh curve is accepted through the S4b C1 identity 
   assert.ok(c1, 'the C1 metadata certificate stays checked in as history');
   assert.deepEqual(c1.problems, ["the certificate's current engine fingerprint is not the live engine", "the certificate's current generator fingerprint is not the live generator"]);
   assert.equal(transfers.length, 0);
-  assert.equal(curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts, transfers }).via, 'certificate s4b-c1.json');
+  assert.equal(curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts, transfers }).via, 'certificate s4c-c1.json');
   // the generator was edited after the sweep (the margin edit): the sweep's records reach it only through that certificate, so without it the curve is refused
   assert.notEqual(liveNow.generator, nowCurve.provenance.generator, 'precondition: the live generator is not the recorded one');
   const without = curveEvidenceVerdict({ curve: nowCurve, live: liveNow, verdicts: verdicts.filter((v) => v.file !== meta.file), transfers });

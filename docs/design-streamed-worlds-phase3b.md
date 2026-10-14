@@ -4,7 +4,7 @@
 design below existed as three patches (`01-ring-select.patch`, `02-ring-engine.patch`, `03-player-far-branch.patch`) applied at
 test time to a `mkdtemp` copy of those three directories, and the gate in `test/lua/ring_gate/` measured that copy on every acceptance cell. (Since S2 the
 vertical half is production code, and since S3 C1 the horizontal half is too: the three patches are **retired** and deleted, see section 10; the gate now applies
-only `00-refusal-lift.patch` to a production tree; since S4a / S4b the lift is only needed for what production still refuses, sections 11 and 13.) The
+only `00-refusal-lift.patch` to a production tree; since S4a / S4b the lift is only needed for what production still refuses, sections 11, 13 and 15.) The
 streamed-map refusal for mirrored boards stayed on through S3. Slices S2 onward wire the design into the shipped engine; each lands its own allowance and
 proof docs. This file is a dated record: it names constants (`SW_RING_ROW_LEN`, the row fork's labels) that the S1 prototype's patches added and that production has carried since S3 C1.
 
@@ -686,3 +686,84 @@ The two MMC1 **action** cells measured on **unlifted production code** (the tree
 | row 9 | S1c controls caught as declared; `nmi-wrap-row-32` N/A | S1c controls caught as declared; `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` N/A |
 
 The RPG builds and the other boards' cells are in section 3's per-build table, unchanged.
+
+## 15. Slice S4c, commit C1: the two-nametable ring admitted on UNROM 512, action games only
+
+C1 is admission for the last board (`shared/`, `main/`, tests, docs): **no file under `engine/` changed, and lever B (a row-address table for `sw_goto`) was not needed**. After it every streamable
+board admits the ring for action games; a streamed RPG on a two-nametable board waits for S5. The gate (`test/lua/ring_gate/`) is untouched and still lifts UNROM 512 by patch; S4c commit C2
+rebaselines it onto this commit and runs the one matrix.
+
+### The depth proof (done first; it gated the rest)
+
+The worry: `sw_goto`'s row loop (`engine/streamworld.asm`, `sw_goto_rowloop`, `lda; clc; adc; sta; dex; bne`) costs 19 cycles per row, and UNROM 512 horizontal is the deepest world of any board
+(61 rows against MMC3's 30 and MMC1's 14), about 1,140 cycles per call at row 60. The proof is that the S4b C2 certificate already measured that depth, so no new measurement was needed:
+
+1. **Gate cells at the deepest admitted N.** `s1b-U512-H-action-resident` (`handoff-next/s4b-c2-logs-final/`; `run_s1b.mjs` cell `U512-H`, action; banked is N/A for action) runs at **N = 61**,
+   `prepareRing` -> `maxWorkloadN` (`test/lua/ring_gate/ringcli.mjs`: bisection through the patched tree's own real `checkCapacity` from `hi` = 255): "the deepest world the capacity check
+   admits with this workload". (The loop after the bisection that is meant to probe N+1 and N+2 for non-monotone admission never executes, because `lo + k <= hi` is false once the bisection has converged; for
+   61 the neighbours 62 and 63 were each checked during the bisection, but the ceiling is **not** argued from that probe -- it rests on the production arithmetic in point 4.) MMC1-H runs at 14 and MMC3-H
+   at 30; the vertical cells run at 255, where the row loop never iterates (`gridH` is 1). The row-4 mainline evidence (the S1b campaign, point 3) and the campaign cell run at this N; the row-5 and row-6
+   interrupt cells do **not** (point 3b).
+2. **The deepest row the read-cost sweep charges is row 60.** `path:deepest-row` (`s1bjudge.mjs`) passes: one arm `sw_goto` at row 60 ran the row loop 60 times (N-1; walk@287 in Mesen, @286 in jsnes).
+   `cost:sweep` (`s1bcost.mjs`, `sweepReads`) is exhaustive over EVERY (current, target) pair of the 61-screen ring (13 distinct kernel layouts, repeated at 8 `mapper_shadow` values on UNROM 512), calling the
+   real `sw_peek_byte` (Y=0, 255), `sw_goto` and `sw_locate_current` under jsnes: the dearest `sw_goto` is 1,290 cycles (target row 60), the dearest peek 1,415 / 1,417 (row 60), `sw_locate_current` 103,
+   independent of the target; goto cost is independent of the current screen. `cost:events` shows every priced event in Mesen (1,769 goto / 1,843 locate / 1,226 peek) and jsnes equals the sweep, none outside it.
+   The class bounds (`bound:Cx`) charge unattained reads at the ring-adjacent exhaustive price. In the measured Mesen bodies, 953 of 10,101 had a `sw_goto` at target row 57 or deeper.
+3. **Worst frame against `G < 29,780` (row 4).** Measured: **20,026** cycles on U512-H (C4a, `say`@333, no reads), margin 9,754; the per-class maxima are 19,525 / 19,122 / 19,709 / 17,122 / 16,334 / 17,014
+   (MMC3-H 19,040, MMC1-H 18,433). The class bounds stay UNCERTIFIED by design (section 4, option A): the worst class estimate on U512-H is **27,013** (C4c: sampled remainder plus the exhaustive read cost), margin
+   2,767, against MMC3-H 25,498 (4,282) and MMC1-H 24,819 (4,961). The composed estimates are UNCERTIFIED; only the measured G (20,026) is a row-4 pass.
+   **3b. What rows 5 and 6 are, and why they do not need N = 61.** They are interrupt (NMI) evidence, measured at **N = 4** (`ringnmi.mjs` builds row 5 with `n: 4`; `ringclose.mjs`'s `ringCloseProject` defaults
+   to `n = 4` and its caller passes none):
+   - **Row 5** (strip-only and mixed NMI) certifies the static longest NMI paths: **2,042 cycles (strip) and 2,132 (mixed)**, certified margins **202.67 and 112.67**, observed minimum margins 258.7 and 158.0
+     (`s1c-r5-U512-H-action-resident.log`). These two pairs are both row 5. They are properties of the board's NMI code (MMC1-H 2,042 / 2,164, margins 202.67 / 80.67; MMC3-H 2,108 / 2,198, 136.67 / 46.67), not of N.
+   - **Row 6** (the exclusive close drain: the 85-byte, five-packet close frame) reports the **observed** margin, **376.7 cycles** (`s1c-r6-U512-H-action-resident.log`; MMC1-H 378.0, MMC3-H 314.0), not a bound.
+   - **Why a deeper scene adds nothing to either.** The NMI handler (`nmi` -> `vram_drain` / `sw_nmi_stream` / `sw_nmi_stream_reduced`) contains no `jsr sw_goto`; the only callers of `sw_goto` and
+     `sw_peek_byte` are `sw_enter_screen`, `sw_terrain_or_fill_solid_type`, `sw_read_transaction`, `sw_read_run` and the relocators, all mainline. What the handler does depends on the queued bytes, not on the
+     world's depth, so its cycle count at N = 4 and N = 61 is the same code path.
+   - **The mainline half of the close does reach `sw_goto`, and is priced at depth in row 4.** Building the close row runs `text_close_step` -> `sw_dlg_hi_close_step` -> `sw_dlg_close_row` ->
+     `sw_dlg_terrain_read` -> `sw_dlg_read_chunk` -> `sw_read_run` -> `sw_goto` (`engine/streamdialog.asm`, `engine/streamworld.asm`) in the frame that runs the close, before the NMI drains the queue. The retained
+     S1b data witnesses it at the deepest row: `mv-lead`, Mesen frame 423, class C4c, **G = 17,014**, whose events include two `g:0:60:1277:0:59` (a `sw_goto` to row 60, 1,277 cycles) each followed by its
+     restore `l:0:59:88` (`rowloop` 120 = 2 x 60); the jsnes bodies for the same scene agree (frames 422 and 423 carry the same events, 17,011 and 16,982 cycles). The N = 4 row-6 measurement is **not** a
+     measurement of that mainline cost at N = 61; row 4 is.
+4. **Production cannot admit a deeper world than the gate's 61.** `screenRegions` (`shared/cartridge.js`): UNROM 512 has 32 PRG units, 31 data banks, 62 regions; CHR-RAM boards put `max(1, tilesetCount)`
+   tileset pages off the front, an RPG's battle bank one more, and a Save command's flash sector the last one. A 1 x N map is one region per row (`streamRegionsPerRow(1)`). No input gives more than
+   **61**: `handoff-next/s4c-c1/capacity.mjs` (log `capacity.log`) walks tilesets 0-4 x banked code 0-1 x flash save, and builds the real project: **1 x 61 builds, 1 x 62 is refused** ("The streamed maps need
+   62 of the 61 8 KB program regions UNROM 512 has free for world data", Map Forge). Two tilesets or a Save lower it to 60; four tilesets to 58.
+
+`streamadmit.test.js` (f) pins it: the packer's ceiling per board (14, 30, 61) and the real refusal at N / N+1, hardcoded from the certificate's `N=`, so growing the board's region count (`prgUnits`, a CHR page no
+longer charged, streamed maps allowed into payload regions) fails a test until the depth is recertified.
+
+### What C1 changes
+
+- **What is admitted.** An **action** project on **UNROM 512** with **horizontal or vertical** mirroring and the dead-axis shape the mirroring allows. One line: `streamRingGameTypes: ['action']` on the UNROM 512
+  entry of `shared/cartridge.js`. The four-screen torus on UNROM 512 is a different path (`streamCapableFourScreen`) and is untouched: action and RPG, byte-identical.
+- **Refusal messages (generated from the registry; two reworded).** `streamRingAdmittedBoardNames` now returns an English list ("UNROM 512, MMC1 or MMC3"; two boards "A or B"), and the "cannot stream"
+  message is reordered so the four-screen clause is not repeated inside the list:
+
+  | message [kind, where] | before (S4b) | after |
+  | --- | --- | --- |
+  | board cannot stream [`capability`, Build] | "Streamed maps need UNROM 512 with four-screen mirroring, or MMC1 or MMC3 with horizontal or vertical mirroring (action games) -- change the board ..." | "Streamed maps need UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring (action games), or UNROM 512 with four-screen mirroring -- change the board ..." |
+  | ring board without a datum [`capability`, Build] | "... not implemented yet on this board. Streamed maps work on MMC1 or MMC3 with horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring ..." | same text, from the same list; reachable only by deleting a datum (no registered board is in that state) |
+  | streamed RPG [`ringGame`, Build] | UNROM 512 H/V got the board refusal | text unchanged; now fires on UNROM 512, MMC1 and MMC3 |
+  | dead axis, grid [Map Forge] | unchanged | unchanged, now live on UNROM 512 too |
+
+  `docclaims.test.js` T4 keeps the "no ring yet" refusal alive by removing UNROM 512's datum inside `fires()` and restoring it; the README sentence now says only the RPG refusal.
+- **Audited, unchanged.** `reconcileCartridge` (UNROM 512 has four-screen, so the selection survives; the four-screen tileset trim happens in the Build panel's mirroring commit, now tested through the real callback
+  for four-screen <-> H/V on a streamed project), `switchableMappers` and `checkStreamedMapperSwitch` (board properties: UNROM 512 is offered exactly where `streamedBoardProblems` accepts the moved project),
+  `checkCapacity` / `streamedCapacityProblems` / `planStreamedRegions` (already per-board region counts), `main/build/streamplacement.js` and `shared/streamlayout.js` (a comment only), `shared/save.js` (no board
+  logic; mirroring is not in the save identity), the `sample-u512` fixture (untouched), the renderer's Build and Map Forges (no board text). Stale comments in `shared/cartridge.js`, `generate.js` and `streamplacement.js` fixed.
+- **Capacity, re-measured through the real path** (`handoff-next/s4c-c1/capacity.mjs`):
+
+  | UNROM 512 action | largest that builds | smallest refused | refused by |
+  | --- | --- | --- | --- |
+  | vertical mirroring, N x 1 | **255** (the grid ceiling) | 256 | the grid ceiling, Map Forge |
+  | horizontal mirroring, 1 x N | **61** | **62** | `checkCapacity`, "need 62 of the 61 8 KB program regions", Map Forge |
+- **Saves (ruling 3), UNROM 512.** As on MMC3 and MMC1, a mirroring-only edit keeps `saveCompatToken` and `saveIdentity` and a resize invalidates. UNROM 512 saves to the flash sector inside the ROM, not battery RAM:
+  the Continue test carries the 4 KB sector of the vertical ROM into the horizontal ROM image and lands on the saved position with both live nametables equal to the horizontal-ring oracle.
+- **Byte identity.** The six fixtures' hashes equal `handoff-next/fixture-hashes-r4-before.txt` before and after, and all six built by `cli.js` equal those of a `5e9d389` worktree. The ring gate's UNROM 512
+  action scenes -- **98** (both mirrorings, resident placement) -- build to the **same ROM bytes** from this tree with no lift as from a `19ea33c` worktree with `00-refusal-lift.patch` applied
+  (`handoff-next/s4c-c1/identity.mjs`, log `identity.log`: 98 EQUAL, 0 different).
+- **Certificates.** `shared/` and `main/build/` moved, so the generator fingerprint moved (`5b94bb9519d5 -> 972e6356fdc1`; the engine did not): `test/fixtures/identity-cert/s4c-c1.json` (11,760 of 11,760 direct
+  records matched, 832 reuses, 0 mismatches), and `exclusions-evidence.json` refreshed by `refresh_sw_exclusions.mjs` (only `prov.new.generator` changed). `s4b-c1.json` stays as history and
+  `harnesstransfer.test.js` asserts its one stale binding. No ring-gate stamp was touched. The certificate is a fingerprint renewal, not an admission proof; C2's matrix is the production proof.
+- **Not done here (C2).** `BASELINE` is still `19ea33c`; `00-refusal-lift.patch` still lifts UNROM 512 (and RPG). C2 rebaselines onto this commit, re-cuts the lift to `ringGame` only, and runs the one matrix.

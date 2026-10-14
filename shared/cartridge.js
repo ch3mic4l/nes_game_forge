@@ -247,6 +247,9 @@ export const MAPPERS = [
     saveMedia: 'flash',
     // Streamed worlds (docs/design-streamed-worlds.md §2): a four-screen ring in phase 2, a two-nametable ring in phase 3.
     streamable: true,
+    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4c); see `streamRingAdmittedGameTypes`. The four-screen torus
+    // above is a different ring and is not asked about here.
+    streamRingGameTypes: ['action'],
     // iNES cannot describe CHR-RAM or its size, so the header is rewritten to
     // NES 2.0 after nesasm has run. See headerPatch().
     nes2: { chrRamSize: 32768 },
@@ -377,8 +380,9 @@ export function streamCapableTwoNametable(mapper, mirroringId) {
  * Which streamed-ring geometry a build uses (the single writer; main/build/generate.js emits it as STREAM_RING):
  * 0 = four-screen torus, 1 = vertical mirroring (32 x 15 blocks, an X ring), 2 = horizontal mirroring
  * (16 x 30 blocks, a Y ring). Derived from cameraAxes, never from a second reading of the mirroring string.
- * Mode 2's engine fork landed in phase 3b S3 (commit C1). Which boards a USER may build a ring on is `streamRingAdmitted` (S4a: MMC3,
- * action games); every other ring is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
+ * Mode 2's engine fork landed in phase 3b S3 (commit C1). Which boards a USER may build a ring on is `streamRingAdmitted` (action games on
+ * UNROM 512, MMC1 and MMC3, since S4c); every ring it refuses (any streamed RPG, until S5) is reachable only through the test-only bypass
+ * copy (test/lib/ringbypass.js).
  */
 export function streamRingMode(mapper, mirroringId) {
   if (!streamCapableTwoNametable(mapper, mirroringId)) return 0;
@@ -390,8 +394,8 @@ export function streamRingMode(mapper, mirroringId) {
 /**
  * Which game types the two-nametable ring is ADMITTED for on this board (phase 3b S4): the board's own `streamRingGameTypes` datum,
  * the single writer of "may a user build a ring here". A board without the datum is not admitted for anything -- its ring is built only
- * through the test-only bypass copy (test/lib/ringbypass.js). S4a admitted MMC3 and S4b MMC1 (action games); S4c (UNROM 512) is one more
- * `streamRingGameTypes: ['action']` line and S5 adds 'rpg' to a board's list. Four-screen is a different ring (the torus) and does not ask this.
+ * through the test-only bypass copy (test/lib/ringbypass.js). S4a admitted MMC3, S4b MMC1 and S4c UNROM 512 (action games, one
+ * `streamRingGameTypes: ['action']` line each) and S5 adds 'rpg' to a board's list. Four-screen is a different ring (the torus) and does not ask this.
  */
 export function streamRingAdmittedGameTypes(mapper) {
   return mapper?.streamRingGameTypes ?? [];
@@ -399,8 +403,9 @@ export function streamRingAdmittedGameTypes(mapper) {
 
 /**
  * Is a two-nametable streamed map admitted on this board and mirroring, for this game type? Both halves are needed because the two
- * refusals read differently to the user: `streamRingBoardAdmitted` false means "this board has no ring yet" (MMC1, UNROM 512), while a
- * board that is admitted but not for this game type means "not for RPGs yet" (S5). False for every non-ring mirroring.
+ * refusals read differently to the user: `streamRingBoardAdmitted` false means "this board has no ring yet" (no registered board is in that
+ * state since S4c; a streamable board added without the datum would be), while a board that is admitted but not for this game type
+ * means "not for RPGs yet" (S5). False for every non-ring mirroring.
  */
 export function streamRingBoardAdmitted(mapper, mirroringId) {
   return streamRingMode(mapper, mirroringId) !== 0 && streamRingAdmittedGameTypes(mapper).length > 0;
@@ -411,11 +416,13 @@ export function streamRingAdmitted(mapper, mirroringId, gameType) {
 }
 
 /**
- * The names of the boards the two-nametable ring is admitted on for a game type, in registry order ("MMC1 or MMC3"; "" when none is) --
- * the one place a refusal message learns which boards work, so a later admission (S4c, S5) moves the text with the datum.
+ * The names of the boards the two-nametable ring is admitted on for a game type, in registry order, as an English list ("UNROM 512, MMC1 or
+ * MMC3"; "MMC3 or MMC1" for two; one name alone; "" when none is) -- the one place a refusal message learns which boards work, so a later
+ * admission (S5) moves the text with the datum.
  */
 export function streamRingAdmittedBoardNames(gameType) {
-  return MAPPERS.filter((mapper) => mapper.supported && streamRingAdmittedGameTypes(mapper).includes(gameType)).map((mapper) => mapper.name).join(' or ');
+  const names = MAPPERS.filter((mapper) => mapper.supported && streamRingAdmittedGameTypes(mapper).includes(gameType)).map((mapper) => mapper.name);
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names.join('');
 }
 
 /** Either ring: is a `map.streamed` legal on this board and mirroring at all? */
