@@ -3,8 +3,8 @@
 **Status, 2026-10-07.** Slice S1 of phase 3b is a *proof*, not an engine change. Nothing under `engine/`, `main/` or `shared/` changed. The whole ring
 design below existed as three patches (`01-ring-select.patch`, `02-ring-engine.patch`, `03-player-far-branch.patch`) applied at
 test time to a `mkdtemp` copy of those three directories, and the gate in `test/lua/ring_gate/` measured that copy on every acceptance cell. (Since S2 the
-vertical half is production code, and since S3 C1 the horizontal half is too: the three patches are **retired** and deleted, see section 10; the gate now applies
-only `00-refusal-lift.patch` to a production tree; since S4a / S4b the lift is only needed for what production still refuses, sections 11, 13 and 15.) The
+vertical half is production code, and since S3 C1 the horizontal half is too: the three patches are **retired**, see section 10. The gate once applied
+`00-refusal-lift.patch` to a production tree; the lift shrank with each of S4a, S4b, S4c and S5 C2 and was **retired in S5 C3, section 19**: no cell carries a patch.) The
 streamed-map refusal for mirrored boards stayed on through S3. Slices S2 onward wire the design into the shipped engine; each lands its own allowance and
 proof docs. This file is a dated record: it names constants (`SW_RING_ROW_LEN`, the row fork's labels) that the S1 prototype's patches added and that production has carried since S3 C1.
 
@@ -1028,3 +1028,43 @@ The twelve RPG builds (six cells, resident and banked) measured on **unlifted pr
 | U512-H | banked | **60** / 4 | 19,423 (C3a) | 250.3 / 155.3 | 2,063 / 2,145 | 181.67 / 99.67 | 375.3 | N/A | |
 
 Row 8 on the MMC3 RPG cells also runs the lifecycle session (part A and part B, the table's frame counts are the plain run's); a build carrying a control has `P/N` in row 9 (the MMC3 RPG resident builds now do). In the S1b depth / `G` and row-5/6 columns the U512-H pair is the only row of this table that differs from the S4c C2 certificate's RPG rows, and only in N and in `G` (19,373 / 19,366 at 59 rows). The row-8 column and the MMC3 cells' stamp counts also changed: MMC3 RPG row 8 grows from 13 to 15 items, and the two MMC3 cells' stamp subtotals grow by the eight new lifecycle controls (four per orientation); the ordinary row-8 frame, call and IRQ figures are unchanged, the session evidence is additional.
+
+## 20. Slice S6, commit C1: release checks
+
+S6 changes no code under `engine/`, `main/`, `shared/` or `renderer/`: the ring certificate of section 19 stands, and the identity fingerprint (250 inputs, `harnessFingerprint`) is equal before and after. What it adds is `test/unit/streamrelease.test.js`, five pins in `test/unit/docclaims.test.js`, and the documentation corrections below.
+
+### What was audited
+
+Four categories, each against the code rather than the prose: (1) the README, every figure and board list of the Streamed worlds and Camera rows, the mapper table and the four-screen paragraph; (2) every current-state sentence in the docs that still called a streamed board, game type or depth "refused", "not implemented yet" or "pending" (history in dated slice sections was left alone), with every named test and constant re-resolved; (3) the four refusal messages (`capability`, `ringGame`, `grid`, `deadAxis`) rendered for every board x mirroring x game type, checking that each names the right Forge, boards and axis; (4) ruling Q1, the Map Forge's size fields. The result: the README row was right except one clause (a default UNROM 512 RPG is 59 deep, not 60), ROADMAP item 15 and the status paragraphs of two design documents were stale, and no refusal text was wrong.
+
+### Starters and the library on the ring
+
+Every shipped starter, moved onto each of the six ring cells the way the Build panel does it (`reconcileCartridge`, camera on, every map streamed), with the result pinned by message:
+
+| starter | UNROM 512 V / H | MMC1 V / H | MMC3 V / H |
+|---|---|---|---|
+| `blank-action`, `blank-rpg`, `overworld` | clean, builds | clean, builds | clean, builds |
+| `dungeon` | refused: switch-bound tiles on a streamed screen | same | same |
+| `rpg` | refused: kernel lookup-table bytes | clean, builds | refused: kernel lookup-table bytes |
+
+Both refusals are older than the ring and their remedies work. The dungeon's first screen holds the project's only switch-bound tile; with only maps 1-3 streamed it validates on all six cells and builds. The `rpg` starter (Save commands, three maps, the camera) needs more kernel-lo table bytes than MMC3 or UNROM 512 have free once streaming takes its share. `checkCapacity`'s problem list already contains `validateProject`'s, so a probe that concatenates the two reports each error twice (the audit's did; the build and the Build panel's own lists do not). A map that is streamed beside ordinary maps is legal: there is no rule about what a door or warp points at, only each streamed map's own dead-axis rule (`streamedmixed.test.js` pins the engine for it; the overworld with only map 0 streamed on MMC3 horizontal validates and builds). A 2 x 1 map under horizontal mirroring, or 1 x 2 under vertical, is the `deadAxis` refusal on all six cells and nothing else.
+
+`planLibraryImport` on a streamed ring project: all 22 library entries (5 terrain, 3 monster, 4 pickup, 8 sfx, 2 song) on all six cells and both game types, 264 plans, leave the input alone, equal the plan for the same project with streaming off, and apply to a project with no validate or capacity error. The function reads nothing about streaming.
+
+### Q1: the Map Forge's size fields (Chris, 2026-10-15: record, do not fix)
+
+The Map Forge has no streamed awareness. Each of its "Screens across / down" fields clamps the dimension you edit to `LIMITS.mapGrid` (4) and passes the other dimension through unchanged (`renderer/forges/map/map.js`: width `:2064`, height `:2072`, both into `resizeMap`), and `mapGridLimit(map)` (`shared/project.js`), written for them, is not called there. Everything below was run through the pure functions the handlers call (`growOrShrinkMap`, `duplicateScreenViaGrowthCore`, `validateProject`), with the handlers' own clamp.
+
+- **Typing along the streaming direction of a long map shrinks it.** The audited case is a streamed 1 x 30 column (MMC3, horizontal mirroring): typing a height gives `resizeMap(1, min(4, typed))`, so 1 x 3 for a 3 and 1 x 4 for anything from 4 up, at most 4 screens. That total holds only because the other side is 1. The clamp touches the edited dimension only (`map.js:2064`, `:2072`): a 30 x 1 row (vertical mirroring) typed 2 in the height field goes to 30 x 2, 60 screens, and a 3 x 10 map typed 10 in the height field goes to 3 x 4, 12 screens. A shrink raises no prompt, except when it would drop a door or warp that points into a removed screen (`map.js:795`, `wouldDrop > 0`); Undo restores the whole project.
+- **Typing across it can make a refused shape.** On a two-nametable board, a width above 1 on a column (a height above 1 on a row) is the `deadAxis` refusal, which names the Map Forge: the 1 x 30 column typed 2 in the width field is a 2 x 30 map the build refuses.
+- **Duplicate screen has its own room check.** `hasRoom` is `gridW * gridH < LIMITS.mapGrid ** 2` (`map.js:844`), so 16 screens or more count as full. A map with room grows by `growthTarget` (`shared/project.js`: one more column if `gridW <= gridH` and `gridW < 4`, else one more row), and that **can** produce a refused shape but does not always: a ring map of 1 x 3 under horizontal mirroring becomes 2 x 3, refused; a streamed 1 x 1 under vertical mirroring becomes 2 x 1, legal. A map with 16 or more screens, including the audited 1 x 30 column, does not grow: if another map has room, a modal says the map "is already full (4×4 screens)" and lets you pick that map; if no other map has room, the screen is promoted to a new map with no modal (`map.js:852-885`). "Already full" is therefore shown only when there is another map to offer.
+
+The README's Streamed worlds row says the short version (pinned by `docclaims.test.js`, which also pins that the code is still like that and that the demonstrated cases behave as stated, so the Map Forge tooling phase must delete the clause and the pin together).
+
+### Known follow-ups
+
+Deferred by Chris, 2026-10-15. Both are in files the ring certificate fingerprints, so fixing either is a certificate renewal, not an S6 edit.
+
+- `main/build/generate.js:3126`, `streamedCapacityProblems`: the capacity message ends "or choose a board with more program space in the Build panel". That works on MMC1 and MMC3 (UNROM 512 has more) and **cannot work on UNROM 512, the largest board**. The text is in a fingerprinted file, so S6 left it (deferred to a wording pass, "C5").
+- `shared/cartridge.js:305`, the MMC3 entry's `summary`: "Up to 512 KB of program and 256 KB of graphics ...". The entry's own `prgUnits` is 16 (256 KB), and so is the README's mapper table; the UI string says 512 KB. Deferred with the first (the file is a fingerprint input).
+- The Map Forge knows nothing of a streamed map (Q1 above): its "Screens across / down" fields and Duplicate screen clamp every map to `LIMITS.mapGrid` (4) and, widened or duplicated, can make a shape the build refuses. This belongs to the item-15 "Map Forge tooling" phase, with the toggle and the live axis.

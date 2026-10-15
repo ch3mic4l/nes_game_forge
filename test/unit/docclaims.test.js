@@ -4,6 +4,8 @@
 //   T3  nothing claims a scripted Move cannot cross a seam (the S3b-deleted warning and its wording)
 //   T4  every streamed-map warning and refusal still fires, and the docs that describe one still name it
 //   README  the figures in the README's streamed-worlds row equal the ones the code carries
+//   S6      the row's board list is the registry's admitted set, its RPG depths are the numbers the real refusal draws, its Map Forge clause is true of renderer/forges/map/map.js, and every
+//           `<name>.test.js` a current-state doc cites with a quoted test name or a (x) tag is a real test title in that file
 //
 // docs/design-*.md are dated design records that name deleted symbols on purpose; they are out of scope.
 //
@@ -54,13 +56,18 @@ import {
   streamedBoardProblems,
   streamedGridProblems,
   growOrShrinkMap,
+  duplicateScreenViaGrowthCore,
   normalizeProject,
+  reconcileCartridge,
   LIMITS
 } from '../../shared/project.js';
+import { STARTERS } from '../../shared/starters/index.js';
 import { STREAM_TILE_BOUND, STREAM_TILE_BOUND_WITH_BOUND_TILES } from '../../shared/streambound.js';
 import { moverSpeedNote } from '../../shared/streamlayout.js';
 import { checkStreamedMapperSwitch, planStreamedRegions } from '../../main/build/generate.js';
-import { resolveMapper } from '../../shared/cartridge.js';
+import { resolveMapper, MAPPERS, streamRingAdmittedGameTypes, streamCapableFourScreen } from '../../shared/cartridge.js';
+import { checkCapacity } from '../../main/build/generate.js';
+import { oneTilesetRpg } from '../lua/ring_gate/ringlayout.mjs';
 
 const SELF = 'test/unit/docclaims.test.js';
 const tracked = trackedFiles();
@@ -439,6 +446,135 @@ test('README streamed-worlds row: its figures are the ones the code carries', ()
   // S4a / S4b / S4c: the ring's figures -- a row of up to LIMITS.streamedGrid screens under vertical mirroring, and a column of up to the board's 8 KB region count under horizontal (UNROM 512, MMC3, MMC1)
   const regionsOf = (mapper) => planStreamedRegions(createStreamedProject({ mapper, mirroring: 'horizontal', gridW: 1, gridH: 1 }), resolveMapper(mapper)).usable.length;
   assert.match(flat, new RegExp(`a single row of up to ${LIMITS.streamedGrid} screens under vertical mirroring, or a single column of up to ${regionsOf(30)} under horizontal on UNROM 512, ${regionsOf(4)} on MMC3, ${regionsOf(1)} on MMC1`));
+});
+
+// S6 C1. The README row's board list, RPG depths and Map Forge clause, and the test names the current-state docs cite.
+const CITED_TEST_REFS_FLOOR = 4; // the citations in README.md, CLAUDE.md and docs/reference-*.md on 2026-10-15, all in reference-engine.md: a drop to 0 means the pattern broke, not that the docs were cleaned
+const streamedRow = () => read('README.md').split('\n').find((l) => l.startsWith('| **Streamed worlds**')).replace(/\s+/g, ' ');
+
+test('README streamed-worlds row: the boards it lists are the registry\'s admitted set, and the four-screen board is the registry\'s too', () => {
+  // Catches a board dropped from, or added to, the README's sentence without the registry (streamRingGameTypes in shared/cartridge.js) moving, and the reverse.
+  const flat = streamedRow();
+  const admitted = MAPPERS.filter((m) => m.supported && streamRingAdmittedGameTypes(m).length).map((m) => m.name).sort();
+  const listed = flat.match(/ or ([A-Z][\w ]*(?:, [A-Z][\w ]*)* or [A-Z][\w ]*) with horizontal or vertical mirroring/);
+  assert.ok(listed, 'the row names its two-nametable boards');
+  assert.deepEqual(listed[1].split(/, | or /).sort(), admitted);
+  const torus = MAPPERS.filter((m) => m.supported && streamCapableFourScreen(m, 'fourscreen')).map((m) => m.name);
+  assert.equal(torus.length, 1, 'the row names exactly one four-screen board');
+  assert.ok(flat.includes(`It needs ${torus[0]} with four-screen mirroring, or `), `the row says ${torus[0]} is the four-screen board`);
+});
+
+test('README streamed-worlds row: the RPG depths are numbers the real refusal draws (n admitted, n + 1 refused), on the default and the one-tileset project', () => {
+  // The same truth streamadmit.test.js (g) pins, here read OUT of the README sentence: a stale 60 for the default UNROM 512 RPG (the A2f finding) or a stale 29 fails.
+  const m = streamedRow().match(/its column is one shorter: (\d+) on MMC1, (\d+) on MMC3 and, on UNROM 512, (\d+) with the usual Main \+ Battle tileset pair or (\d+) with one tileset/);
+  assert.ok(m, 'the row states the RPG depths as numbers');
+  const [mmc1, mmc3, twoTilesets, oneTileset] = m.slice(1).map(Number);
+  const rpg = (mapper, n, single) => {
+    const p = createStreamedProject({ mapper, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: n, camera: true });
+    return single ? oneTilesetRpg(p) : p;
+  };
+  const refused = (p) => [...validateProject(p), ...checkCapacity(p).problems].some((x) => x.severity === 'error');
+  assert.equal(rpg(30, 1, false).tilesets.length, 2, 'the usual RPG has the Main + Battle pair');
+  assert.equal(rpg(30, 1, true).tilesets.length, 1);
+  for (const [mapper, n, single, label] of [[1, mmc1, false, 'MMC1'], [4, mmc3, false, 'MMC3'], [30, twoTilesets, false, 'UNROM 512 default'], [30, oneTileset, true, 'UNROM 512 one tileset']]) {
+    assert.equal(refused(rpg(mapper, n, single)), false, `${label}: 1 x ${n} is admitted`);
+    assert.equal(refused(rpg(mapper, n + 1, single)), true, `${label}: 1 x ${n + 1} is refused`);
+  }
+});
+
+test('README streamed-worlds row: the Map Forge clause is present and still true of renderer/forges/map/map.js (the Map Forge tooling phase removes it, and this test, on purpose)', () => {
+  // The clause records ruling Q1 (Chris, 2026-10-15): the size fields and Duplicate screen clamp every map to LIMITS.mapGrid x LIMITS.mapGrid and know nothing of a streamed map. When the item-15
+  // "Map Forge tooling" phase teaches them (LIMITS.streamedGrid, the board's live axis), this fails -- delete the clause from the README and this test together, deliberately.
+  const flat = streamedRow();
+  const side = LIMITS.mapGrid;
+  assert.match(flat, new RegExp(`a streamed map's size is set in its JSON \\(\`gridW\` and \`gridH\`\\), not in the Map Forge, whose "Screens across / down" fields and ⧉ Duplicate screen still treat every map as at most ${side} × ${side}`));
+  assert.match(flat, new RegExp(`each size field caps what you type at ${side} and keeps the other side, so typing a height into a long streamed column such as 1 × 30 shrinks it to at most ${side} screens \\(no prompt unless a door or warp points into a dropped screen; Undo restores it\\)`));
+  assert.match(flat, /resizing across the streaming direction, or duplicating a screen of a short map, can make a shape the build refuses/);
+  assert.match(flat, new RegExp(`Duplicate screen counts a map of ${side * side} screens or more as full, and puts the copy in another map with room or in a new map`));
+  const src = read('renderer/forges/map/map.js');
+  assert.equal((src.match(/Math\.min\(LIMITS\.mapGrid, Number\(event\.target\.value\)\)/g) ?? []).length, 2, 'both size fields clamp to LIMITS.mapGrid');
+  assert.match(src, /map\.gridW \* map\.gridH < LIMITS\.mapGrid \*\* 2/, 'Duplicate screen\'s room check is the 4 x 4 one');
+  assert.doesNotMatch(src, /mapGridLimit\(/, 'no size field asks mapGridLimit(map) yet');
+  assert.doesNotMatch(src, /LIMITS\.streamedGrid/, 'the Map Forge does not know the streamed grid');
+  assert.match(src, /wouldDrop > 0/, 'a shrink asks only when it would drop a reference');
+
+  // The source reading above proves the clamp expressions exist; this proves what the README says they DO, through the real pure functions with the handlers' own clamp (map.js :2064 / :2072).
+  const clamp = (v) => Math.max(1, Math.min(LIMITS.mapGrid, Number(v)));
+  const errorsOnly = (p) => validateProject(p).filter((x) => x.severity === 'error');
+  const shape = (p) => `${p.maps[0].gridW} x ${p.maps[0].gridH} (${p.maps[0].screens.length})`;
+  const column = () => createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 30 });
+  assert.deepEqual(errorsOnly(column()), [], 'a 1 x 30 column under MMC3 horizontal is legal');
+  for (const [typed, want] of [[3, '1 x 3 (3)'], [4, '1 x 4 (4)'], [31, '1 x 4 (4)'], [100, '1 x 4 (4)']]) {
+    const p = column();
+    assert.ok(growOrShrinkMap(p, 0, p.maps[0].gridW, clamp(typed)), `a height of ${typed} is applied`);
+    assert.equal(shape(p), want, `typing ${typed} into the height of a 1 x 30 column`);
+  }
+  // the clamp is per dimension, so the 4-screen total belongs to a side-1 map only
+  const row = createStreamedProject({ mapper: 4, mirroring: 'vertical', gridW: 30, gridH: 1 });
+  growOrShrinkMap(row, 0, row.maps[0].gridW, clamp(2));
+  assert.equal(shape(row), '30 x 2 (60)', 'a 30 x 1 row typed 2 in the height field keeps its width');
+  const wide = createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 30 });
+  growOrShrinkMap(wide, 0, clamp(2), wide.maps[0].gridH);
+  assert.equal(shape(wide), '2 x 30 (60)', 'typing 2 across the column keeps its height');
+  assert.match(errorsOnly(wide).map((x) => x.message).join('\n'), /can only stream up and down/, 'and the build refuses that shape');
+  // Duplicate screen: 16 screens or more is "full"; a map with room grows, and the grown shape is sometimes legal, sometimes refused
+  assert.ok(column().maps[0].screens.length >= side * side, 'the 1 x 30 column (16 screens or more) counts as full');
+  const short = createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 3 });
+  assert.ok(duplicateScreenViaGrowthCore(short, 0, short.maps[0].screens[0]));
+  assert.equal(shape(short), '2 x 3 (6)');
+  assert.match(errorsOnly(short).map((x) => x.message).join('\n'), /can only stream up and down/, 'duplicating in a short ring map can be refused');
+  const one = createStreamedProject({ mapper: 4, mirroring: 'vertical', gridW: 1, gridH: 1 });
+  assert.ok(duplicateScreenViaGrowthCore(one, 0, one.maps[0].screens[0]));
+  assert.equal(shape(one), '2 x 1 (2)');
+  assert.deepEqual(errorsOnly(one), [], 'and a 1 x 1 under vertical mirroring duplicates into a legal 2 x 1');
+});
+
+test('README streamed-worlds row: the kernel lookup-table clause is the rpg starter\'s real refusal on MMC3 and UNROM 512 (and not on MMC1)', () => {
+  // The README says an RPG with Save commands can run out of kernel lookup-table room when streamed on MMC3 and UNROM 512, and that the build names what to remove. The measured case is the rpg starter
+  // with the camera on (streamrelease.test.js (a) pins it per cell); no byte figure is stated in the README, so none is pinned here.
+  assert.match(streamedRow(), /an RPG with Save commands can run out of kernel lookup-table room when streamed on MMC3 and UNROM 512 \(the rpg starter does, with the camera on\), and the build then names what to remove/);
+  const starter = STARTERS.find((x) => x.id === 'rpg').build('Probe');
+  for (const [mapper, fits] of [[4, false], [30, false], [1, true]]) {
+    const p = structuredClone(starter);
+    p.cartridge.mapper = mapper;
+    p.cartridge.mirroring = 'horizontal';
+    reconcileCartridge(p);
+    p.cartridge.camera = true;
+    p.maps.forEach((map) => { map.streamed = true; });
+    const msgs = checkCapacity(p).problems.filter((x) => x.severity === 'error').map((x) => x.message);
+    if (fits) assert.deepEqual(msgs, [], 'MMC1 has the room');
+    else {
+      assert.equal(msgs.length, 1);
+      assert.match(msgs[0], /^The lookup tables need \d+ bytes but only \d+ are free alongside the engine code\. Try removing the camera .*every streamed map .*every Save command/);
+    }
+  }
+});
+
+test('every <name>.test.js that README.md, CLAUDE.md or a reference doc cites with a quoted test name or a (x) tag is a real test title in that file', () => {
+  // Catches a doc that cites a test that was renamed or never existed -- T2 resolves backticked paths and identifiers, not a test NAME in prose. A tag such as (b), (T4), (T3-T6) or (T1/T1v)
+  // is a list of parts (split at "," "/" "-"), and each part must LEAD a test title: "test('(b) ...'", "test('(a, d) ...'", "test('T3/T4 ...'", also inside a loop's template title. A quoted name must
+  // sit on a line that declares a test, so a comment cannot vouch for it.
+  const titleHeads = (src) => new Set([...src.matchAll(/\btest\(\s*['"`]\(?([^)\s]+(?:, [^)\s]+)*)\)?(?=\s|['"`])/g)].flatMap((m) => m[1].split(/,\s*|\//)));
+  const re = /`?([\w-]+\.test\.js)`?\s*(?:\(([^)]{1,12})\)|"([^"]{4,160})"|“([^”]{4,160})”)/g;
+  const problems = [];
+  let checked = 0;
+  for (const doc of SCOPE) {
+    const text = read(doc).replace(/\s+/g, ' ');
+    for (const m of text.matchAll(re)) {
+      checked++;
+      const file = tracked.find((f) => f.startsWith('test/') && f.endsWith(`/${m[1]}`));
+      if (!file) { problems.push(`${doc}: ${m[1]} is not a tracked test file`); continue; }
+      const src = read(file);
+      const name = (m[3] ?? m[4])?.replace(/\\"/g, '"');
+      if (name && !src.split('\n').some((line) => /\btest\(/.test(line) && line.includes(name))) problems.push(`${doc}: ${m[1]} "${name.slice(0, 80)}" is on no test line`);
+      if (m[2]) {
+        const heads = titleHeads(src);
+        for (const part of m[2].split(/\s*[,\/–-]\s*/)) if (!heads.has(part)) problems.push(`${doc}: ${m[1]} (${m[2]}) -- no test title opens with "${part}"`);
+      }
+    }
+  }
+  assert.deepEqual(problems, []);
+  assert.ok(checked >= CITED_TEST_REFS_FLOOR, `only ${checked} test citations were found; the pattern has stopped matching`);
 });
 
 test('docs.test.js and this file agree on the doc set: CLAUDE.md pointers are tracked', () => {

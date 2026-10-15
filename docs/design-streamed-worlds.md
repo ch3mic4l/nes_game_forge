@@ -2,8 +2,9 @@
 
 ## 0. Status and how to read this document
 
-This is design-round output for a feature with no shipped code: nothing below has reached
-`engine/`, `main/build/`, `shared/`, or a Forge. Every claim is either **proven** (backed by a
+**Status, 2026-10-15.** This contract is implemented: phase 1 (schema, generator, capacity), phase 2 (the UNROM 512 four-screen consumer) and phase 3 (3a: handover window and Move; 3b: the two-nametable ring on UNROM 512, MMC1 and MMC3, action games and turn-based RPGs) have shipped. The sections below are the *design-time* specification and keep its voice: words like "unbuilt" and "specified" in the body (for example the ring and capacity sections, and the phase 3 text) describe the design round, not today's tree. Today's state: the README's "Streamed worlds" row, `docs/reference-engine.md`, and `docs/design-streamed-worlds-phase3a.md` / `-phase3b.md`.
+
+This was design-round output. Every claim is either **proven** (backed by a
 real, re-runnable script against the current codebase — see the evidence table, §9) or
 **specified** (a real, checked contract with no assembled implementation yet). A claim never
 carries both words at once, and a claim with neither is a mistake in this document, not a third
@@ -18,9 +19,8 @@ conflict and its resolution are recorded.
 
 Phasing (§2) is the map from this contract to shippable work: phase 1 is schema/generator/capacity
 (no engine change), phase 2 is the UNROM 512 four-screen engine consumer, phase 3 is the MMC1/MMC3
-two-nametable variant. Nothing in phases 2-3 is built; phase 1's own shipping generator diffs are
-not built either. What phase 2 needs is a real, working design to implement against — that is what
-this document is.
+two-nametable variant. (Written before any of it shipped: see the status paragraph above.) What phase 2 needed was a
+real, working design to implement against — that is what this document was.
 
 **Design round closed 2026-09-21 by Chris's acceptance, not by a reviewer GO.** The last review
 (13) was FIX with five narrow items and itself said the remaining risk is better retired through
