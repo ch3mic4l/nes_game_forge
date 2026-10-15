@@ -6797,7 +6797,7 @@ function eventHasOp(event, ops, commonById, seen) {
 /**
  * The board-shaped half of `validateStreamedMaps`: per streamed map, whether the board and
  * mirroring can stream at all, or have no ring yet on that board (`kind: 'capability'`), whether a
- * board that has a ring admits this project's game type (`'ringGame'`, an RPG until S5), its grid
+ * board that has a ring admits this project's game type (`'ringGame'`; no registered board refuses one since S5), its grid
  * problems (`'grid'`) and the two-nametable dead-axis restriction (`'deadAxis'`), in validateProject's
  * own order. Which two-nametable boards and game types are admitted is `streamRingAdmitted`
  * (shared/cartridge.js), never restated here. Exported
@@ -6816,8 +6816,12 @@ export function streamedBoardProblems(project) {
   const mirroringId = project.cartridge.mirroring;
   const capable = streamCapable(mapper, mirroringId);
   const gameType = project.project?.gameType ?? 'action';
-  // The boards that work, from the registry datum: "UNROM 512, MMC1 or MMC3" today, with "(action games)" because the datum is per game type.
-  const ringBoards = streamRingAdmittedBoardNames('action');
+  // The boards that work, from the registry datum (which is per game type): "UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring" while every
+  // game type is admitted on the same boards (today), else each game type's own boards named ("MMC1 or MMC3 (action games) and MMC3 (turn-based RPGs)").
+  const actionBoards = streamRingAdmittedBoardNames('action');
+  const rpgBoards = streamRingAdmittedBoardNames('rpg');
+  const ringBoards = actionBoards === rpgBoards ? actionBoards : [actionBoards && `${actionBoards} (action games)`, rpgBoards && `${rpgBoards} (turn-based RPGs)`].filter(Boolean).join(' and ');
+  const ringClause = ringBoards ? `${ringBoards} with horizontal or vertical mirroring` : '';
   // Under a mirroring that is not four-screen, one axis cannot scroll and holds
   // exactly one screen of ring; cameraAxes is the single writer of which axis.
   const deadAxes = [];
@@ -6836,25 +6840,26 @@ export function streamedBoardProblems(project) {
         'capability',
         'Build',
         `${name} is streamed, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring ` +
-          `cannot stream a world. Streamed maps need ${ringBoards} with horizontal or vertical mirroring (action games), ` +
-          'or UNROM 512 with four-screen mirroring -- change the board in the Build panel, or remove ' +
+          `cannot stream a world. Streamed maps need ${ringClause ? `${ringClause}, or ` : ''}UNROM 512 with four-screen mirroring ` +
+          '-- change the board in the Build panel, or remove ' +
           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
       );
     } else if (!streamCapableFourScreen(mapper, mirroringId)) {
       // The two-nametable ring (phase 3b). The ONE decision of which boards and game types it is admitted for is
       // streamRingAdmitted (shared/cartridge.js, a datum per board) -- S4a admitted MMC3, S4b MMC1 and S4c UNROM 512 for action
-      // games; an RPG is S5 -- so lifting a board or a game type is a data change there, never an edit here. Two
+      // games, S5 an RPG on all three -- so lifting a board or a game type is a data change there, never an edit here. Two
       // refusals, because they read differently: this board has no ring yet, or it has one but not for this game type.
-      // Since S4c every streamable board has a ring, so the first is reachable only for a board added without the datum
-      // (streamadmit.test.js removes the datum to exercise it). Distinct from the !capable message above, which says
+      // Since S4c every streamable board has a ring and since S5 each admits both game types, so BOTH arms are unreachable for a
+      // registered board. They stay, as guards for a streamable board added without its datum or with a one-game-type one;
+      // streamadmit.test.js pins each on a synthetic board. Distinct from the !capable message above, which says
       // "this board can never stream".
       if (!streamRingBoardAdmitted(mapper, mirroringId)) {
         add(
           'capability',
           'Build',
           `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
-            `which only reaches the two-nametable ring -- not implemented yet on this board. Streamed maps work on ${ringBoards} with ` +
-            'horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring; change the board and ' +
+            `which only reaches the two-nametable ring -- not implemented yet on this board. Streamed maps work on ${ringClause ? `${ringClause} and on ` : ''}` +
+            'UNROM 512 with four-screen mirroring; change the board and ' +
             'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
         );
       } else if (!streamRingAdmitted(mapper, mirroringId, gameType)) {
@@ -6862,8 +6867,10 @@ export function streamedBoardProblems(project) {
           'ringGame',
           'Build',
           `${name} is streamed in a ${gameType === 'rpg' ? 'turn-based RPG' : 'game of this type'} on ${mapper.name} with ` +
-            `${mirroringById(mirroringId).label.toLowerCase()} mirroring, which only reaches the two-nametable ring -- streamed RPGs ` +
-            'are not implemented there yet. A streamed RPG needs UNROM 512 with four-screen mirroring today; change the board and ' +
+            `${mirroringById(mirroringId).label.toLowerCase()} mirroring, which only reaches the two-nametable ring -- streamed ` +
+            `${gameType === 'rpg' ? 'RPGs' : 'games of this type'} are not implemented there yet. A streamed ${gameType === 'rpg' ? 'RPG' : 'game of this type'} works on ` +
+            `${streamRingAdmittedBoardNames(gameType) ? `${streamRingAdmittedBoardNames(gameType)} with horizontal or vertical mirroring, or on ` : ''}` +
+            'UNROM 512 with four-screen mirroring; change the board and ' +
             'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
         );
       }

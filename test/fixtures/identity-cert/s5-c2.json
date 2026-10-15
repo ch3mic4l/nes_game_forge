@@ -1,0 +1,120 @@
+{
+ "kind": "rom-identity-certificate",
+ "version": 2,
+ "certifier": {
+  "name": "test/lua/sw_identity_cert.mjs",
+  "version": 2,
+  "sha256": "42caabc563bc958c2143e546111a11bfc660303a128d1bb3b620fd69a452d232"
+ },
+ "scope": "S3a engine: the recorded sweep (no streamHandover flag in any recorded job; S2 is shelved); every recorded Mesen-run job rebuilt byte-identical on the current engine and generator; measurement script and bindings unchanged",
+ "date": "2026-10-15",
+ "partial": false,
+ "curve": {
+  "file": "test/fixtures/streambound-curve.json",
+  "sha256": "ec55e0db9f131dc23157e1e955a5a536db0ad30d59f5afd379df5692e10d2fea",
+  "jobs": 12590,
+  "reused": 832,
+  "confirms": 2,
+  "provenance": {
+   "engine": "80efa8ce4140858cfe1646b60aa921ac3def168368498a2adf4c4e1de3b6841a",
+   "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+   "generator": "5b94bb9519d5dbc47228b9a791695fd6d37bc1b93b3e9b797393efb67272ce2e",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "stages": {
+  "A": {
+   "file": "handoff-next/s2-c1/resweep/out-A.jsonl",
+   "sha256": "3d1bca1416c6b4e1fa0a417b5808e32a8d57c18c8f395014e9d41cfe925c218d",
+   "lines": 658
+  },
+  "B": {
+   "file": "handoff-next/s2-c1/resweep/out-B.jsonl",
+   "sha256": "90709828fc082a8e1c7483c51be3bdefbf3750bf3f6441b08edaf294b58c342f",
+   "lines": 5120
+  },
+  "C": {
+   "file": "handoff-next/s2-c1/resweep/out-C.jsonl",
+   "sha256": "0b775848aaeeba40d9744182427f7dc1ab0b9b3ceba389f93812238cbca3d2f9",
+   "lines": 5312
+  },
+  "F": {
+   "file": "handoff-next/s2-c1/resweep/out-F.jsonl",
+   "sha256": "a2e95b30964a3dedabb83fc450f78ea335d34a8a4844d562aca0e1d6cf90740a",
+   "lines": 1000
+  },
+  "R": {
+   "file": "handoff-next/s2-c1/resweep/out-R.jsonl",
+   "sha256": "c28e52ae83909592ef106e90ddd4b069c7553dec151a5eb0cbac6e99195f8c26",
+   "lines": 500
+  },
+  "P": {
+   "file": "handoff-next/s2-c1/resweep/out-P.jsonl",
+   "sha256": "b4de94463eda60ca9d9ac9d526bf2f34424c4c508c44a9cc2fe6d82793ed5715",
+   "lines": 98
+  }
+ },
+ "fingerprints": {
+  "old": {
+   "engine": "80efa8ce4140858cfe1646b60aa921ac3def168368498a2adf4c4e1de3b6841a",
+   "generator": "5b94bb9519d5dbc47228b9a791695fd6d37bc1b93b3e9b797393efb67272ce2e"
+  },
+  "current": {
+   "engine": "d5add2c0fc864be5f7e05cb1b535f755a91c4aaf099b33089e4931b58cef6580",
+   "generator": "a413d897437728a1f12a32f4520bfe5ccfdf518f984d9bf8a76c1ae3ed98b94b"
+  }
+ },
+ "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+ "harnessCurrent": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+ "helpers": {
+  "main/paths.js": "0ba6cf88e1f3a3ff9d6175e7be644c8c9f6a3403992eabdfb4896a64dc4d25c3",
+  "main/project-io.js": "27fd08ba00d787ff1946579e6010bbe7ecbf9ea7443b89f79bbdcd62b3d3d927",
+  "main/savequeue.js": "9371793b08151266337d9d8297f594f71b993826d2d8c6153e30648c9d38a796",
+  "test/lib/enginefingerprint.js": "ac78d2e32f6cacf71050512e56ad5e773f4eab73a04edf81d3eb69dcb864dbfe",
+  "test/lib/equates.js": "b53ca0c352147b82e4c2b9c9cda5677feb43905f305d962e2d09701ace4c45dc"
+ },
+ "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0",
+ "execFlags": {
+  "args": [
+   "--testRunner",
+   "--enableStdout"
+  ],
+  "killMs": 600000
+ },
+ "counts": {
+  "expected": 11760,
+  "answered": 11760,
+  "matched": 11760,
+  "mismatched": 0,
+  "errored": 0,
+  "directCount": 11760,
+  "reuseCount": 832,
+  "confirms": 2,
+  "reusesResolved": 832,
+  "keysReproduced": 11760
+ },
+ "directDigest": "a5f1fd2215af6c32e27489ebf5e67d60be84f26a4cc6dc095d307c1d46fd00db",
+ "reuseDigest": "dac7741ca161cb089144173db1d229add2c499248fa2c7b1493b049f48dd46da",
+ "bindings": {
+  "luaDigest": "ad0fdc78df08df7b07c0e03c712d9c8682c27ee988ca71717af6af3f070ae45a",
+  "symDigest": "49099f7a6239d2f9a111b498a420ccae110a6459285ab6d80f62568bfafdfcff",
+  "distinctScripts": 1487,
+  "distinctSymbolTables": 424
+ },
+ "sources": {
+  "before": {
+   "engine": "d5add2c0fc864be5f7e05cb1b535f755a91c4aaf099b33089e4931b58cef6580",
+   "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+   "generator": "a413d897437728a1f12a32f4520bfe5ccfdf518f984d9bf8a76c1ae3ed98b94b",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  },
+  "after": {
+   "engine": "d5add2c0fc864be5f7e05cb1b535f755a91c4aaf099b33089e4931b58cef6580",
+   "harness": "5eb745b13901e3edaea94a9e28f45215ac30fd9020f25b2c22f53f003b4c6f2c",
+   "generator": "a413d897437728a1f12a32f4520bfe5ccfdf518f984d9bf8a76c1ae3ed98b94b",
+   "mesen": "ffe3225883e20b4fd09b3e9317e0679122d2bf92362af0588adaa0d2d3dfb3b0"
+  }
+ },
+ "workers": 6,
+ "selfDigest": "19d22cd2f6768f02ab481b4fc7208053b624a621dbf999d864444c4fe2b44075"
+}

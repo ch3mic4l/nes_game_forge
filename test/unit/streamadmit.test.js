@@ -1,18 +1,20 @@
-// Large streamed worlds (ROADMAP item 15), phase 3b slices S4a, S4b and S4c, commit C1 of each: ADMISSION of the two-nametable ring on MMC3 (S4a), MMC1 (S4b)
-// and UNROM 512 (S4c) for action games. Any streamed RPG on a two-nametable board (S5) is still refused.
+// Large streamed worlds (ROADMAP item 15), phase 3b slices S4a, S4b, S4c and S5, commit C1/C2 of each: ADMISSION of the two-nametable ring on MMC3 (S4a), MMC1 (S4b)
+// and UNROM 512 (S4c) for action games, and (S5 C2) for turn-based RPGs on all three.
 //
 // What this file pins (the engine behaviour of the ring itself is the streamring*.test.js family, run through the bypass copy; here the
 // REAL tree is used -- test/lib/ringbypass.js's `bypass: false` copy has no refusal lift at all):
-//   (a) the ring is admitted ONLY for N x 1 / 1 x N on UNROM 512, MMC1 and MMC3 action -- an independent table over board x mirroring x game type x grid shape;
-//   (b) a streamed RPG on every two-nametable board is refused, with the kind checkStreamedMapperSwitch relies on, and the RPG refusal does not
-//       leak onto the one ring an RPG already streams on (UNROM 512 four-screen);
-//   (c) the dead-axis refusals still fire on UNROM 512, MMC1 and MMC3, from cameraAxes;
+//   (a) the ring is admitted ONLY for N x 1 / 1 x N on UNROM 512, MMC1 and MMC3, for action and RPG alike -- an independent table over board x mirroring x game type x grid shape;
+//   (b) a streamed RPG is admitted on every two-nametable board, and the two refusal arms that no registered board reaches any more are pinned on a SYNTHETIC board
+//       (test/lib/syntheticboard.js): `ringGame` (a board whose datum lacks the project's game type) and `capability` (a ring board with no datum), each with its exact message;
+//   (c) the dead-axis refusals still fire on UNROM 512, MMC1 and MMC3, from cameraAxes, for both game types;
 //   (d) switchableMappers / checkStreamedMapperSwitch never offer a board that then fails validate (exhaustive over the table above);
 //   (e) saves (Chris's ruling 3): a mirroring-only edit keeps saveCompatToken and the save identity; a save made on one mirroring Continues on the
 //       other and the ring is reconstructed (nametable + attribute oracle after the landing), on all three boards (the battery RAM on MMC1/MMC3, the flash sector
-//       on UNROM 512); a resize still invalidates;
-//   (f) the depth pin: no admitted horizontal ring is deeper than the depth the ring gate certified (S4c Step 1, docs/design-streamed-worlds-phase3b.md section 15);
-//   plus the admitted project builds through the real cli.js path on both mirrorings of all three boards, and boots past a lap of the ring with no refusal lift.
+//       on UNROM 512), for action and RPG; a resize still invalidates;
+//   (f) the depth pin: no admitted horizontal action ring is deeper than the depth the ring gate certified (S4c Step 1, docs/design-streamed-worlds-phase3b.md section 15);
+//       the RPG depth pin is streamringresources.test.js (i), also on the real path;
+//   (g) the capacity boundary of a streamed RPG through the real refusal: the largest 1 x N that builds and the smallest refused, one- and two-tileset, per horizontal board;
+//   plus the admitted project builds through the real cli.js path on both mirrorings of all three boards for both game types, and boots past a lap of the ring with no refusal lift.
 // Each test names the wrong implementation it catches.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,6 +46,9 @@ import { checkCapacity, checkStreamedMapperSwitch, switchableMappers, planStream
 import { parse } from 'acorn';
 import { saveProject } from '../../main/project-io.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
+import { withSyntheticBoard, SYNTHETIC_NAME } from '../lib/syntheticboard.js';
+import { oneTilesetRpg, buildRing } from '../lib/ringrpg.js';
+import { waitForNamingReady, finishNamingIfOpen } from '../lib/naming.js';
 import { makeBypassTree, loadBypassTree, buildThrough } from '../lib/ringbypass.js';
 import { runScene, cellById, assertRingRun } from '../lib/ringrun.js';
 import { laps } from '../lua/ring_gate/ringscene.mjs';
@@ -59,18 +64,20 @@ const MMC1 = 1;
 const MMC3 = 4;
 const U512 = 30;
 const project = ({ mapper, mirroring, gameType = 'action', gridW, gridH }) => createStreamedProject({ mapper, mirroring, gameType, gridW, gridH, camera: true });
+const projectOf = project; // the (c) test shadows `project` with a game-type-bound one
 const kinds = (p) => streamedBoardProblems(p).map((x) => x.kind);
 const errors = (p) => validateProject(p).filter((x) => x.severity === 'error');
 
 // ---------------------------------------------------------------------------------------------------------------- (a) the admission table
 
-// The EXPECTED behaviour, written down independently of streamRingAdmitted: which boards admit what. MMC3 (S4a), MMC1 (S4b) and UNROM 512 (S4c) action admit
-// both ring mirrorings; nothing else on a two-nametable board does (an RPG is S5); UNROM 512 four-screen (the torus) is untouched; MMC1 / MMC3 have no four-screen wiring.
+// The EXPECTED behaviour, written down independently of streamRingAdmitted: which boards admit what. MMC3 (S4a), MMC1 (S4b) and UNROM 512 (S4c) admit
+// both ring mirrorings for action games and (S5) for RPGs; UNROM 512 four-screen (the torus) is untouched; MMC1 / MMC3 have no four-screen wiring.
 const RING_BOARDS = [U512, MMC1, MMC3]; // stated here (registry order), then checked against the registry datum below
-function expectedKinds({ mapper, mirroring, gameType }, gridW, gridH) {
+const GAME_TYPES = ['action', 'rpg'];
+function expectedKinds({ mapper, mirroring }, gridW, gridH) {
   if (mirroring === 'fourscreen') return mapper === U512 ? [] : ['capability']; // MMC1/MMC3 cannot wire it ("cannot stream a world"): not capable, so no dead axis either
   const out = [];
-  if (RING_BOARDS.includes(mapper)) { if (gameType !== 'action') out.push('ringGame'); } else out.push('capability'); // every streamable board has a ring since S4c; this branch is the board-without-a-ring refusal
+  if (!RING_BOARDS.includes(mapper)) out.push('capability'); // every registered streamable board has a ring for both game types since S5: no 'ringGame', no 'capability'
   // the dead axis is judged on every capable two-nametable board, admitted or not: vertical scrolls sideways (N x 1 only), horizontal up and down (1 x N only)
   if (mirroring === 'vertical' && gridH > 1) out.push('deadAxis');
   if (mirroring === 'horizontal' && gridW > 1) out.push('deadAxis');
@@ -81,10 +88,10 @@ const TABLE = [];
 for (const mapper of [MMC1, MMC3, U512]) for (const mirroring of ['vertical', 'horizontal', 'fourscreen']) for (const gameType of ['action', 'rpg']) for (const [gridW, gridH] of GRIDS) TABLE.push({ mapper, mirroring, gameType, gridW, gridH });
 const labelOf = (c) => `${resolveMapper(c.mapper).name} ${c.mirroring} ${c.gameType} ${c.gridW}x${c.gridH}`;
 
-test('(a) the ring is admitted for UNROM 512, MMC1 and MMC3 action N x 1 / 1 x N only: every board x mirroring x game type x grid shape against an independent table', () => {
-  // Catches a lift for any grid (a 2 x 2 or the dead-axis shape accepted), for RPG, a refusal that survived on UNROM 512, MMC1 or MMC3 action (a board not lifted),
-  // a lift for the wrong mirroring on UNROM 512 (its four-screen torus must stay as it was), and a lift that also let a hand-edited four-screen MMC1/MMC3 file
-  // through. Raw (un-reconciled) projects on purpose.
+test('(a) the ring is admitted for UNROM 512, MMC1 and MMC3 action AND RPG, N x 1 / 1 x N only: every board x mirroring x game type x grid shape against an independent table', () => {
+  // Catches a lift for any grid (a 2 x 2 or the dead-axis shape accepted), a game type left refused on one board (the `rpg` datum missing from UNROM 512, MMC1 or MMC3), a refusal
+  // that survived on a board (a board not lifted), a lift for the wrong mirroring on UNROM 512 (its four-screen torus must stay as it was), and a lift that also let a
+  // hand-edited four-screen MMC1/MMC3 file through. Raw (un-reconciled) projects on purpose.
   for (const c of TABLE) {
     const p = project(c);
     assert.deepEqual(kinds(p), expectedKinds(c, c.gridW, c.gridH), labelOf(c));
@@ -94,29 +101,28 @@ test('(a) the ring is admitted for UNROM 512, MMC1 and MMC3 action N x 1 / 1 x N
   }
 });
 
-test('(a) the admission predicate is one datum per board: only UNROM 512, MMC1 and MMC3 list a game type, and a mirroring that is not a ring is never admitted', () => {
+test('(a) the admission predicate is one datum per board: only UNROM 512, MMC1 and MMC3 list a game type, both of them, and a mirroring that is not a ring is never admitted', () => {
   // Catches a second reading of the board list (a hard-coded mapper id in project.js), an admission that ignores the mirroring (UNROM 512 four-screen is the torus,
-  // not a two-nametable ring), and a board admitted for a game type its datum does not list (any board admitted for RPG before S5).
+  // not a two-nametable ring), and a board admitted for a game type its datum does not list (a board missing `rpg`, or admitted for a type nobody listed).
   for (const mapper of MAPPERS.filter((m) => m.supported)) {
-    assert.deepEqual(streamRingAdmittedGameTypes(mapper), RING_BOARDS.includes(mapper.id) ? ['action'] : [], mapper.name);
+    assert.deepEqual(streamRingAdmittedGameTypes(mapper), RING_BOARDS.includes(mapper.id) ? ['action', 'rpg'] : [], mapper.name);
     for (const mirroring of ['vertical', 'horizontal', 'fourscreen']) {
-      for (const gameType of ['action', 'rpg']) {
-        const want = RING_BOARDS.includes(mapper.id) && mirroring !== 'fourscreen' && gameType === 'action';
+      for (const gameType of GAME_TYPES) {
+        const want = RING_BOARDS.includes(mapper.id) && mirroring !== 'fourscreen';
         assert.equal(streamRingAdmitted(mapper, mirroring, gameType), want, `${mapper.name} ${mirroring} ${gameType}`);
       }
       assert.equal(streamRingBoardAdmitted(mapper, mirroring), RING_BOARDS.includes(mapper.id) && mirroring !== 'fourscreen', `${mapper.name} ${mirroring} (board)`);
     }
   }
   assert.equal(streamRingAdmittedBoardNames('action'), 'UNROM 512, MMC1 or MMC3', 'the boards the refusal messages name, in registry order, as an English list');
-  assert.equal(streamRingAdmittedBoardNames('rpg'), '', 'no board admits a streamed RPG ring until S5');
+  assert.equal(streamRingAdmittedBoardNames('rpg'), 'UNROM 512, MMC1 or MMC3', 'and, since S5, the same three for a streamed RPG');
 });
 
 test('(a) streamedBoardProblems FOLLOWS the registry datum: changing streamRingGameTypes on a board changes what validate admits, with nothing else edited (S4a C1 review P3)', () => {
   // Catches the escaping implementation the review named: `mapper.id !== 4` / `gameType !== 'action'` hard-coded in streamedBoardProblems while the helpers
-  // (streamRingAdmitted & co.) stay intact and keep passing the datum-only tests above -- now for all three admitted boards, and for the board names the refusal
-  // messages carry (a message that still says "UNROM 512, MMC1 or MMC3" after a board's datum is gone). It is also the ONLY test that reaches the "this board has no
-  // ring yet" refusal (kind capability, "not implemented yet on this board"): since S4c no registered board is in that state, so the datum is removed to make one.
-  // The registry entry is changed in place and restored in finally.
+  // (streamRingAdmitted & co.) stay intact and keep passing the datum-only tests above -- now for all three admitted boards and both game types, and for the board names the refusal
+  // messages carry (a message that still says "UNROM 512, MMC1 or MMC3" after a board's datum is gone). The datum is removed / narrowed on each REAL board in turn (the synthetic-board
+  // pins in (b) are the isolated form of the same two arms). The registry entry is changed in place and restored in finally.
   const entry = (id) => MAPPERS.find((m) => m.id === id);
   const kindsOf = (mapper, mirroring, gameType) => kinds(project({ mapper, mirroring, gridW: mirroring === 'vertical' ? 6 : 1, gridH: mirroring === 'vertical' ? 1 : 6, gameType }));
   const capabilityText = (mapper, mirroring) => streamedBoardProblems(project({ mapper, mirroring, gridW: 1, gridH: 1 })).find((x) => x.kind === 'capability')?.message ?? '';
@@ -124,7 +130,7 @@ test('(a) streamedBoardProblems FOLLOWS the registry datum: changing streamRingG
   const orig = boards.map((b) => Object.getOwnPropertyDescriptor(b, 'streamRingGameTypes'));
   const nrom = entry(0);
   assert.equal(Object.getOwnPropertyDescriptor(nrom, 'streamRingGameTypes'), undefined);
-  for (const b of boards) assert.deepEqual(b.streamRingGameTypes, ['action'], b.name);
+  for (const b of boards) assert.deepEqual(b.streamRingGameTypes, ['action', 'rpg'], b.name);
   const set = (m, v) => Object.defineProperty(m, 'streamRingGameTypes', { value: v, configurable: true, writable: true, enumerable: true });
   const list = (names) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names.join(''));
   try {
@@ -132,30 +138,33 @@ test('(a) streamedBoardProblems FOLLOWS the registry datum: changing streamRingG
       const others = boards.filter((b) => b !== board).map((b) => b.name); // still registry order
       for (const mirroring of ['vertical', 'horizontal']) {
         const id = board.id;
-        assert.deepEqual(kindsOf(id, mirroring, 'action'), [], `${board.name} ${mirroring}: as shipped, action is admitted`);
+        for (const gameType of GAME_TYPES) assert.deepEqual(kindsOf(id, mirroring, gameType), [], `${board.name} ${mirroring}: as shipped, ${gameType} is admitted`);
         // the datum removed: action is refused, as a board without a ring (not as a game-type refusal), and the messages stop naming the board
         delete board.streamRingGameTypes;
         assert.deepEqual(kindsOf(id, mirroring, 'action'), ['capability'], `${board.name} ${mirroring}: without the datum it is a board with no ring`);
         assert.deepEqual(kindsOf(id, mirroring, 'rpg'), ['capability']);
         const text = capabilityText(id, mirroring);
         assert.match(text, /not implemented yet on this board/, 'the "no ring yet" refusal, reached only by removing the datum');
-        assert.ok(text.includes(`Streamed maps work on ${list(others)} with horizontal or vertical mirroring (action games) and on UNROM 512 with four-screen mirroring`), `${board.name}: the message names only the boards that are still admitted: ${text}`);
+        assert.ok(text.includes(`Streamed maps work on ${list(others)} with horizontal or vertical mirroring and on UNROM 512 with four-screen mirroring`), `${board.name}: the message names only the boards that are still admitted: ${text}`);
         const cannot = streamedBoardProblems(project({ mapper: 0, mirroring, gridW: 1, gridH: 1 })).find((x) => x.kind === 'capability').message;
-        assert.ok(cannot.includes(`Streamed maps need ${list(others)} with horizontal or vertical mirroring (action games), or UNROM 512 with four-screen mirroring`), `and so does the "cannot stream a world" message: ${cannot}`);
+        assert.ok(cannot.includes(`Streamed maps need ${list(others)} with horizontal or vertical mirroring, or UNROM 512 with four-screen mirroring`), `and so does the "cannot stream a world" message: ${cannot}`);
         // an empty list is the same as none
         set(board, []);
         assert.deepEqual(kindsOf(id, mirroring, 'action'), ['capability'], `${board.name} ${mirroring}: an empty list`);
-        // a game type added: RPG follows
-        set(board, ['action', 'rpg']);
-        assert.deepEqual(kindsOf(id, mirroring, 'rpg'), [], `${board.name} ${mirroring}: rpg added is admitted`);
-        // the datum narrowed to rpg only: action is now the refused game type, with the game-type kind (the board still has a ring)
+        // the datum narrowed to action only: RPG is the refused game type, with the game-type kind (the board still has a ring) -- the pre-S5 shape of every ring board
+        set(board, ['action']);
+        assert.deepEqual(kindsOf(id, mirroring, 'rpg'), ['ringGame'], `${board.name} ${mirroring}: rpg removed`);
+        assert.deepEqual(kindsOf(id, mirroring, 'action'), []);
+        // ...to rpg only: action is the refused one
         set(board, ['rpg']);
         assert.deepEqual(kindsOf(id, mirroring, 'action'), ['ringGame'], `${board.name} ${mirroring}: action removed`);
         assert.deepEqual(kindsOf(id, mirroring, 'rpg'), []);
-        set(board, ['action']);
+        // a game type added back: both follow
+        set(board, ['action', 'rpg']);
+        for (const gameType of GAME_TYPES) assert.deepEqual(kindsOf(id, mirroring, gameType), [], `${board.name} ${mirroring}: ${gameType} admitted again`);
         for (const other of boards.filter((b) => b !== board)) assert.deepEqual(kindsOf(other.id, mirroring, 'action'), [], `and ${other.name} is unchanged`);
       }
-      assert.equal(streamRingAdmittedBoardNames('action'), list(boards.map((b) => b.name)), 'restored between boards');
+      for (const gameType of GAME_TYPES) assert.equal(streamRingAdmittedBoardNames(gameType), list(boards.map((b) => b.name)), `restored between boards (${gameType})`);
     }
     // a datum on a board that cannot stream at all admits nothing: the mirroring/capability rules come first (NROM stays "cannot stream a world")
     set(nrom, ['action']);
@@ -171,14 +180,15 @@ test('(a) streamedBoardProblems FOLLOWS the registry datum: changing streamRingG
     boards.forEach((m, i) => { if (orig[i]) Object.defineProperty(m, 'streamRingGameTypes', orig[i]); else delete m.streamRingGameTypes; });
     delete nrom.streamRingGameTypes;
   }
-  for (const b of boards) assert.deepEqual(b.streamRingGameTypes, ['action'], `${b.name} restored`);
+  for (const b of boards) assert.deepEqual(b.streamRingGameTypes, ['action', 'rpg'], `${b.name} restored`);
   assert.equal('streamRingGameTypes' in nrom, false);
   for (const b of RING_BOARDS) assert.deepEqual(kinds(project({ mapper: b, mirroring: 'vertical', gridW: 6, gridH: 1 })), []);
 });
 
-test('(a) the refusal messages, generated from the registry: the list reads as English, an admitted board gets no capability refusal, and neither is the old "four-screen only" text', () => {
+test('(a) the refusal messages, generated from the registry: the list reads as English, an admitted board gets no capability refusal, and neither is the old "four-screen only" or "action games" text', () => {
   // Catches a stale message that tells a user the board they just were admitted on does not work, a message that names only one board (the S4a hard-coded MMC3),
-  // and the S4c reword: the list is "UNROM 512, MMC1 or MMC3" (not "UNROM 512 or MMC1 or MMC3") and the four-screen clause is not repeated inside it.
+  // the S4c reword (the list is "UNROM 512, MMC1 or MMC3", not "UNROM 512 or MMC1 or MMC3", and the four-screen clause is not repeated inside it) and the S5 reword: once the
+  // datum lists both game types on the same boards the message no longer says "(action games)" as if an RPG were refused.
   for (const mirroring of ['horizontal', 'vertical']) {
     for (const mapper of RING_BOARDS) assert.deepEqual(streamedBoardProblems(project({ mapper, mirroring, gridW: 1, gridH: 1 })).filter((x) => x.kind === 'capability'), [], `${resolveMapper(mapper).name} ${mirroring}`);
   }
@@ -186,40 +196,116 @@ test('(a) the refusal messages, generated from the registry: the list reads as E
   assert.equal(noStream.length, 1);
   assert.equal(noStream[0].where, 'Build');
   assert.equal(noStream[0].message,
-    'Map "Streamed" is streamed, but NROM-256 with horizontal mirroring cannot stream a world. Streamed maps need UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring ' +
-    '(action games), or UNROM 512 with four-screen mirroring -- change the board in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.');
-  assert.doesNotMatch(noStream[0].message, /UNROM 512 or MMC1/);
+    'Map "Streamed" is streamed, but NROM-256 with horizontal mirroring cannot stream a world. Streamed maps need UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring, ' +
+    'or UNROM 512 with four-screen mirroring -- change the board in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.');
+  assert.doesNotMatch(noStream[0].message, /UNROM 512 or MMC1|action games/);
+  // the same message for an RPG project (the text is the same for both game types while the datum is)
+  assert.equal(streamedBoardProblems(project({ mapper: 0, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: 1 })).find((x) => x.kind === 'capability').message, noStream[0].message);
 });
 
 // ---------------------------------------------------------------------------------------------------------------- (b) RPG
 
-test('(b) a streamed RPG on every two-nametable board is refused (kind ringGame on UNROM 512, MMC1 and MMC3); UNROM 512 four-screen RPG is not', () => {
-  // Catches RPG leaking in before S5 -- an admission keyed on the board alone (UNROM 512 admitted for RPG along with its action datum) -- and the opposite error,
-  // an RPG refusal that keys on "any streamed RPG" and breaks the torus RPG that already streams.
+test('(b) a streamed RPG is admitted on every two-nametable board (no ringGame kind, no Build-panel error); UNROM 512 four-screen RPG is unchanged; NROM is still refused', () => {
+  // Catches an RPG left refused on one board (the `rpg` datum missing from UNROM 512, MMC1 or MMC3: a refusal survives with the S4 text), an admission that ALSO lets through what it
+  // must not (the dead-axis shape, an RPG on a board that cannot stream), and the torus RPG that already streamed being disturbed.
   for (const mapper of RING_BOARDS) {
     for (const mirroring of ['vertical', 'horizontal']) {
       const gridW = mirroring === 'vertical' ? 4 : 1;
       const gridH = mirroring === 'vertical' ? 1 : 4;
       const p = project({ mapper, mirroring, gameType: 'rpg', gridW, gridH });
-      assert.deepEqual(kinds(p), ['ringGame'], `${resolveMapper(mapper).name} ${mirroring}`);
-      const refusal = errors(p).filter((x) => x.where === 'Build' && /two-nametable ring/.test(x.message));
-      assert.equal(refusal.length, 1, 'validateProject carries it, naming the Build panel');
-      assert.match(refusal[0].message, /streamed RPGs are not implemented there yet/);
-      assert.match(refusal[0].message, new RegExp(`on ${resolveMapper(mapper).name} with ${mirroring} mirroring`), 'the message names the board it refused');
-      // the same project as an action game is admitted
-      const action = project({ mapper, mirroring, gameType: 'action', gridW, gridH });
-      assert.equal(errors(action).some((x) => /two-nametable ring/.test(x.message)), false);
+      assert.deepEqual(kinds(p), [], `${resolveMapper(mapper).name} ${mirroring}`);
+      assert.deepEqual(errors(p).filter((x) => /stream/i.test(x.message)), [], `${resolveMapper(mapper).name} ${mirroring}: validateProject carries no streamed error`);
     }
   }
   assert.deepEqual(kinds(project({ mapper: U512, mirroring: 'fourscreen', gameType: 'rpg', gridW: 3, gridH: 2 })), [], 'the torus RPG is untouched');
+  for (const mirroring of ['vertical', 'horizontal']) assert.deepEqual(kinds(project({ mapper: 0, mirroring, gameType: 'rpg', gridW: 1, gridH: 1 })), ['capability'], `NROM ${mirroring} rpg: still cannot stream`);
+});
+
+// The two refusal arms of streamedBoardProblems that no registered board reaches any more. Both stay (Chris, 2026-10-14) as guards for a streamable board added without its datum or
+// with a one-game-type one; each is pinned HERE on a synthetic board with its exact message. Expected messages are written out, independent of the code that generates them.
+const SYN_TAIL = 'change the board and mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.';
+test('(b) the `ringGame` arm still fires, on a synthetic board whose datum lacks the game type: kind, tier, message, validateProject and the Build-panel preflight (a deleted or inverted arm is caught)', () => {
+  // Catches: the arm deleted (an unlisted game type passes as admitted), the arm inverted (a listed game type refused), the game-type word wrong for the project (RPG vs "game of this type"),
+  // the suggested boards not coming from the registry for THAT game type, the preflight (checkStreamedMapperSwitch) dropping the tier so a Build-panel switch lands on a refused board, and
+  // the tier order (ringGame pre-empts the dead axis, like capability).
+  withSyntheticBoard(['action'], (id) => {
+    for (const mirroring of ['vertical', 'horizontal']) {
+      const [gridW, gridH] = mirroring === 'vertical' ? [4, 1] : [1, 4];
+      const rpg = project({ mapper: id, mirroring, gameType: 'rpg', gridW, gridH });
+      assert.deepEqual(kinds(rpg), ['ringGame'], `${mirroring}: rpg not listed`);
+      const found = streamedBoardProblems(rpg);
+      assert.equal(found[0].where, 'Build');
+      assert.equal(found[0].message,
+        `Map "Streamed" is streamed in a turn-based RPG on ${SYNTHETIC_NAME} with ${mirroring} mirroring, which only reaches the two-nametable ring -- streamed RPGs are not implemented there yet. ` +
+        `A streamed RPG works on UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring, or on UNROM 512 with four-screen mirroring; ${SYN_TAIL}`);
+      assert.equal(errors(rpg).filter((x) => x.message === found[0].message).length, 1, 'validateProject carries it');
+      assert.deepEqual(kinds(project({ mapper: id, mirroring, gameType: 'action', gridW, gridH })), [], `${mirroring}: action is listed and admitted`);
+    }
+    // the preflight: a project on a real board moved to the synthetic one is refused with the game-type message, before the dead axis (a 4 x 40 RPG on vertical would also be a dead-axis shape)
+    const real = project({ mapper: MMC3, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 40 });
+    reconcileCartridge(real);
+    const refusals = checkStreamedMapperSwitch(real, id, 'vertical');
+    assert.equal(refusals.length, 1);
+    assert.match(refusals[0], /^Map "Streamed" is streamed in a turn-based RPG on Synthetic board with vertical mirroring/);
+    assert.ok(!/screens tall/.test(refusals[0]), 'ringGame pre-empts the dead axis');
+  });
+  // the board narrowed to RPG: the OTHER game type is refused, with the neutral wording and the registry's action boards
+  withSyntheticBoard(['rpg'], (id) => {
+    const action = project({ mapper: id, mirroring: 'vertical', gameType: 'action', gridW: 4, gridH: 1 });
+    assert.deepEqual(kinds(action), ['ringGame']);
+    assert.equal(streamedBoardProblems(action)[0].message,
+      `Map "Streamed" is streamed in a game of this type on ${SYNTHETIC_NAME} with vertical mirroring, which only reaches the two-nametable ring -- streamed games of this type are not implemented there yet. ` +
+      `A streamed game of this type works on UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring, or on UNROM 512 with four-screen mirroring; ${SYN_TAIL}`);
+    assert.deepEqual(kinds(project({ mapper: id, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 })), []);
+  });
+  // both listed: the arm does not fire for either, the board counts as a ring board for both, and the registry is restored after
+  withSyntheticBoard(['action', 'rpg'], (id) => {
+    for (const gameType of GAME_TYPES) assert.deepEqual(kinds(project({ mapper: id, mirroring: 'horizontal', gameType, gridW: 1, gridH: 4 })), [], gameType);
+    assert.equal(streamRingAdmittedBoardNames('rpg'), `UNROM 512, MMC1, MMC3 or ${SYNTHETIC_NAME}`, 'a board the datum lists is named by the messages');
+  });
+  assert.equal(streamRingAdmittedBoardNames('rpg'), 'UNROM 512, MMC1 or MMC3', 'the synthetic board is gone from the registry');
+  assert.equal(MAPPERS.some((m) => m.name === SYNTHETIC_NAME), false);
+});
+
+test('(b) the `capability` "no ring yet" arm still fires, on a synthetic ring board with no datum or an empty one: kind, message, and the boards it names come from the registry', () => {
+  // Catches: the arm deleted, a datum-less board treated as admitted, an empty list treated as "no datum" differently, the message naming a typed board list instead of the registry's
+  // (the synthetic board is not named, the three real ones are), and the "cannot stream a world" message (a different arm) leaking into it.
+  for (const datum of [undefined, []]) {
+    withSyntheticBoard(datum, (id) => {
+      for (const gameType of GAME_TYPES) for (const mirroring of ['vertical', 'horizontal']) {
+        const p = project({ mapper: id, mirroring, gameType, gridW: 1, gridH: 1 });
+        assert.deepEqual(kinds(p), ['capability'], `${JSON.stringify(datum)} ${gameType} ${mirroring}`);
+        const found = streamedBoardProblems(p)[0];
+        assert.equal(found.where, 'Build');
+        assert.equal(found.message,
+          `Map "Streamed" is streamed on ${SYNTHETIC_NAME} with ${mirroring} mirroring, which only reaches the two-nametable ring -- not implemented yet on this board. ` +
+          `Streamed maps work on UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring and on UNROM 512 with four-screen mirroring; ${SYN_TAIL}`);
+        assert.ok(!/cannot stream a world/.test(found.message));
+        assert.equal(errors(p).filter((x) => x.message === found.message).length, 1, 'validateProject carries it');
+      }
+      // the Build-panel preflight asks the same arm
+      const real = project({ mapper: MMC1, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 });
+      reconcileCartridge(real);
+      const refusals = checkStreamedMapperSwitch(real, id, 'vertical');
+      assert.equal(refusals.length, 1);
+      assert.match(refusals[0], /not implemented yet on this board/);
+    });
+  }
+  // a datum that lists game types makes the message per-game-type once the real boards differ (the generated list never hard-codes "action games")
+  withSyntheticBoard(['action'], () => {
+    const nrom = streamedBoardProblems(project({ mapper: 0, mirroring: 'horizontal', gameType: 'action', gridW: 1, gridH: 1 })).find((x) => x.kind === 'capability').message;
+    assert.ok(nrom.includes(`Streamed maps need UNROM 512, MMC1, MMC3 or ${SYNTHETIC_NAME} (action games) and UNROM 512, MMC1 or MMC3 (turn-based RPGs) with horizontal or vertical mirroring, or UNROM 512 with four-screen mirroring --`), nrom);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------- (c) dead axis
 
-for (const MAPPER of RING_BOARDS) test(`(c) the dead-axis refusals still fire on ${resolveMapper(MAPPER).name}, from cameraAxes, for every streamed map`, () => {
-  // Catches a wrong dead axis (the vertical ring accepting 1 x N, the horizontal ring accepting N x 1) and a check that only looks at maps[0].
+for (const MAPPER of RING_BOARDS) for (const gameType of GAME_TYPES) test(`(c) the dead-axis refusals still fire on ${resolveMapper(MAPPER).name} ${gameType}, from cameraAxes, for every streamed map`, () => {
+  // Catches a wrong dead axis (the vertical ring accepting 1 x N, the horizontal ring accepting N x 1) -- for an RPG too, whose admission must not carry the grid rule with it --
+  // and a check that only looks at maps[0].
   assert.deepEqual(cameraAxes(resolveMapper(MAPPER), { mirroring: 'vertical' }), { horizontal: true, vertical: false });
   assert.deepEqual(cameraAxes(resolveMapper(MAPPER), { mirroring: 'horizontal' }), { horizontal: false, vertical: true });
+  const project = (o) => projectOf({ ...o, gameType });
   const v = project({ mapper: MAPPER, mirroring: 'vertical', gridW: 6, gridH: 1 });
   assert.deepEqual(kinds(v), []);
   v.maps[0].gridW = 1; v.maps[0].gridH = 6; v.maps[0].screens = v.maps[0].screens.slice(0, 1).concat(Array.from({ length: 5 }, () => structuredClone(v.maps[0].screens[0])));
@@ -266,6 +352,38 @@ for (const board of RING_BOARDS) test(`capacity: the largest 1 x N on a horizont
   assert.match(over[0].message, new RegExp(`The streamed maps need ${cap.horizontal.refusedFrom} of the ${cap.horizontal.largest} 8 KB program regions ${name} has free for world data\\. Shrink a streamed map`));
   assert.deepEqual(refused(mk('vertical', cap.vertical.largest)).map((x) => x.message), []);
   assert.ok(refused(mk('vertical', cap.vertical.largest + 1)).some((x) => x.where === 'Map Forge' && /at most 255/.test(x.message)), 'the grid ceiling, not capacity, bounds a vertical ring');
+});
+
+// ---------------------------------------------------------------------------------------------------------------- (g) RPG capacity, through the real refusal
+
+// A streamed RPG's horizontal depth, measured by handoff-next/s5-c2/capacity.mjs (log capacity.log) through validateProject + checkCapacity + a real build (no bypass): the battle bank takes one
+// 8 KB region off the front, so an RPG is one row shallower than the same action project on MMC1 / MMC3 (13 / 29 against 14 / 30) and, on UNROM 512, two regions shallower when it keeps
+// its two default tilesets (Main + Battle; each CHR-RAM tileset is a payload region): 59 against 61, and 60 for the lightest (one-tileset) RPG. The vertical ring is bounded by the grid only.
+// Hardcoded on purpose. The U512 figure 60 is ADMITTED, not certified: the ring gate's RPG cells ran at 59 (S4c C2); C3 measures the 60th row (docs/design-streamed-worlds-phase3b.md section 17).
+const RPG_CAPACITY = {
+  [MMC1]: { oneTileset: 13, twoTilesets: 13 },
+  [MMC3]: { oneTileset: 29, twoTilesets: 29 },
+  [U512]: { oneTileset: 60, twoTilesets: 59 }
+};
+const rpgRing = (board, mirroring, n, tilesets) => {
+  const p = project({ mapper: board, mirroring, gameType: 'rpg', gridW: mirroring === 'vertical' ? n : 1, gridH: mirroring === 'vertical' ? 1 : n });
+  return tilesets === 1 ? oneTilesetRpg(p) : p;
+};
+const refusedErrors = (p) => [...validateProject(p), ...checkCapacity(p).problems].filter((x) => x.severity === 'error');
+for (const board of RING_BOARDS) test(`(g) capacity: the largest streamed RPG 1 x N on a horizontal ${resolveMapper(board).name} ring is ${RPG_CAPACITY[board].oneTileset} (one tileset) / ${RPG_CAPACITY[board].twoTilesets} (two) and one more is refused naming the Forge; N x 1 on vertical reaches the 255 grid ceiling`, () => {
+  // Catches a region count off by one for an RPG (the battle bank not charged: MMC1 14 / MMC3 30 / UNROM 512 61 admitted; or charged twice), a CHR-RAM tileset page not charged on UNROM 512
+  // (60 admitted for the default two-tileset RPG), an RPG given the action board's figure, a vertical RPG limited like the horizontal one, and a refusal that names the wrong Forge.
+  const name = resolveMapper(board).name;
+  for (const [key, tilesets] of [['oneTileset', 1], ['twoTilesets', 2]]) {
+    const largest = RPG_CAPACITY[board][key];
+    assert.deepEqual(refusedErrors(rpgRing(board, 'horizontal', largest, tilesets)).map((x) => x.message), [], `${name} ${key}: 1 x ${largest} is admitted`);
+    const over = refusedErrors(rpgRing(board, 'horizontal', largest + 1, tilesets));
+    assert.equal(over.length, 1, `${name} ${key}: 1 x ${largest + 1} is refused once`);
+    assert.equal(over[0].where, 'Map Forge');
+    assert.match(over[0].message, new RegExp(`The streamed maps need ${largest + 1} of the ${largest} 8 KB program regions ${name} has free for world data\\. Shrink a streamed map`));
+    assert.deepEqual(refusedErrors(rpgRing(board, 'vertical', 255, tilesets)).map((x) => x.message), [], `${name} ${key}: 255 x 1 vertical is admitted`);
+    assert.ok(refusedErrors(rpgRing(board, 'vertical', 256, tilesets)).some((x) => x.where === 'Map Forge' && /at most 255/.test(x.message)), 'the grid ceiling, not capacity, bounds a vertical ring');
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------------- (d) the switch preflight
@@ -347,25 +465,27 @@ function buildPanelMirroringCallback() {
 }
 test("(d) the Build panel's mirroring commit assigns the SELECTED mirroring and reconciles the same draft: the real callback, executed, on UNROM 512, MMC1 and MMC3 drafts (a commented-out assignment, a dropped reconcile and a reconcile-first order are all caught)", () => {
   const callback = (id) => buildPanelMirroringCallback()(reconcileCartridge, id);
-  for (const board of RING_BOARDS.filter((id) => id !== U512)) { // MMC1 / MMC3 have no four-screen wiring; UNROM 512 is the next block
-    const name = resolveMapper(board).name;
+  for (const gameType of GAME_TYPES) for (const board of RING_BOARDS.filter((id) => id !== U512)) { // MMC1 / MMC3 have no four-screen wiring; UNROM 512 is the next block. Both game types (S5): a reconcile skipped only for an RPG would pass an action-only loop
+    const name = `${resolveMapper(board).name} ${gameType}`;
     // vertical -> horizontal on a 1 x 1 streamed map (admitted on both mirrorings): the selection lands, and the draft is still admitted
-    const d = project({ mapper: board, mirroring: 'vertical', gridW: 1, gridH: 1 });
+    const d = project({ mapper: board, mirroring: 'vertical', gameType, gridW: 1, gridH: 1 });
     callback('horizontal')(d);
     assert.equal(d.cartridge.mirroring, 'horizontal', `${name}: the callback assigns the selected mirroring`);
     assert.deepEqual(kinds(d), [], `${name}: and the draft is still admitted`);
     callback('vertical')(d);
     assert.equal(d.cartridge.mirroring, 'vertical', `${name}: and back`);
     // a mirroring the board does not have (a hand-edited or stale selection): the assignment lands and RECONCILE, in the same callback, takes it back to a ring mirroring
-    const f = project({ mapper: board, mirroring: 'horizontal', gridW: 1, gridH: 1 });
+    const f = project({ mapper: board, mirroring: 'horizontal', gameType, gridW: 1, gridH: 1 });
     callback('fourscreen')(f);
     assert.equal(f.cartridge.mirroring, 'vertical', `${name}: four-screen is not offered, reconcile falls back to vertical inside the same commit`);
     assert.deepEqual(kinds(f), []);
   }
   // UNROM 512 does have four-screen: the selection must SURVIVE reconcile there (a reconcile that always reset the mirroring would pass the MMC1/MMC3 half above)
-  const u = project({ mapper: U512, mirroring: 'vertical', gridW: 4, gridH: 1 });
-  callback('fourscreen')(u);
-  assert.equal(u.cartridge.mirroring, 'fourscreen', 'UNROM 512 keeps the four-screen selection through reconcile');
+  for (const gameType of GAME_TYPES) {
+    const u = project({ mapper: U512, mirroring: 'vertical', gameType, gridW: 4, gridH: 1 });
+    callback('fourscreen')(u);
+    assert.equal(u.cartridge.mirroring, 'fourscreen', `UNROM 512 ${gameType} keeps the four-screen selection through reconcile`);
+  }
   // The transitions between the torus and the ring on a STREAMED UNROM 512 project (S4c): the one board whose mirroring choices include both.
   //   a 1 x 1 world is valid on every mirroring: ring -> ring -> torus, each admitted, the selection kept
   const w = project({ mapper: U512, mirroring: 'fourscreen', gridW: 1, gridH: 1 });
@@ -383,11 +503,16 @@ test("(d) the Build panel's mirroring commit assigns the SELECTED mirroring and 
   assert.equal(wide.cartridge.mirroring, 'horizontal');
   assert.deepEqual(kinds(wide), ['deadAxis'], 'torus -> ring on a 3 x 2 world: refused by the dead axis, not silently accepted');
   assert.equal(wide.maps[0].gridW, 3, 'the commit leaves the authored grid alone');
-  //   a streamed RPG moved from the torus (where it streams) onto a ring is the game-type refusal's to refuse (S5)
+  //   a streamed RPG moved from the torus (where it streams) onto a ring is admitted since S5 (a 1 x 1 world), and a torus-shaped one is the dead axis's to refuse, as for an action game
   const rpg = project({ mapper: U512, mirroring: 'fourscreen', gameType: 'rpg', gridW: 1, gridH: 1 });
   assert.deepEqual(kinds(rpg), []);
   callback('horizontal')(rpg);
-  assert.deepEqual(kinds(rpg), ['ringGame'], 'torus RPG -> ring: refused by ringGame');
+  assert.deepEqual(kinds(rpg), [], 'torus RPG -> ring: admitted');
+  callback('fourscreen')(rpg);
+  assert.deepEqual(kinds(rpg), [], 'and back to the torus');
+  const wideRpg = project({ mapper: U512, mirroring: 'fourscreen', gameType: 'rpg', gridW: 3, gridH: 2 });
+  callback('vertical')(wideRpg);
+  assert.deepEqual(kinds(wideRpg), ['deadAxis'], 'torus RPG 3 x 2 -> ring: the dead axis, not a game-type refusal');
   //   ring -> torus spends a CHR-RAM page (tilesetLimit), so the SAME commit has to trim the tilesets: reconcile in the commit, not after it
   const four = project({ mapper: U512, mirroring: 'horizontal', gridW: 1, gridH: 6 });
   while (four.tilesets.length < 4) four.tilesets.push(structuredClone(four.tilesets[0]));
@@ -401,11 +526,11 @@ test("(d) the Build panel's mirroring commit assigns the SELECTED mirroring and 
 
 // ---------------------------------------------------------------------------------------------------------------- (e) saves
 
-for (const board of RING_BOARDS) test(`(e) ${resolveMapper(board).name}: a mirroring-only edit keeps saveCompatToken and the save identity; a resize invalidates (ruling 3)`, () => {
+for (const board of RING_BOARDS) for (const gameType of GAME_TYPES) test(`(e) ${resolveMapper(board).name} ${gameType}: a mirroring-only edit keeps saveCompatToken and the save identity; a resize invalidates (ruling 3)`, () => {
   // Catches a mirroring edit that redraws saveCompatToken (every save on that project would be refused after flipping V/H), and the opposite: a resize that
   // does not (a save could land in a room that no longer is). Only a 1 x 1 streamed map is valid on BOTH mirrorings (the dead axis flips), so the
-  // valid mirroring-only edits are degenerate (ruling 3, discharged as engineering at S4a).
-  const p = project({ mapper: board, mirroring: 'vertical', gridW: 1, gridH: 1 });
+  // valid mirroring-only edits are degenerate (ruling 3, discharged as engineering at S4a). Both game types since S5: an RPG's reconcile must not take a different path.
+  const p = project({ mapper: board, mirroring: 'vertical', gameType, gridW: 1, gridH: 1 });
   assert.deepEqual(kinds(p), []);
   const token = p.project.saveCompatToken ?? 0;
   const identity = saveIdentity(p);
@@ -419,7 +544,7 @@ for (const board of RING_BOARDS) test(`(e) ${resolveMapper(board).name}: a mirro
   assert.notEqual(p.project.saveCompatToken ?? 0, token, 'a resize redraws saveCompatToken');
   assert.notEqual(saveIdentity(p), identity, 'and invalidates every earlier save');
   // a mirroring edit that makes the project invalid does not touch the token either (the refusal is validate's, not the save's)
-  const q = project({ mapper: board, mirroring: 'vertical', gridW: 4, gridH: 1 });
+  const q = project({ mapper: board, mirroring: 'vertical', gameType, gridW: 4, gridH: 1 });
   const qToken = q.project.saveCompatToken ?? 0;
   q.cartridge.mirroring = 'horizontal';
   reconcileCartridge(q);
@@ -502,8 +627,8 @@ for (const cellId of ['MMC3-V', 'MMC1-V', 'U512-V']) test(`(e) ${cellId}: a save
 
 // ---------------------------------------------------------------------------------------------------------------- builds, no bypass
 
-test('an admitted UNROM 512 / MMC1 / MMC3 action ring builds through the real cli.js path on both mirrorings (no lift, no bypass), and the refused neighbours do not', { skip }, async (t) => {
-  // Catches a validate that admits but a build gate that still refuses (or the reverse): the CLI is the shipped path. MMC1 and MMC3 take mirroring from their
+test('an admitted UNROM 512 / MMC1 / MMC3 action AND RPG ring builds through the real cli.js path on both mirrorings (no lift, no bypass), and the refused neighbours do not', { skip }, async (t) => {
+  // Catches a validate that admits but a build gate that still refuses (or the reverse): the CLI is the shipped path. Every RPG row here was `ok: false` until S5. MMC1 and MMC3 take mirroring from their
   // own registers (generated MAPPER_MIRROR), but the header's mirroring bit is still the project's, so it is checked on every ring board. UNROM 512 four-screen
   // (the torus) builds as it always did.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'admit-cli-'));
@@ -516,12 +641,20 @@ test('an admitted UNROM 512 / MMC1 / MMC3 action ring builds through the real cl
     { name: 'u512v', c: { mapper: U512, mirroring: 'vertical', gridW: 4, gridH: 1 }, ok: true },
     { name: 'u512h', c: { mapper: U512, mirroring: 'horizontal', gridW: 1, gridH: 4 }, ok: true },
     { name: 'u512torus', c: { mapper: U512, mirroring: 'fourscreen', gridW: 3, gridH: 2 }, ok: true },
-    { name: 'u512rpg', c: { mapper: U512, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: false },
-    { name: 'u512rpgh', c: { mapper: U512, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: 4 }, ok: false },
+    { name: 'u512rpg', c: { mapper: U512, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: true },
+    { name: 'u512rpgh', c: { mapper: U512, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: 4 }, ok: true },
+    { name: 'u512rpgtorus', c: { mapper: U512, mirroring: 'fourscreen', gameType: 'rpg', gridW: 3, gridH: 2 }, ok: true },
+    { name: 'u512rpgwrongaxis', c: { mapper: U512, mirroring: 'horizontal', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: false },
+    { name: 'u512rpg2x2', c: { mapper: U512, mirroring: 'vertical', gameType: 'rpg', gridW: 2, gridH: 2 }, ok: false },
+    { name: 'nromrpg', c: { mapper: 0, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: 4 }, ok: false },
     { name: 'u512wrongaxis', c: { mapper: U512, mirroring: 'vertical', gridW: 1, gridH: 4 }, ok: false },
     { name: 'nrom', c: { mapper: 0, mirroring: 'horizontal', gridW: 1, gridH: 4 }, ok: false },
-    { name: 'rpg', c: { mapper: MMC3, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: false },
-    { name: 'mmc1rpg', c: { mapper: MMC1, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: false },
+    { name: 'rpg', c: { mapper: MMC3, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: true },
+    { name: 'rpgh', c: { mapper: MMC3, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: 4 }, ok: true },
+    { name: 'mmc1rpg', c: { mapper: MMC1, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 }, ok: true },
+    { name: 'mmc1rpgh', c: { mapper: MMC1, mirroring: 'horizontal', gameType: 'rpg', gridW: 1, gridH: 4 }, ok: true },
+    { name: 'mmc3rpg2x2', c: { mapper: MMC3, mirroring: 'horizontal', gameType: 'rpg', gridW: 2, gridH: 2 }, ok: false },
+    { name: 'mmc1rpgwrongaxis', c: { mapper: MMC1, mirroring: 'vertical', gameType: 'rpg', gridW: 1, gridH: 4 }, ok: false },
     { name: 'wrongaxis', c: { mapper: MMC3, mirroring: 'vertical', gridW: 1, gridH: 4 }, ok: false },
     { name: 'mmc1wrongaxis', c: { mapper: MMC1, mirroring: 'horizontal', gridW: 4, gridH: 1 }, ok: false }
   ];
@@ -560,15 +693,58 @@ test('the boundary builds: MMC3 1 x 30 / MMC1 1 x 14 / UNROM 512 1 x 61 horizont
   }
 });
 
-for (const id of ['MMC3-V', 'MMC3-H', 'MMC1-V', 'MMC1-H', 'U512-V', 'U512-H']) {
-  test(`${id} action: a lap of the ring on the REAL tree (no refusal lift) -- terrain + attributes of both live nametables after every checkpoint, no alias write`, { skip }, async (t) => {
-    // Catches an admission that validates and builds a ROM the ring engine cannot run: the S2/S3 oracle, on production code only.
+test('the boundary builds for a streamed RPG: 1 x 13 / 29 / 60 (one tileset) and 13 / 29 / 59 (two) horizontal and 255 x 1 vertical assemble through the real path, and one more region does not', { skip }, async (t) => {
+  // Catches an RPG capacity figure that validate accepts but nesasm cannot place (the battle bank's region, or a CHR page, charged wrongly), and a refusal that is not the Forge-naming one.
+  const tree = realTree();
+  t.after(() => tree.dispose());
+  const loaded = await loadBypassTree(tree);
+  for (const board of RING_BOARDS) {
+    for (const [key, tilesets] of [['oneTileset', 1], ['twoTilesets', 2]]) {
+      const n = RPG_CAPACITY[board][key];
+      for (const [mirroring, depth] of [['horizontal', n], ['vertical', 255]]) {
+        const built = await buildThrough(loaded, rpgRing(board, mirroring, depth, tilesets));
+        try { assert.ok(fs.existsSync(built.romPath), `${resolveMapper(board).name} ${key} ${mirroring} ${depth}`); } finally { fs.rmSync(built.dir, { recursive: true, force: true }); }
+      }
+      await assert.rejects(() => buildThrough(loaded, rpgRing(board, 'horizontal', n + 1, tilesets)), new RegExp(`need ${n + 1} of the ${n} 8 KB program regions`), `${resolveMapper(board).name} ${key}`);
+    }
+  }
+});
+
+for (const id of ['MMC3-V', 'MMC3-H', 'MMC1-V', 'MMC1-H', 'U512-V', 'U512-H']) for (const gameType of GAME_TYPES) {
+  test(`${id} ${gameType}: a lap of the ring on the REAL tree (no refusal lift) -- terrain + attributes of both live nametables after every checkpoint, no alias write`, { skip }, async (t) => {
+    // Catches an admission that validates and builds a ROM the ring engine cannot run: the S2/S3 oracle, on production code only. The RPG rows boot a ROM whose project is built by the
+    // gate's own ringProject (a party, a battle bank, hero naming OFF so the first screen is the field -- the naming grid on a ring is streamringrpg.test.js (b) and the next test).
     const tree = realTree();
     t.after(() => tree.dispose());
     const loaded = await loadBypassTree(tree);
     const cell = cellById(id);
     const scene = { ...laps({ ring: cell.ring, talkers: 'enter' }), start: {} };
-    assertRingRun(assert, await runScene({ loaded, cell, gameType: 'action', scene, talkers: 'enter' }), `${id} action lap (production)`);
+    assertRingRun(assert, await runScene({ loaded, cell, gameType, scene, talkers: 'enter' }), `${id} ${gameType} lap (production)`);
+  });
+}
+
+// A streamed RPG with hero naming ON: the real tree builds it and the ROM opens the naming grid at a new game, takes a name, and lands on a field whose nametables equal the oracle -- on all
+// three boards and both mirrorings (the S5 C1 test of the same picture runs through the bypass copy at the seam; this is the shipped path).
+for (const id of ['MMC3-V', 'MMC3-H', 'MMC1-V', 'MMC1-H', 'U512-V', 'U512-H']) {
+  test(`${id} rpg: the real tree builds a hero-naming RPG ring that boots past the naming grid onto an oracle-equal field`, { skip }, async (t) => {
+    // Catches a ring RPG that the shipped path builds but whose naming grid (hero naming draws through the streamed mapper) leaves the field wrong, or never closes.
+    const tree = realTree();
+    t.after(() => tree.dispose());
+    const loaded = await loadBypassTree(tree);
+    const cell = cellById(id);
+    const r = await buildRing({ loaded, cell, gameType: 'rpg', mutate: (p) => { p.party[0].renamable = true; } });
+    t.after(() => r.dispose());
+    const nes = r.boot();
+    const m = nes.cpu.mem;
+    let f = 0;
+    while (m[r.at('game_state')] !== r.at('ST_NAMEENTRY') && f++ < 600) nes.frame();
+    assert.equal(m[r.at('game_state')], r.at('ST_NAMEENTRY'), 'hero naming opens at a new game');
+    waitForNamingReady(nes);
+    finishNamingIfOpen(nes);
+    for (let i = 0; i < 90; i++) nes.frame();
+    assert.equal(m[r.at('game_state')], 0, 'the naming grid closed onto the field');
+    const v = r.judgeNow(nes, 'after-naming');
+    assert.deepEqual(v.fails, [], 'both live nametables match the oracle after the grid closes');
   });
 }
 

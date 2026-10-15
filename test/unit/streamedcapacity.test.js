@@ -268,8 +268,8 @@ test('the phase-1 "no engine yet" refusal is gone: a project clearing every Part
 });
 
 test('mapper-switch preflight: the checks in order, the real project untouched', () => {
-  // Phase 3b S4a/S4b/S4c: the 'capability' kind covers a board/mirroring that cannot stream (NROM; MMC1 / MMC3 four-screen), 'ringGame'
-  // a board that has a ring but not for this game type (a streamed RPG on UNROM 512, MMC3 or MMC1, until S5), and 'deadAxis' the grid shape. checkStreamedMapperSwitch
+  // Phase 3b S4a/S4b/S4c/S5: the 'capability' kind covers a board/mirroring that cannot stream (NROM; MMC1 / MMC3 four-screen), 'ringGame'
+  // a board that has a ring but not for this game type (no registered board since S5; streamadmit.test.js (b) reaches it on a synthetic board, in this same order), and 'deadAxis' the grid shape. checkStreamedMapperSwitch
   // asks them in that order, then the aggregate region check, and returns the first failing tier's messages.
   const build = (w, h, gameType = 'action') => {
     const p = blank(UNROM512, 'fourscreen');
@@ -297,18 +297,18 @@ test('mapper-switch preflight: the checks in order, the real project untouched',
   assert.ok(!/screens tall/.test(refusals[0]), 'the dead-axis message must not surface through this function while the board itself is refused');
   assert.deepEqual(p, before);
 
-  // (2) ringGame: an RPG streamed map on UNROM 512 vertical (admitted for action only; MMC3 and MMC1 answer the same). Same tier as capability, so it pre-empts the dead axis too.
+  // (2) ringGame: since S5 a streamed RPG is admitted on UNROM 512, MMC3 and MMC1 (kinds are asked in the same order, so a 4 x 40 RPG is now judged by the dead axis, as an action map is); the
+  // 'ringGame' tier itself is pinned on a synthetic board in streamadmit.test.js (b). The RPG that already streamed, on UNROM 512 four-screen, is still not refused (the torus is not the ring).
   p = build(4, 40, 'rpg');
   before = snapshot(p);
-  refusals = checkStreamedMapperSwitch(p, UNROM512, 'vertical');
-  assert.equal(refusals.length, 1);
-  assert.match(refusals[0], /streamed RPGs are not implemented there yet/);
-  assert.ok(!/screens tall/.test(refusals[0]));
+  for (const board of [UNROM512, MMC3, MMC1]) {
+    refusals = checkStreamedMapperSwitch(p, board, 'vertical');
+    assert.equal(refusals.length, 1, String(board));
+    assert.match(refusals[0], /screens tall/);
+    assert.ok(!/not implemented there yet/.test(refusals[0]), 'no game-type refusal for a registered board');
+  }
   assert.deepEqual(p, before);
-  refusals = checkStreamedMapperSwitch(p, MMC3, 'vertical');
-  assert.equal(refusals.length, 1);
-  assert.match(refusals[0], /streamed RPGs are not implemented there yet/);
-  // ...and the RPG that already streams, on UNROM 512 four-screen, is not refused (the torus is not the ring)
+  for (const board of [UNROM512, MMC3, MMC1]) assert.deepEqual(checkStreamedMapperSwitch(build(40, 1, 'rpg'), board, 'vertical'), [], `a 40 x 1 RPG passes every tier on board ${board}`);
   assert.deepEqual(checkStreamedMapperSwitch(build(1, 20, 'rpg'), UNROM512, 'fourscreen'), []);
 
   // (3) deadAxis, now reachable: an action map 40 screens tall on MMC3 vertical passes both board tiers and fails the shape.
@@ -320,10 +320,7 @@ test('mapper-switch preflight: the checks in order, the real project untouched',
   assert.deepEqual(p, before);
   // ...and the same map as 40 x 1 on MMC3 vertical passes every tier (40 > the 30-region horizontal limit does not apply to a vertical ring).
   assert.deepEqual(checkStreamedMapperSwitch(build(40, 1), MMC3, 'vertical'), []);
-  // (3b) the same on MMC1 (S4b): the RPG is the game-type refusal, the 40-tall action map is the dead-axis shape refusal
-  refusals = checkStreamedMapperSwitch(build(4, 40, 'rpg'), MMC1, 'vertical');
-  assert.equal(refusals.length, 1);
-  assert.match(refusals[0], /streamed RPGs are not implemented there yet/);
+  // (3b) the same on MMC1 (S4b): the 40-tall action map is the dead-axis shape refusal
   refusals = checkStreamedMapperSwitch(build(4, 40), MMC1, 'vertical');
   assert.equal(refusals.length, 1);
   assert.match(refusals[0], /screens tall/);
@@ -405,8 +402,16 @@ test('switchableMappers never offers a board to a streamed project that then fai
   assert.deepEqual(everyOfferedValidates(fromMmc1, MMC1), [UNROM512, MMC3]);
   const rpg = blank(MMC1, 'vertical');
   rpg.project.gameType = 'rpg';
-  addMap(rpg, 5, 1, true); // an RPG streamed map: UNROM 512 and MMC3 would be refused for it (ringGame), so neither is offered
-  assert.deepEqual(everyOfferedValidates(rpg, MMC1), []);
+  addMap(rpg, 5, 1, true); // an RPG streamed map: since S5 UNROM 512 and MMC3 admit it (ringGame is no longer reachable on a registered board), so both are offered, as for the action map above
+  assert.deepEqual(everyOfferedValidates(rpg, MMC1), [UNROM512, MMC3]);
+  const rpgTall = blank(MMC3, 'horizontal');
+  rpgTall.project.gameType = 'rpg';
+  addMap(rpgTall, 1, 12, true); // 12 rows fit every ring board's RPG ceiling (MMC1 13); UNROM 512 and MMC1 horizontal are offered
+  assert.deepEqual(everyOfferedValidates(rpgTall, MMC3), [UNROM512, MMC1]);
+  const rpgTooTall = blank(MMC3, 'horizontal');
+  rpgTooTall.project.gameType = 'rpg';
+  addMap(rpgTooTall, 1, 20, true); // 20 rows is over MMC1's RPG ceiling (13): MMC1 is not offered, the aggregate region check speaking, while UNROM 512 is
+  assert.deepEqual(everyOfferedValidates(rpgTooTall, MMC3), [UNROM512]);
   // Hand-written 6502 still short-circuits before any of that: unchanged.
   const coded = structuredClone(p);
   coded.code.files.push({ name: 'user_hook.asm', text: 'forge_user_hook:\n  rts\n' });

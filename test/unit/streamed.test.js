@@ -301,7 +301,8 @@ test('Part D item 1 (narrowed by S4a, S4b, S4c): a board that cannot stream is r
     assert.equal(found.length, 1, `${mapperId}/${mirroring}`);
     assert.equal(found[0].severity, 'error');
     assert.equal(found[0].where, 'Build');
-    assert.match(found[0].message, /UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring \(action games\)/, 'the message names the boards that work');
+    assert.match(found[0].message, /UNROM 512, MMC1 or MMC3 with horizontal or vertical mirroring, or UNROM 512 with four-screen mirroring --/, 'the message names the boards that work (both game types since S5, so no game-type qualifier)');
+    assert.ok(!/action games/.test(found[0].message), 'and does not say "action games" any more');
     assert.ok(!/UNROM 512 with four-screen mirroring today/.test(found[0].message), 'the pre-S4a "four-screen only" wording is gone');
   }
   for (const [mapperId, mirroring] of [[1, 'vertical'], [1, 'horizontal'], [4, 'vertical'], [4, 'horizontal'], [30, 'vertical'], [30, 'horizontal'], [30, 'fourscreen']]) {

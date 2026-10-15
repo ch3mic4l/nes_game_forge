@@ -45,6 +45,7 @@ import { execFileSync } from 'node:child_process';
 import { ROOT, extractTokens, classify, buildCorpus, pathExists, trackedFiles, namedAsGone, testDeclarations } from '../lib/docclaims.js';
 import { scanSource } from '../lib/sourcescan.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
+import { withSyntheticBoard } from '../lib/syntheticboard.js';
 import {
   createProject,
   createMap,
@@ -360,20 +361,14 @@ const STREAMED_WARNINGS = [
   { id: 'board cannot stream (kind capability, error)', pinned: 'streamed.test.js "gating", streamedcapacity.test.js',
     fires: () => streamedBoardProblems(createStreamedProject({ mapper: 0, mirroring: 'horizontal' })).some((p) => p.kind === 'capability' && /cannot stream a world/.test(p.message)),
     docs: [['README.md', /UNROM 512 with four-screen mirroring/]] },
-  // Since S4c every registered board has a ring datum, so this refusal is reachable only by taking one away (the registry-follow test does the same): the fires() removes UNROM 512's, then restores it.
-  { id: 'board has no two-nametable ring yet (kind capability, error): a ring board whose datum is absent', pinned: 'streamadmit.test.js (a) "FOLLOWS the registry datum"',
-    fires: () => {
-      const u512 = resolveMapper(30);
-      const datum = Object.getOwnPropertyDescriptor(u512, 'streamRingGameTypes');
-      try {
-        delete u512.streamRingGameTypes;
-        return validateProject(createStreamedProject({ mapper: 30, mirroring: 'horizontal' })).some((p) => p.severity === 'error' && /two-nametable ring -- not implemented yet on this board/.test(p.message));
-      } finally { Object.defineProperty(u512, 'streamRingGameTypes', datum); }
-    },
+  // Since S4c every registered board has a ring datum, so this refusal is reachable only on a synthetic ring board with no datum (test/lib/syntheticboard.js).
+  { id: 'board has no two-nametable ring yet (kind capability, error): a ring board whose datum is absent', pinned: 'streamadmit.test.js (b) "the `capability` \"no ring yet\" arm still fires"',
+    fires: () => withSyntheticBoard(undefined, (id) => validateProject(createStreamedProject({ mapper: id, mirroring: 'horizontal' })).some((p) => p.severity === 'error' && /two-nametable ring -- not implemented yet on this board/.test(p.message))),
     docs: [['docs/reference-engine.md', /not implemented yet on this board/]] },
-  { id: 'a streamed RPG on a two-nametable board (kind ringGame, error): refused until S5', pinned: 'streamadmit.test.js (b)',
-    fires: () => [4, 1, 30].every((mapper) => streamedBoardProblems(createStreamedProject({ mapper, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 })).some((p) => p.kind === 'ringGame' && p.where === 'Build' && /streamed RPGs are not implemented there yet/.test(p.message))),
-    docs: [['README.md', /a streamed RPG on any two-nametable board is refused for now/], ['docs/reference-engine.md', /\*Ring game type\* \(`'ringGame'`/]] },
+  // Since S5 C2 no registered board omits the `rpg` game type, so the game-type refusal is reachable only on a synthetic board (test/lib/syntheticboard.js) that lists `action` alone.
+  { id: 'a board whose ring datum lacks the project\'s game type (kind ringGame, error): a streamed RPG on a synthetic action-only board', pinned: 'streamadmit.test.js (b) "the `ringGame` arm still fires"',
+    fires: () => withSyntheticBoard(['action'], (id) => streamedBoardProblems(createStreamedProject({ mapper: id, mirroring: 'vertical', gameType: 'rpg', gridW: 4, gridH: 1 })).some((p) => p.kind === 'ringGame' && p.where === 'Build' && /streamed RPGs are not implemented there yet/.test(p.message))),
+    docs: [['README.md', /a turn-based RPG's battle code takes one of those regions/], ['docs/reference-engine.md', /\*Ring game type\* \(`'ringGame'`/]] },
   { id: 'dead axis (kind deadAxis, error)', pinned: 'streamed.test.js "two-nametable: the dead axis"',
     fires: () => streamedBoardProblems(createStreamedProject({ mapper: 1, mirroring: 'horizontal', gridW: 6, gridH: 1 })).some((p) => p.kind === 'deadAxis'),
     docs: [['docs/reference-engine.md', /\*Dead axis\* \(`'deadAxis'`/]] },

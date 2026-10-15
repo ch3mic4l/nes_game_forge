@@ -1,8 +1,8 @@
 // A TEST-ONLY way to build a two-nametable streamed project (phase 3b S2).
 //
-// validateProject still refuses a two-nametable streamed map for every game type that is not admitted yet (since S4a / S4b / S4c: MMC3, MMC1 and UNROM 512 action are
-// admitted; any streamed RPG on a two-nametable board is refused until S5). A test
-// that needs one of those still refused builds, or the ring gate's scenes, go through a COPY of the product in which that refusal is neutralized: engine/ main/ shared/ and package.json are copied to a
+// validateProject refuses a two-nametable streamed map for every board and game type that is not admitted (since S4a / S4b / S4c / S5: MMC3, MMC1 and UNROM 512, action and RPG,
+// are admitted, so no registered board is refused any more; the refusal arms are pinned on a synthetic board, test/lib/syntheticboard.js). A test
+// that needs a build the real tree refuses (a synthetic board, or the sabotage hook), or the ring gate's scenes, go through a COPY of the product in which that refusal is neutralized: engine/ main/ shared/ and package.json are copied to a
 // mkdtemp directory, `shared/project.js` has the capability branch's condition replaced (asserted to match exactly once, so a refactor
 // of the refusal fails loudly instead of silently building nothing), and the copy's own buildProject is imported. There is no flag in the
 // shipped code: the real tree is never touched, and a build through the real tree still refuses.

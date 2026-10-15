@@ -308,12 +308,12 @@ refuses the build, and no longer warns either: S3b deleted the warning (`validat
 mapper-switch preflight; project load checks `streamedGridProblems` directly. *Dead axis* (`'deadAxis'`, named for the Map Forge): a board that can stream but whose mirroring
 leaves one axis without a scroll (`cameraAxes` is the single writer of which) holds exactly one screen of ring on that axis, so a
 streamed map must be 1 screen wide when sideways is dead and 1 screen tall when up and down is, and the message says to shrink
-the map or change the mirroring (since phase 3b S4a / S4b / S4c it is live for the UNROM 512, MMC3 and MMC1 action rings, and the mapper-switch preflight below asks it). *Board admission*: which
+the map or change the mirroring (since phase 3b S4a / S4b / S4c / S5 it is live for the UNROM 512, MMC3 and MMC1 action and RPG rings, and the mapper-switch preflight below asks it). *Board admission*: which
 two-nametable boards a user may build a ring on is one datum per registry entry, `streamRingGameTypes` (`shared/cartridge.js`; UNROM 512, MMC1 and MMC3
-`['action']`), read through `streamRingBoardAdmitted` / `streamRingAdmitted`; a board without it gets the `'capability'` refusal "not implemented yet on
-this board" (since S4c no registered board is in that state; `streamadmit.test.js` reaches the message by deleting a datum). The boards those messages name come from the same datum (`streamRingAdmittedBoardNames`, an English list: "UNROM 512, MMC1 or MMC3"), never a typed list. *Ring game type* (`'ringGame'`, named for the Build panel): a board that has a ring but not for
-this project's game type -- today a streamed RPG on UNROM 512, MMC3 or MMC1 -- is refused until S5, the same tier as `'capability'` (a property of the board and game
-type, not of the grid). *Grid* (`streamedGridProblems`): each side an integer in 1..`LIMITS.streamedGrid` (255)
+`['action', 'rpg']`), read through `streamRingBoardAdmitted` / `streamRingAdmitted`; a board without it gets the `'capability'` refusal "not implemented yet on
+this board" (since S4c no registered board is in that state; `streamadmit.test.js` (b) reaches the message on a synthetic board, `test/lib/syntheticboard.js`). The boards those messages name come from the same datum (`streamRingAdmittedBoardNames`, an English list: "UNROM 512, MMC1 or MMC3"), never a typed list; while both game types are admitted on the same boards the messages carry no game-type qualifier, and a datum that differs per game type is named per game type. *Ring game type* (`'ringGame'`, named for the Build panel): a board that has a ring but not for
+this project's game type is refused, the same tier as `'capability'` (a property of the board and game
+type, not of the grid). Since S5 every registered board lists both game types, so no real project reaches it (a streamed RPG builds on UNROM 512, MMC1 and MMC3 with either two-nametable mirroring); the arm stays as a guard for a board added with a one-game-type datum and is pinned on a synthetic board. *Grid* (`streamedGridProblems`): each side an integer in 1..`LIMITS.streamedGrid` (255)
 and `gridW * gridH` within `LIMITS.projectScreens` (255), **and a second, separate refusal when the map holds more authored
 screens than `gridW * gridH`** ("holds N screens but is only W x H"); `normalizeProject` throws `StreamedGridError` and project
 load reports it instead of dropping the extra screens. *Mapper-switch preflight* (Build panel): `checkStreamedMapperSwitch`
@@ -838,7 +838,7 @@ went missing for several review rounds, caught only on an action build. See
 
 ### The vertical ring (phase 3b slice S2, commit C2)
 
-A streamed board with **vertical mirroring** (MMC1, MMC3, UNROM 512 non-four-screen; all admitted for action games) has two live nametables, `$2000` and `$2400`. The engine
+A streamed board with **vertical mirroring** (MMC1, MMC3, UNROM 512 non-four-screen; all admitted for action games and, since S5, RPGs) has two live nametables, `$2000` and `$2400`. The engine
 streams it as a 32 x 15-block **ring**: `streamRingMode(mapper, mirroringId)` (`shared/cartridge.js`, the single writer; 1 vertical, 2 horizontal,
 0 four-screen or not streamable) is read by `projectStreamRing` (`main/build/streamplacement.js`, the one predicate for the generated constant and
 the allowance) and becomes `STREAM_RING` in `config.inc`. The dead axis is pinned by the extent clamp, so the NT index `n = 2*(screenRow&1) +
@@ -855,9 +855,8 @@ the original bytes; `streamringidentity.test.js` proves it for the six fixtures 
 | render-window nametable sequence | `SW_RW_NT_STEP` 1, `SW_RW_NT_END` 2 | 1, 4 | `sw_ring_nt_step`, `sw_ring_nt_end` |
 
 The column strip therefore reads one screen (two `switch_prg_bank` calls: one read, one restore) where the torus reads two. The render window
-writes nametables 0 and 1 only, so no PPU write is ever addressed to `$28xx`/`$2Cxx`. (The horizontal ring followed in S3, below.) Since S4a / S4b
-`validateProject` admits this ring for UNROM 512, MMC3 and MMC1 action games (S4c); a streamed RPG on it is reachable only through the test-only bypass copy of
-`test/lib/ringbypass.js` (a mkdtemp copy of `engine/ main/ shared/` with the one validate refusal neutralized; there is no shipped flag). Tests: `streamring.test.js` (selection, constants,
+writes nametables 0 and 1 only, so no PPU write is ever addressed to `$28xx`/`$2Cxx`. (The horizontal ring followed in S3, below.) Since S4a / S4b / S4c
+`validateProject` admits this ring for UNROM 512, MMC3 and MMC1 action games, and since S5 for their RPGs too. `test/lib/ringbypass.js` (a mkdtemp copy of `engine/ main/ shared/` with the one validate refusal neutralized; there is no shipped flag) is now needed only for a board or game type the registry does not admit. Tests: `streamring.test.js` (selection, constants,
 refusals), `streamringoracle.test.js` (laps, seam, alias-write trace), `streamringredraw.test.js` and `streamringcontinue.test.js` (every
 full-redraw path), `streamringdialogue.test.js` (both live indices, split close), `streamringstrip.test.js` (one-screen strip),
 `streamringidentity.test.js`, and the named sabotages of `test/lua/run_ring_sabotage.mjs`. The scenes, interpreter and judge are the certified S1
@@ -882,7 +881,7 @@ row strip reads one screen (one `sw_goto`, one restore); nothing is ever address
 on `gridH == 1` and a column strip never on `gridW == 1`, and the camera never moves X. `engine/player.asm`'s `cross_left_cut` tail needs a far branch
 (`bne ring_far1` / `jmp cross_none`) under `.if STREAM_RING` inside `.if !CAMERA_SLIDE_H`, because `cross_none` is out of a plain `beq`'s range on a
 horizontal-camera ring. The close frame is one five-packet structure with `vram_len` 84 (the vertical ring's is split across the seam, 87).
-Since S4a / S4b / S4c this ring is admitted for UNROM 512, MMC3 and MMC1 action games; an RPG on it is reachable only through `test/lib/ringbypass.js`. On UNROM 512 its depth is the region count, at most 61 (the depth the ring gate certified, design record section 15). Tests:
+Since S4a / S4b / S4c / S5 this ring is admitted for UNROM 512, MMC3 and MMC1 action games and RPGs. On UNROM 512 its depth is the region count, at most 61 for an action game (the depth the ring gate certified, design record section 15) and at most 60 for an RPG (59 with the default two tilesets; the gate's RPG cells ran at 59, so the 60th row is admitted and not yet certified, design record section 17). Tests:
 `streamringh.test.js` (selection, refusal, assembly on 3 boards x 2 game types, operand readback, allowance), `streamringhstrip.test.js`,
 `streamringhoracle.test.js`, `streamringhredraw.test.js`, `streamringhdialogue.test.js`, `streamringhclose.test.js`, `streamringhfar.test.js` (the far branch's condition, on an ordinary screen of a mixed project), and the `h-*` sabotages of
 `test/lua/run_ring_sabotage.mjs`. Design record: `docs/design-streamed-worlds-phase3b.md`, section 9.

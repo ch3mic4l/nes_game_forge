@@ -1,6 +1,7 @@
-// Phase 3b S5, C1: the resource matrix of a RING build, the RPG depth pin and the banked-placement close frame at the RPG ceiling. Everything is built through
-// the bypass copy (test/lib/ringbypass.js: only the refusal is neutralized), so engine, generator and checkCapacity are production; the RPG ring is still refused by
-// validateProject in the shipped tree until C2.
+// Phase 3b S5, C1: the resource matrix of a RING build, the RPG depth pin and the banked-placement close frame at the RPG ceiling. Builds go through the bypass copy
+// (test/lib/ringbypass.js: only the refusal is neutralized; the copy keeps the FORGE_RING_SABOTAGE hook), so engine and generator are production. Since C2 admits a streamed RPG the
+// ADMISSION questions -- what validateProject and checkCapacity accept, i.e. the whole depth pin -- are asked of the REAL tree (`errorsOf` below imports shared/project.js and
+// main/build/generate.js directly, with no copy in between), and the depth pin's ceiling worlds are built by the real buildProject.
 //
 // (h)  per board x mirroring x {action, RPG} x {dialogue resident, banked}: what the assembler really used against what checkCapacity charges.
 //      kernelCodeBytes covers the real kernel-lo code with the margin kernelbytes.test.js's assertCovers asks for (KERNEL_SLACK .. 2 x KERNEL_SLACK); an RPG's battle
@@ -13,7 +14,8 @@
 //      only on a ring build (streaming + the feature) is seen. A ninth build switches all eight on at once.
 // (i)  the RPG depth pin: the STRUCTURAL region ceiling of an RPG on each horizontal board is 13 / 29 / 60 for ANY RPG project (the lightest, one-tileset one reaches it); the
 //      default two-tileset RPG reaches 13 / 29 / 59. The ring gate's RPG cells ran at 13 / 29 / 59 (S4c C2 certificate), so on UNROM 512 the 60th row is ADMITTED BY THE CAPACITY CHECK BUT
-//      NOT YET MEASURED: C3 resizes the U512-H RPG gate cells to the one-tileset workload (Chris, 2026-10-14, "Measure it in C3"). This pin does not call 60 certified.
+//      NOT YET MEASURED: C3 resizes the U512-H RPG gate cells to the one-tileset workload (Chris, 2026-10-14, "Measure it in C3"). This pin does not call 60 certified. Since C2 the
+//      admission half of it runs on the REAL tree (errorsOf), so it fails if a future change admits an RPG deeper than 13 / 29 / 60.
 // (f)  the banked-placement close frame at the deepest world a close scene admits, on every ring board, with the talker on the second-deepest live screen: the mixed scene (an
 //      ordinary map, hence flip_tick: the full Flip + Flash + arrow + close-row queue) at its own ceiling, and the streamed map alone at the board's universal ceiling (no flip_tick,
 //      so Flash + arrow + close row). Both keep the assembled overlay-address check.
@@ -33,6 +35,11 @@ import { cellById, readFns, BULK } from '../lib/ringrun.js';
 import { ringProject } from '../lua/ring_gate/ringworld.mjs';
 import { closeShape } from '../lua/ring_gate/ringclose.mjs';
 import { createStreamedProject } from '../lib/streamedproject.js';
+import { validateProject } from '../../shared/project.js';
+import { checkCapacity } from '../../main/build/generate.js';
+import { buildProject } from '../../main/build/pipeline.js';
+import { saveProject } from '../../main/project-io.js';
+import os from 'node:os';
 import { captureCloseFrame } from '../lib/ringcloseframe.js';
 import { SIX_CELLS, oneTilesetRpg, ceilingCloseProject, featureBase, RING_FEATURES } from '../lib/ringrpg.js';
 
@@ -52,7 +59,8 @@ before(async () => {
 });
 after(() => tree?.dispose());
 
-const errorsOf = (p) => [...loaded.shared.validateProject(p), ...loaded.generate.checkCapacity(p).problems].filter((x) => x.severity === 'error');
+// the REAL tree's admission (no bypass copy): validateProject + checkCapacity as shipped
+const errorsOf = (p) => [...validateProject(p), ...checkCapacity(p).problems].filter((x) => x.severity === 'error');
 const usageRow = (log, bank) => {
   const line = log.find((l) => new RegExp(`^BANK\\s+${bank}\\s`).test(l));
   assert.ok(line, `no usage row for bank ${bank}`);
@@ -193,9 +201,15 @@ for (const [id, ceiling] of Object.entries(RPG_CEILING)) {
     for (let n = twoCeiling + 1; n <= 255; n++) { const e = errorsOf(hRpg(cell, n, 2)); if (e.length === 0 || !e.every((x) => x.where === 'Map Forge')) twoOver.push(n); }
     assert.deepEqual(twoOver, [], 'no height above the two-tileset ceiling is admitted (two tilesets)');
     // 4. both ceiling worlds really assemble
+    // (through the REAL buildProject: a refusal that came back, or a world the packer cannot place, throws)
     for (const [n, tilesets] of [[ceiling, 1], [twoCeiling, 2]]) {
-      const built = await buildThrough(loaded, hRpg(cell, n, tilesets));
-      try { assert.ok(fs.existsSync(built.romPath), `1 x ${n} (${tilesets} tileset${tilesets > 1 ? 's' : ''}) builds`); } finally { fs.rmSync(built.dir, { recursive: true, force: true }); }
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpg-depth-'));
+      try {
+        const project = hRpg(cell, n, tilesets);
+        await saveProject(dir, project);
+        const built = await buildProject({ dir, project, log: () => {} });
+        assert.ok(fs.existsSync(built.romPath), `1 x ${n} (${tilesets} tileset${tilesets > 1 ? 's' : ''}) builds`);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     }
   });
 }

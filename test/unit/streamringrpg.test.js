@@ -1,5 +1,6 @@
 // Phase 3b S5, C1: the RPG-on-a-ring lifecycle, tested on PRODUCTION engine and generator. Ring RPG builds are made through the bypass copy
-// (test/lib/ringbypass.js: only the refusal is neutralized), so these tests run today although the admission is still C2's.
+// (test/lib/ringbypass.js: only the refusal is neutralized), which C1 needed because the admission was C2's. Since C2 admits a streamed RPG, (g) -- the one test whose claim is about
+// what a USER can build -- builds through the REAL tree (`bypass: false`, no neutralized refusal at all); the rest keep the copy for its sabotage hook and for the helpers they share.
 //
 // What the ring gate and the S1..S4 unit tests did not pin on a ring RPG (the C1 audit, handoff-next/s5-c1-r1-report.md):
 //   (a) call_battle cancels a strip in flight at battle ENTRY; the battle round trip ends on a window the oracle accepts;
@@ -25,7 +26,7 @@ import { judge } from '../lua/ring_gate/ringjudge.mjs';
 import { ringProject } from '../lua/ring_gate/ringworld.mjs';
 import { buildThrough } from '../lib/ringbypass.js';
 import { buildSymbols } from '../lib/ringrun.js';
-import { reconcileCartridge, createMap } from '../../shared/project.js';
+import { reconcileCartridge, createMap, growOrShrinkMap } from '../../shared/project.js';
 import { saveIdentity } from '../../shared/save.js';
 import { callRoutine } from '../lib/callroutine.js';
 import { waitForNamingReady, finishNamingIfOpen } from '../lib/naming.js';
@@ -36,12 +37,16 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 const skip = !hasNesasm && 'nesasm not found on PATH';
 let tree;
 let loaded;
+let realTree;
+let realLoaded;
 before(async () => {
   if (skip) return;
   tree = makeBypassTree();
   loaded = await loadBypassTree(tree);
+  realTree = makeBypassTree({ bypass: false });
+  realLoaded = await loadBypassTree(realTree);
 });
-after(() => tree?.dispose());
+after(() => { tree?.dispose(); realTree?.dispose(); });
 
 const START = { x: 120, y: 120 };
 /** a one-command enter event */
@@ -390,9 +395,10 @@ for (const id of SIX_CELLS) {
 const FLASH_BANK = 30; // flashSaveSectorBank(UNROM 512), shared/cartridge.js (streamadmit.test.js hardcodes it the same way); the sector is the top 4 KB of that 16 KB bank
 const FLASH_SECTOR = 0x3000;
 for (const cellId of ['MMC3-V', 'MMC1-V', 'U512-V']) {
-  test(`(g) ${cellId} rpg: a save made on vertical mirroring Continues on horizontal after a mirroring-only edit; the party and the ring survive`, { skip }, async () => {
+  test(`(g) ${cellId} rpg: a save made on vertical mirroring Continues on horizontal after a mirroring-only edit (REAL tree, no bypass); the party and the ring survive; a resize refuses the save`, { skip }, async () => {
     // Catches: a save that did not survive the edit (token or identity redrawn), a Continue that restored the party wrongly (the RPG save carries the party and BE_RESTORE
-    // recomputes from it), a ring not rebuilt for the new mirroring (live nametables vs the independent oracle), and on UNROM 512 a flash sector that moved.
+    // recomputes from it), a ring not rebuilt for the new mirroring (live nametables vs the independent oracle), on UNROM 512 a flash sector that moved, and a resize that does not
+    // invalidate the save (the old save would load into a world of another shape).
     const battery = cellId !== 'U512-V';
     const cellV = cellById(cellId);
     const { project: projA } = ringProject({
@@ -413,8 +419,9 @@ for (const cellId of ['MMC3-V', 'MMC1-V', 'U512-V']) {
     reconcileCartridge(projB);
     assert.equal(projB.project.saveCompatToken ?? 0, token, 'saveCompatToken unchanged by a mirroring-only edit');
     assert.equal(saveIdentity(projB), identity, 'the save identity is unchanged');
-    const a = await buildThrough(loaded, projA);
-    const b = await buildThrough(loaded, projB);
+    // the REAL tree: the shipped validateProject admits these projects (no refusal neutralized), so a refusal that came back would throw here
+    const a = await buildThrough(realLoaded, projA);
+    const b = await buildThrough(realLoaded, projB);
     try {
       const symA = buildSymbols(a.dir);
       const nesA = bootRom(a.romPath);
@@ -455,6 +462,24 @@ for (const cellId of ['MMC3-V', 'MMC1-V', 'U512-V']) {
       const fresh = bootRom(b.romPath);
       const none = runSteps(fresh, [{ op: 'cycle', axis: 'x', target: 's', battery }]);
       assert.equal(none.find((r) => r.label === 'hold:cycle:s').hold.reached, false, 'control: without the save the same ROM has no Continue');
+      // a RESIZE still invalidates (ruling 3's other half): the same project one screen wider draws a new saveCompatToken, and its ROM refuses the old save
+      const projC = structuredClone(projA);
+      assert.notEqual(growOrShrinkMap(projC, 0, 2, 1), null, 'the 1 x 1 streamed map grows to 2 x 1');
+      assert.notEqual(projC.project.saveCompatToken ?? 0, token, 'a resize redraws saveCompatToken');
+      assert.notEqual(saveIdentity(projC), identity, 'and changes the save identity');
+      const c = await buildThrough(realLoaded, projC);
+      try {
+        const nesC = bootRom(c.romPath);
+        if (battery) nesC.cpu.mem.set(sram, 0x6000);
+        else {
+          const bytes = fs.readFileSync(c.romPath);
+          bytes.set(sram, 16 + FLASH_BANK * 0x4000 + FLASH_SECTOR);
+          fs.writeFileSync(`${c.romPath}.carried.nes`, bytes);
+        }
+        const nesC2 = battery ? nesC : bootRom(`${c.romPath}.carried.nes`);
+        const refused = runSteps(nesC2, [{ op: 'cycle', axis: 'x', target: 's', battery }]);
+        assert.equal(refused.find((r) => r.label === 'hold:cycle:s').hold.reached, false, 'a resized world refuses the old save: there is no Continue into a room that no longer is');
+      } finally { fs.rmSync(c.dir, { recursive: true, force: true }); }
     } finally {
       fs.rmSync(a.dir, { recursive: true, force: true });
       fs.rmSync(b.dir, { recursive: true, force: true });

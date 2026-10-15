@@ -247,9 +247,9 @@ export const MAPPERS = [
     saveMedia: 'flash',
     // Streamed worlds (docs/design-streamed-worlds.md §2): a four-screen ring in phase 2, a two-nametable ring in phase 3.
     streamable: true,
-    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4c); see `streamRingAdmittedGameTypes`. The four-screen torus
+    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4c action, S5 RPG); see `streamRingAdmittedGameTypes`. The four-screen torus
     // above is a different ring and is not asked about here.
-    streamRingGameTypes: ['action'],
+    streamRingGameTypes: ['action', 'rpg'],
     // iNES cannot describe CHR-RAM or its size, so the header is rewritten to
     // NES 2.0 after nesasm has run. See headerPatch().
     nes2: { chrRamSize: 32768 },
@@ -273,8 +273,8 @@ export const MAPPERS = [
     saveMedia: 'battery',
     // Streamed worlds (docs/design-streamed-worlds.md §2): a two-nametable ring (phase 3); no four-screen wiring.
     streamable: true,
-    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4b); see `streamRingAdmittedGameTypes`.
-    streamRingGameTypes: ['action'],
+    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4b action, S5 RPG); see `streamRingAdmittedGameTypes`.
+    streamRingGameTypes: ['action', 'rpg'],
     supported: true,
     summary: 'Up to 128 KB of program and 128 KB of graphics: 16 tilesets and 7 screen banks.',
     hint: 'The mapper more NES games used than any other. Switches both graphics and screens, so pick it when you need both.'
@@ -299,8 +299,8 @@ export const MAPPERS = [
     saveMedia: 'battery',
     // Streamed worlds (docs/design-streamed-worlds.md §2): a two-nametable ring (phase 3); no four-screen wiring.
     streamable: true,
-    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4a); see `streamRingAdmittedGameTypes`.
-    streamRingGameTypes: ['action'],
+    // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4a action, S5 RPG); see `streamRingAdmittedGameTypes`.
+    streamRingGameTypes: ['action', 'rpg'],
     supported: true,
     summary: 'Up to 512 KB of program and 256 KB of graphics: 32 tilesets and 15 screen banks.',
     hint: 'The largest cartridge on offer. Its scanline interrupt gives the message font its own graphics bank, so showing text costs no background tiles on this board.'
@@ -380,9 +380,9 @@ export function streamCapableTwoNametable(mapper, mirroringId) {
  * Which streamed-ring geometry a build uses (the single writer; main/build/generate.js emits it as STREAM_RING):
  * 0 = four-screen torus, 1 = vertical mirroring (32 x 15 blocks, an X ring), 2 = horizontal mirroring
  * (16 x 30 blocks, a Y ring). Derived from cameraAxes, never from a second reading of the mirroring string.
- * Mode 2's engine fork landed in phase 3b S3 (commit C1). Which boards a USER may build a ring on is `streamRingAdmitted` (action games on
- * UNROM 512, MMC1 and MMC3, since S4c); every ring it refuses (any streamed RPG, until S5) is reachable only through the test-only bypass
- * copy (test/lib/ringbypass.js).
+ * Mode 2's engine fork landed in phase 3b S3 (commit C1). Which boards a USER may build a ring on is `streamRingAdmitted` (action games and
+ * RPGs on UNROM 512, MMC1 and MMC3, since S5); a ring it refuses (none for a registered board; a board added without the datum would be one)
+ * is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
  */
 export function streamRingMode(mapper, mirroringId) {
   if (!streamCapableTwoNametable(mapper, mirroringId)) return 0;
@@ -395,7 +395,7 @@ export function streamRingMode(mapper, mirroringId) {
  * Which game types the two-nametable ring is ADMITTED for on this board (phase 3b S4): the board's own `streamRingGameTypes` datum,
  * the single writer of "may a user build a ring here". A board without the datum is not admitted for anything -- its ring is built only
  * through the test-only bypass copy (test/lib/ringbypass.js). S4a admitted MMC3, S4b MMC1 and S4c UNROM 512 (action games, one
- * `streamRingGameTypes: ['action']` line each) and S5 adds 'rpg' to a board's list. Four-screen is a different ring (the torus) and does not ask this.
+ * `streamRingGameTypes: ['action']` line each) and S5 added 'rpg' to each list (`['action', 'rpg']`). Four-screen is a different ring (the torus) and does not ask this.
  */
 export function streamRingAdmittedGameTypes(mapper) {
   return mapper?.streamRingGameTypes ?? [];
@@ -405,7 +405,8 @@ export function streamRingAdmittedGameTypes(mapper) {
  * Is a two-nametable streamed map admitted on this board and mirroring, for this game type? Both halves are needed because the two
  * refusals read differently to the user: `streamRingBoardAdmitted` false means "this board has no ring yet" (no registered board is in that
  * state since S4c; a streamable board added without the datum would be), while a board that is admitted but not for this game type
- * means "not for RPGs yet" (S5). False for every non-ring mirroring.
+ * means "not for this game type yet" (no registered board is in that state since S5 either; a datum listing only one game type would be).
+ * False for every non-ring mirroring.
  */
 export function streamRingBoardAdmitted(mapper, mirroringId) {
   return streamRingMode(mapper, mirroringId) !== 0 && streamRingAdmittedGameTypes(mapper).length > 0;
@@ -418,7 +419,7 @@ export function streamRingAdmitted(mapper, mirroringId, gameType) {
 /**
  * The names of the boards the two-nametable ring is admitted on for a game type, in registry order, as an English list ("UNROM 512, MMC1 or
  * MMC3"; "MMC3 or MMC1" for two; one name alone; "" when none is) -- the one place a refusal message learns which boards work, so a later
- * admission (S5) moves the text with the datum.
+ * admission moves the text with the datum.
  */
 export function streamRingAdmittedBoardNames(gameType) {
   const names = MAPPERS.filter((mapper) => mapper.supported && streamRingAdmittedGameTypes(mapper).includes(gameType)).map((mapper) => mapper.name);

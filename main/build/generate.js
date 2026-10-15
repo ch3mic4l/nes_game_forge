@@ -1530,7 +1530,7 @@ export const STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE = 8;
 // replaces a 2-byte `sta <flat_screen` with a 3-byte `jsr cross_set_screen`,
 // +1 byte each -- and all 8 always assemble: a streamed map only ever
 // reaches the build on UNROM 512 with four-screen mirroring or, since phase 3b S4a,
-// an action game on MMC3, (S4b) MMC1 or (S4c) UNROM 512 with a two-nametable ring (streamRingAdmitted, shared/cartridge.js). All 8 sites
+// an action game on MMC3, (S4b) MMC1 or (S4c) UNROM 512, or (S5) an RPG on any of them, with a two-nametable ring (streamRingAdmitted, shared/cartridge.js). All 8 sites
 // assemble regardless of which camera axis a mirroring leaves dead, so there is no
 // camera-axis-dependent variant to track here (the ring builds are measured, test/unit/kernelbytes.test.js).
 export const STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8;
@@ -3150,8 +3150,8 @@ function streamedCapacityProblems(project, mapper, options = {}) {
  * candidate, runs reconcileCartridge (a switch can itself shrink the tileset ceiling or force a
  * mirroring, and the aggregate check must see the post-switch shape), then asks three checks in
  * order and returns the first failing one's plain-language refusals -- (1) the candidate can stream
- * at all (and has a ring for it: `capability`), (2) it admits this project's game type (`ringGame`: a streamed RPG on a
- * two-nametable board, until S5 -- a property of the candidate board and the game type, like (1), so it is asked beside it:
+ * at all (and has a ring for it: `capability`), (2) it admits this project's game type (`ringGame`: no registered board refuses one since
+ * S5, but a board whose datum lists one game type would -- a property of the candidate board and the game type, like (1), so it is asked beside it:
  * leaving it out would let the switch through to a project validateProject then refuses), (3) its dead-axis restriction holds
  * for every streamed map's grid, (4) the aggregate region check. An empty list means no objection; the real project is never touched. It lives in
  * main/build rather than shared/ because check 3 needs assignScreenBanks, so it cannot be called
@@ -4091,8 +4091,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
   const hasStreamed = streamedPlan !== null;
   // Phase 3b S2/S3: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
-  // streamRingMode): 1 vertical, 2 horizontal. validateProject admits only MMC3, MMC1 and UNROM 512 action games on a ring (S4a / S4b / S4c, streamRingAdmitted),
-  // so every other two-nametable build is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
+  // streamRingMode): 1 vertical, 2 horizontal. validateProject admits action games and RPGs on MMC3, MMC1 and UNROM 512 on a ring (S4a / S4b / S4c / S5, streamRingAdmitted),
+  // so a two-nametable build on any other board is reachable only through the test-only bypass copy (test/lib/ringbypass.js).
   const ringMode = hasStreamed ? projectStreamRing(project, resolveMapper(project.cartridge.mapper)) : 0;
   const projA = projectUsesStreamedActors(project);
   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
