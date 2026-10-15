@@ -30,15 +30,19 @@ export function parsePackets(buf, len) {
 
 /**
  * Builds the ring close scene for `cell` through `loaded` (a ringbypass tree; `tree` its root holder) and replays the dismissing press.
+ * `project` (S5 C1) replaces the gate's scene with a caller-built one (test/lib/ringrpg.js's ceiling scenes); `flip: false` is for a scene that has no ordinary map and so
+ * no bound tile, hence no flip_tick: only the Flash is armed then and the queue is Flash, arrow hide and the close row.
  * Returns { vramLen, packets, buf, ring }. Throws (never returns a partial result) if the scene does not reach the armed frame.
  */
-export async function captureCloseFrame({ loaded, tree, cell, gameType = 'action', placement = 'resident' }) {
-  const { project } = await ringCloseProject({ tree, cell, gt: gameType, placement });
+export async function captureCloseFrame({ loaded, tree, cell, gameType = 'action', placement = 'resident', n = 4, project: given = null, flip = true }) {
+  const project = given ?? (await ringCloseProject({ tree, cell, gt: gameType, placement, n })).project;
   const built = await buildThrough(loaded, project);
   try {
     const sym = buildSymbols(built.dir);
     const fns = readFns(built.symbolPath);
-    for (const n of ['flip_tick', 'main_loop_ready']) if (!Number.isFinite(fns[n])) throw new Error(`${n} is not a symbol of this build`);
+    for (const n of [flip ? 'flip_tick' : 'flash_tick', 'main_loop_ready']) if (!Number.isFinite(fns[n])) throw new Error(`${n} is not a symbol of this build`);
+    // the instruction the press-consuming frame is armed at: one before flip_tick reads the queued Flip, or (no Flip in this scene) before flash_tick reads flash_left
+    const armPc = flip ? fns.flip_tick : fns.flash_tick;
     const R = (n) => sym.get(n);
     const nes = bootRom(built.romPath);
     let phase = 1;
@@ -48,11 +52,13 @@ export async function captureCloseFrame({ loaded, tree, cell, gameType = 'action
     nes.cpu.emulate = () => {
       const pc = nes.cpu.REG_PC + 1;
       const m = nes.cpu.mem;
-      if (pc === fns.flip_tick && !armed && phase === 5) {
+      if (pc === armPc && !armed && phase === 5) {
         // the template's poke: queue the Flip and arm Flash one instruction before flip_tick reads them, on the frame that consumes the press
         armed = true;
-        m[R('flip_pending_idx')] = 0;
-        m[R('flip_pending_count')] = 1;
+        if (flip) {
+          m[R('flip_pending_idx')] = 0;
+          m[R('flip_pending_count')] = 1;
+        }
         m[R('flash_left')] = R('FLASH_ARM_VALUE');
       } else if (pc === fns.main_loop_ready && armed && !snap) {
         const len = m[R('vram_len')];
@@ -81,9 +87,9 @@ export async function captureCloseFrame({ loaded, tree, cell, gameType = 'action
     nes.buttonDown(1, BTN.B);
     for (let i = 0; i < 12 && !snap; i++) { frame(); if (i === 3) nes.buttonUp(1, BTN.B); }
     nes.buttonUp(1, BTN.B);
-    if (!armed) throw new Error('flip_tick never ran with the press pending');
+    if (!armed) throw new Error(`${flip ? 'flip_tick' : 'flash_tick'} never ran with the press pending`);
     if (!snap) throw new Error('main_loop_ready never reached after arming');
-    return { ...snap, packets: parsePackets(snap.buf, snap.vramLen), ring: cell.ring };
+    return { ...snap, packets: parsePackets(snap.buf, snap.vramLen), ring: cell.ring, n, overlayAddr: fns.sw_dlg_single ?? null, row: m()[R('sw_row')], col: m()[R('sw_col')] };
   } finally {
     fs.rmSync(built.dir, { recursive: true, force: true });
   }

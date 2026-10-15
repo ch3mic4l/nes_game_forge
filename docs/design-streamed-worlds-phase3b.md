@@ -826,3 +826,84 @@ The two UNROM 512 **action** cells measured on **unlifted production code** (the
 | row 9 | S1c controls caught as declared; `nmi-wrap-row-32` N/A | S1c controls caught as declared; `nmi-strip-len-30-vertical` and `nmi-wrap-col-30` N/A |
 
 The RPG builds and the other boards' cells are in section 3's per-build table, unchanged. UNROM 512-H's 20,026 cycles is the largest measured `G` of the whole certificate (the same figure as before, at N = 61).
+
+## 17. Slice S5, commit C1: the RPG lifecycle on a ring, pinned before the admission
+
+S5 puts RPG games on the two-nametable ring. C1 is the tests-only commit: it admits nothing, edits no engine, `shared/` or `main/` file, and leaves every certificate and fingerprint alone. **RPGs on a ring are still refused by `validateProject` until C2** (the `ringGame` arm of `streamedBoardProblems`); every build below goes through `test/lib/ringbypass.js`, which neutralizes the whole two-nametable branch of the board check in a copy and nothing else, so the engine, the generator and `checkCapacity` are production. C2 flips the refusal. Round 1 wrote the tests; fix round 1 (review 1, F1-F6) corrected the audit, widened the witnesses and added the ceiling work below.
+
+### The audit
+
+| row | before C1 | after C1 (fix 1) |
+|---|---|---|
+| (a) battle return vs the oracle, both nametable indices, both axes | return covered (`streamringredraw`/`streamringhredraw`, the gate's `battle-return-no-render`); **entry with a strip in flight** four-screen only (`streamworldlifecycle.test.js`) | `streamringrpg.test.js` "(a) call_battle cancels an in-flight strip" x 12, "(a)(e) a battle round trip" x 12, and (fix 1, F2) "(a) the first picture after a battle return matches the oracle" x 24 (6 cells x {resident, banked} x live nametable 0 and 1): a real fight, nonzero local scroll, and at the FIRST display-enable after the return the `$2000` nametable select, the `$2005` pair and the live nametable and attribute contents are compared with `ringoracle.js` before any further frame can repair them |
+| (a)(f) the return contract of `call_battle` | gap on a ring | (fix 1, F3) "call_battle(BE_RESTORE) returns with the field's PRG window and mtptr" x 6 resident, "a banked dialogue overlay entry (BE_DLG_ARROW) returns ..." x 6 banked: the field location's PRG window differs from the battle bank's (MMC3-H banked screen 2 is the reviewer's construction; vertical rings put the field at screen 55 of 60), `mtptr` and `bt_arg` poisoned before the call, window bytes and `mtptr` required to be the field's on return |
+| (b) naming grid on a streamed ring RPG | gap | "(b) the naming grid draws the same picture at the nametable seam as aligned" x 6 |
+| (c) MMC3 split and lock across battle, Continue, warp | gap in jsnes; Mesen harness has no stimulus | `streamringsplit.test.js` x 8 (jsnes). Frames observed: the battle test checks EVERY frame boundary from the first idle field frame (the frames `bootToField` runs before it are not observed) through walk-in, entry, the command helper's own press and settle frames (`chooseCommand`'s per-frame callback, fix 2), fight and return; the Continue and warp tests check every frame from the one after `runSteps`/`bootToField` hands back (the helper's own frames are not observed). **Mesen half not done**: the row-8 harness only walks the ring and delays inside `switch_prg_bank`; a battle/Continue/warp op is an edit under `test/lua/ring_gate/`, the gate (C3) |
+| (d) a session start clears `st_active` | gap on a ring | two separate contracts (fix 1, F6; round 1 had attributed it to the resolver alone). (d1) `init_session` is `jmp call_battle` with `BE_INIT`, and `call_battle`'s strip cancel clears `st_active` for every non-`BE_DLG_*` entry, so a session start cancels a stale strip **transitively**; (d2) `sw_resolve_screen` clears it again on every real landing. "(d1) init_session cancels a stale strip through call_battle(BE_INIT)", "(d2) sw_resolve_screen clears a stale strip on a real landing", "(d3) a restart landing carries no strip in its first picture" (the net effect: it fails only when BOTH mechanisms are gone) x 6 cells each |
+| (e) `settle_owed` / `screen_fresh` after a battle, a warp, a Continue | four-screen only | the round-trip tests (first display-enable after the return: `screen_fresh` 1, `st_active` 0; the entry event does not replay), "(e) a warp landing ... settles its entry event once" x 6, "(e) a Continue landing ... settles its entry event once" x 6 |
+| (f) banked-placement close frame at the RPG ceiling | partly (resident, N = 4) | `streamringresources.test.js`, C1's own scene (`ceilingCloseProject`, `test/lib/ringrpg.js`; the gate's `ringclose.mjs` is untouched; 26 tests), talker on the second-deepest live screen so the deepest row's address arithmetic runs, per board x placement: (1) the mixed scene (an ordinary map beside the world, so `flip_tick` assembles and the queue is Flip + Flash + arrow + row) at that scene's own ceiling, one region shallower than the board's; (2) the streamed map alone (no bound tile, so no Flip) at the board's universal RPG ceiling, 13 / 29 on MMC1-H / MMC3-H and, on UNROM 512 horizontal, **59 (the certified depth) and 60 (admitted, not yet measured: C3)**; vertical rings 247 mixed and 255 alone (the 255-screen grid limit, not capacity). Each run keeps the assembled overlay-address check (`sw_dlg_single` inside `$8000-$BFFF` exactly when the placement is banked) |
+| (g) ruling 3 on an RPG | gap (action only) | "(g) ... a save made on vertical mirroring Continues on horizontal after a mirroring-only edit" x 3 boards: token and identity unchanged, party hit points and the saved variable restored, both live nametables equal the oracle, control without the save has no Continue (battery SRAM on MMC1/MMC3; the flash sector carried into the other ROM on UNROM 512) |
+| (h) resource matrix on ring builds | `kernelbytes.test.js` already covers the ring kernel-hi/lo allowances (around lines 5413-5535, including the horizontal rings, action and RPG); `bankedbytes.test.js` has no streaming build, so no RPG battle region was measured on a ring | "(h) ring build resources" x 30 builds (6 action resident + 24 RPG: 6 cells x {resident, banked} x hero naming {off, on}; the 18 naming-off rows are the table below, action x banked being N/A) and "(h+) the eight battle features" x 12 (below) |
+| (i) depth, proof gate half | not measured for RPGs | below |
+
+### Depth (i): certified 59, universal ceiling 60 on UNROM 512
+
+Two numbers, not one. **Certified**: the ring gate ran each RPG cell at the deepest world its own workload admits, MMC1-H N = 13, MMC3-H N = 29, U512-H N = 59, resident and banked (S4c C2 certificate, `handoff-next/s4c-c2-logs-final/s1b-<cell>-rpg-<placement>.log`, line 1). **Structural ceiling**: the most 8 KB regions any RPG project can give streamed worlds, 13 / 29 / 60. MMC1 and MMC3 keep their tilesets in CHR ROM, so their ceilings do not depend on the project; on UNROM 512 every tileset takes an 8 KB CHR region, so the ceiling is 62 regions - 1 minimum CHR payload - 1 RPG code region = **60**, reached by a valid one-tileset RPG (`project.tilesets` of length 1, `rpg.battleTilesetId` 0: the battle uses the field's tileset), while the default RPG has two tilesets (Main + Battle) and reaches 59. The gate's workload is the default two-tileset one, so **the 60th row of UNROM 512 horizontal RPG is admitted by the capacity check, builds, and runs a banked close frame in the C1 tests, but has not been measured by the ring gate; C3 resizes the U512-H RPG gate cells to the one-tileset workload and measures it** (Chris, 2026-10-14: "Measure it in C3"). Nothing here calls 60 certified.
+
+Each figure with the workload it was measured on (`handoff-next/s5-c1/measure.mjs`, log `measure-fix1.log`):
+
+| cell | project | lightest, two tilesets | lightest, one tileset | gate workload (no per-screen talkers; banked adds 3000 chars) | gate workload, one tileset | per-screen enter talkers, resident / banked |
+|---|---|---|---|---|---|---|
+| MMC1-H | action | 14 | n/a | 14 | n/a | 14 / n/a |
+| MMC1-H | RPG | 13 | 13 | 13 / 13 | 13 / 13 | 13 / 13 |
+| MMC3-H | action | 30 | n/a | 30 | n/a | 30 / n/a |
+| MMC3-H | RPG | 29 | 29 | 29 / 29 | 29 / 29 | 29 / 29 |
+| U512-H | action | 61 | n/a | 61 | n/a | 37 / n/a |
+| U512-H | RPG | 59 | **60** | 59 / 59 | 60 / 60 | 59 / 37 |
+
+The structural ceiling is pinned the way `streamadmit.test.js` (f) pins the action one: "(i) depth pin" x 3 takes the maximum over `screenRegions(mapper, tilesets 0..4, bankedCode 1, {reserveFlashSave false/true})`, requires the lightest one-tileset RPG to be admitted at N and refused at every height from N + 1 to 255 with only Map Forge errors, requires the same of the default two-tileset project at 13 / 29 / 59, and builds both ceiling worlds (the U512-H one-tileset 60 row builds through the bypass; 61 is refused with "need 61 of the 60 8 KB program regions"). A second test pins that the gate workload bisects to the certified N and the one-tileset gate workload to the structural ceiling. A future change that admits an RPG deeper than 13 / 29 / 60, or shrinks 59 below the certificate, fails them. (An enter talker per screen plus the 3000 characters is a workload, not a gate gap: 37 on U512-H.)
+
+### Resource matrix (h) and the eight features (h+)
+
+n = 4, one enter talker per screen; banked = 3000 characters. Columns: kernel-hi free / kernel-lo free / kernel code actual / reserved by `kernelCodeBytes` / battle region (assembled = predicted by `battleRegionBytesPlaced`; ceiling 8,172). No build has a capacity error.
+
+| board | game | placement | kernel-hi | kernel-lo | code / reserved | battle region |
+|---|---|---|---|---|---|---|
+| MMC1-V | action | resident | 1056 | 1637 | 6090 / 6112 | n/a |
+| MMC1-V | RPG | resident | 1113 | 1404 | 6323 / 6345 | 4268 |
+| MMC1-V | RPG | banked | 1053 | 1392 | 6327 / 6349 | 5607 |
+| MMC3-V | action | resident | 1056 | 1459 | 6268 / 6290 | n/a |
+| MMC3-V | RPG | resident | 1113 | 1215 | 6512 / 6534 | 4308 |
+| MMC3-V | RPG | banked | 1053 | 1203 | 6516 / 6538 | 5647 |
+| U512-V | action | resident | 1056 | 1445 | 6279 / 6301 | n/a |
+| U512-V | RPG | resident | 1113 | 1209 | 6512 / 6534 | 4268 |
+| U512-V | RPG | banked | 1053 | 1197 | 6516 / 6538 | 5607 |
+| MMC1-H | action | resident | 1056 | 1634 | 6093 / 6115 | n/a |
+| MMC1-H | RPG | resident / banked | 1113 / 1053 | 1401 / 1389 | 6326 / 6348, 6330 / 6352 | 4268 / 5607 |
+| MMC3-H | action | resident | 1056 | 1456 | 6271 / 6293 | n/a |
+| MMC3-H | RPG | resident / banked | 1113 / 1053 | 1212 / 1200 | 6515 / 6537, 6519 / 6541 | 4308 / 5647 |
+| U512-H | action | resident | 1056 | 1442 | 6282 / 6304 | n/a |
+| U512-H | RPG | resident / banked | 1113 / 1053 | 1206 / 1194 | 6515 / 6537, 6519 / 6541 | 4268 / 5607 |
+
+Reserved minus actual is 22 bytes on all 18 builds in the table (inside the `[KERNEL_SLACK, 2 x KERNEL_SLACK]` window `assertCovers` asks for); predicted equals assembled battle bytes on all 24 RPG builds (the 12 in the table and their 12 hero-naming twins); hero naming adds 827 bytes of battle region on every board in both placements (`NAME_ENTRY_BATTLE_ALLOWANCE` 737 + `NAME_COPY_BATTLE_ALLOWANCE` 43 + `STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE` 47), pinned the same way. Action x banked is N/A on every board (an action project has no battle bank).
+
+The matrix above leaves eight optional battle features off; fix 1 (F4) measures them: per RPG board x mirroring x placement (12 cells), a baseline with a metasprite and animation catalog, two spells, a Potion actor and a Monster actor, then each feature switched on by one field. In every one of the 12 builds each `projectUses*` predicate is TRUE in the build that carries the feature and FALSE in its baseline, the assembled battle region equals `battleRegionBytesPlaced`, the isolated code delta equals the feature's own allowance, and one more build with all eight on at once also assembles to its prediction:
+
+| feature | predicate | isolated delta = allowance (bytes) |
+|---|---|---|
+| items | `projectUsesItems` | 17 (`ITEM_LIST_FILTER_BATTLE_ALLOWANCE`) |
+| magic power | `projectUsesMagicPower` | 62 |
+| magic defence | `projectUsesMagicDefence` | 56 |
+| monster spell list | `projectUsesMonsterSpellList` | 125 |
+| battle animation | `projectUsesAnyBattleAnimation` | 264 |
+| party attack animation (against a baseline that already has the monster animation) | `projectUsesPartyAttackAnim` | 10 |
+| hit feedback | `projectUsesHitFeedback` | 235 |
+| miss | `projectUsesMiss` | 134 |
+
+Battle region bases: 4394 (MMC3, resident), 5733 (MMC3, banked), 4354 / 5693 (MMC1 and UNROM 512); with all eight features on, 5377 / 6722 and 5337 / 6682, under the 8,172 ceiling. **Coverage claimed is what is listed**: the baseline, hero naming, the dialogue overlay placement and these eight features. Allowances not on that list (for example the Save, Move, shop and level-up terms) were not measured on a ring build in C1. **No allowance differs from what `checkCapacity` charges: no defect.**
+
+### Tests and sabotages
+
+Three files and two helpers, 179 tests (99 + 8 + 72), all passing on the production engine: `test/unit/streamringrpg.test.js`, `test/unit/streamringsplit.test.js`, `test/unit/streamringresources.test.js`; `test/lib/ringrpg.js` builds a ring project through the bypass, records the engine's state at each display-enable (`watchDisplayEnable`, with a `capture` mode for the `$2000`/`$2005`/VRAM snapshot) and owns the one-tileset RPG, the ceiling close scene and the eight-feature table; `test/lib/ringcloseframe.js` takes N and a caller-built project, can run a scene with no Flip, and returns the overlay address. Each test states in its header the wrong implementation it catches. `handoff-next/s5-c1/sabotage-fix1.mjs` applies one exact-once edit to a temporary copy of the tree and requires a failure; there is no "equivalent" class: see the report (`handoff-next/s5-c1-fix1-report.md`) for the table with the catching tests. Added in fix 1: the landing's `$2000` nametable select forced to 0 and its `$2005` x forced to 0 (F2), `set_screen_ptr` not re-locating the field after `call_battle` (F3; round 1 had called it equivalent, it is observed by the F3 tests), the banked placement's terrain read taking the resident path (F5), and neither session-start mechanism clearing `st_active` (F6).
+
+The Mesen row-8 run for (c) is not done and is C3's: it needs a battle/Continue/warp stimulus op in `test/lua/sw_split_ring.lua.template` and `ringsplit.mjs`.
