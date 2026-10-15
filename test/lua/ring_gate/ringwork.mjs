@@ -11,6 +11,7 @@ import { ANIM_PRESETS } from '../sw_bound_sweep.mjs';
 import crypto from 'node:crypto';
 import { GATE, gateAllows } from './s1bjudge.mjs';
 import { makeMutate } from '../sw_sweep_mutate.mjs';
+import { layoutMutate } from './ringlayout.mjs';
 import { sweepReads, sweepProjection } from './s1bcost.mjs';
 
 export const SIZES = [2, 2, 2, 2, 2, 2, 2, 2];
@@ -62,7 +63,7 @@ export async function runWitness({ cellInfo, gt, spec, mesen, withJsnes = true, 
     const touchBody = needsCalibration(spec) ? await calibrateTouchBody({ cellInfo, gt, touchY: spec.touchY ?? 60, dist: spec.dist ?? 150, mesen, mesenCtx, spec }) : null;
     ({ res } = await measureMove({ gt, tail: spec.tail ?? 'none', lead: spec.lead ?? 'none', dist: spec.dist ?? 150, root: cellInfo.tree.root, ring: cellInfo.ring, pop: spec.pop ?? 'many-small', tiles: spec.tiles ?? 15, wide: spec.wide ?? true, touchY: spec.touchY, touchBody, mesen, outDir, ...(spec.script ? { script: spec.script } : {}), ...common }));
   } else {
-    res = await runManifest({ root: cellInfo.tree.root, ring: cellInfo.ring, gt, sizes: spec.sizes ?? SIZES, wide: spec.wide ?? true, scenario: spec.scenario ?? 'walk', nosfx: false, flashAt: (typeof spec.flashAt === 'function' ? spec.flashAt(cellInfo.ring) : spec.flashAt) ?? null, mesen, outDir, ...(spec.phases ? { phases: typeof spec.phases === 'function' ? spec.phases(cellInfo.ring) : spec.phases } : {}), ...(spec.anim ? { anim: ANIM_PRESETS[spec.anim] } : {}), ...(spec.start ? { start: spec.start } : {}), ...(spec.bound ? { mutate: makeMutate({ bound: true }) } : {}), ...(spec.flashCmds ? { flashCmds: typeof spec.flashCmds === 'function' ? spec.flashCmds(cellInfo.ring) : spec.flashCmds } : {}), ...common });
+    res = await runManifest({ root: cellInfo.tree.root, ring: cellInfo.ring, gt, sizes: spec.sizes ?? SIZES, wide: spec.wide ?? true, scenario: spec.scenario ?? 'walk', nosfx: false, flashAt: (typeof spec.flashAt === 'function' ? spec.flashAt(cellInfo.ring) : spec.flashAt) ?? null, mesen, outDir, ...(spec.phases ? { phases: typeof spec.phases === 'function' ? spec.phases(cellInfo.ring) : spec.phases } : {}), ...(spec.anim ? { anim: ANIM_PRESETS[spec.anim] } : {}), ...(spec.start ? { start: spec.start } : {}), mutate: layoutMutate(cellInfo.ring, spec.bound ? makeMutate({ bound: true }) : null), ...(spec.flashCmds ? { flashCmds: typeof spec.flashCmds === 'function' ? spec.flashCmds(cellInfo.ring) : spec.flashCmds } : {}), ...common });
   }
   const romSha256 = crypto.createHash('sha256').update(fs.readFileSync(path.join(outDir, 'scene.nes'))).digest('hex');
   const out = { name: spec.name, gt, ring: cellInfo.ring, romSha256, dlgSingle: res.symbols?.code?.sw_dlg_single ?? null, sceneScreens: res.sceneScreens ?? null, sceneProject: res.sceneProject ?? null, consts: Object.fromEntries(['STREAM_RING', 'SW_RING_COL_LEN', 'SW_RING_ROW_LEN', 'SW_RW_NT_STEP', 'SW_RW_NT_END', 'SW_DLG_BANKED', 'BATTLE_ENABLED'].map((k) => [k, res.symbols?.ram?.[k] ?? null])), hasKnock: Number.isFinite(res.symbols?.code?.sw_knockback_step), mesen: { status: res.status, frames: res.frames, boundSyms: res.boundSyms, done: res.done, timeout: res.timeout, rows: withClass(mesenRows(res)), phases: res.phases }, jsnes: null, outDir };

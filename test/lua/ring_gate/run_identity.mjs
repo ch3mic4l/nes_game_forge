@@ -84,14 +84,14 @@ function record(row) {
   if (row.error) errors++; else if (row.mismatch || row.fails.length && !sabotage) failures++;
 }
 
-// One tree per orientation and lift form: a vertical cell is built through a production-vertical tree (C2's shipped forks), a horizontal cell through a production-horizontal tree (C1's shipped forks), each carrying the refusal lift
-// only where production still refuses the cell (an action cell on MMC1, MMC3 or UNROM 512 is admitted by production: its tree is BASELINE itself).
+// One tree per orientation: a vertical cell is built through a production-vertical tree (C2's shipped forks), a horizontal cell through a production-horizontal tree (C1's shipped forks); neither carries a lift (retired at S5 C3: production
+// admits every cell, so each tree is BASELINE itself).
 const trees = makeTreeSet({ extra: sabotage ? [sabotage] : [] });
 
 // ---- STREAM_RING=0: the six fixtures through the patched tree are byte-identical to the unpatched tree (every constituent build stamped). The patched tree is the
 // horizontal production tree: it carries the most ring code (the row fork and the far branch as well), so it is the one a leak into a four-screen build could come from.
 if (!sabotage) {
-  const tree = trees.forRing(2, true);
+  const tree = trees.forRing(2);
   const pristine = makeTree({ ring: false });
   for (const name of FIXTURES) {
     let a, b;

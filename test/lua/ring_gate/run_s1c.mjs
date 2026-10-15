@@ -16,7 +16,7 @@ import { MESEN, mesenUnavailable, userSavesSnapshot } from './ringrun_mesen.mjs'
 import { harnessFingerprint, writeAttempt, finishAttempt, nesasmStamp, hostStamp, mesenStamp, fileStamp, projectSha256 } from './ringprov.mjs';
 import { buildNmiRing, spawnMesen, parseNmiOutput, judgeNmi } from './ringnmi.mjs';
 import { buildCloseRing, parseCloseOutput, judgeClose } from './ringclose.mjs';
-import { buildSplitRing, parseSplitOutput, judgeSplit } from './ringsplit.mjs';
+import { buildSplitRing, parseSplitOutput, judgeSplit, judgeLifecycle, foldLifecycle } from './ringsplit.mjs';
 import { CONTROLS, declaredFor, controlFlags, controlHasForm, positiveLabel, controlLabel, SLICE } from './s1ccontrols.mjs';
 
 const BULK = 3000;
@@ -81,8 +81,10 @@ const provPath = writeAttempt(provDir, label, {
   head: tree.head, trackedStatus: tree.status, baseline: tree.baseline, patches: tree.patches, treeKind: tree.kind, productionProof: refreshProof(tree), harness: harnessFingerprint(), nesasm: nesasmStamp(), host: hostStamp()
 });
 const PURPOSE = { 5: 'row5-nmi', 6: 'row6-close', 8: 'row8-split' }[row];
-let built = null, items = [], run = null, parsed = null;
-const cleanup = () => { built?.dispose?.(); fs.rmSync(tree.root, { recursive: true, force: true }); iso.dispose(); };
+let built = null, items = [], run = null, parsed = null, lc = null; // lc: the RPG session's second ROM, its two Mesen runs and what they printed (row 8, rpg)
+const SESSION = row === 8 && gt === 'rpg';
+const runExit = (r, why) => ({ id: 'run:exit', status: r.status === 0 ? 'PASS' : 'FAIL', detail: r.status === 0 ? `Mesen exited 0 (${why})` : `Mesen exited ${r.status}: ${(/^ERROR (.*)$/m.exec(r.stdout) ?? [])[1] ?? r.stderr}` });
+const cleanup = () => { built?.dispose?.(); lc?.built?.dispose?.(); fs.rmSync(tree.root, { recursive: true, force: true }); iso.dispose(); };
 try {
   if (row === 5) {
     built = await buildNmiRing({ cell, gt, placement, sabotage: flags.sabotage, mutation: flags.mutation, breakMode: flags.breakMode, label, tree });
@@ -100,7 +102,22 @@ try {
     run = await spawnMesen(built.luaPath, built.romPath, iso.ctx, { purpose: PURPOSE });
     parsed = parseSplitOutput(run.stdout);
     items = judgeSplit(parsed, built.ctx);
-    items.unshift({ id: 'run:exit', status: run.status === 0 ? 'PASS' : 'FAIL', detail: run.status === 0 ? 'Mesen exited 0 (every planned trial ran)' : `Mesen exited ${run.status}: ${(/^ERROR (.*)$/m.exec(run.stdout) ?? [])[1] ?? run.stderr}` });
+    items.unshift(runExit(run, 'every planned trial ran'));
+    if (SESSION) {
+      // the RPG session (S5 C3): ONE more ROM (the same harness build plus the session scene), two more Mesen processes on it in the SAME private HOME -- part A plays a battle, a warp and a Save, part B is the
+      // power-on and Continue from the battery RAM part A left in that HOME's save directory. Judged by the same program-aware row-8 judge, folded into the plain stream's items, plus r8:lc-return / r8:lc-coverage.
+      lc = { built: await buildSplitRing({ cell, gt, placement, sabotage: flags.split, label: `${label}-lc`, tree, lifecycle: true }) };
+      lc.runA = await spawnMesen(lc.built.luaPath, lc.built.romPath, iso.ctx, { purpose: 'row8-split-lc-a' });
+      lc.runB = await spawnMesen(lc.built.luaPathB, lc.built.romPath, iso.ctx, { purpose: 'row8-split-lc-b' });
+      lc.parsedA = parseSplitOutput(lc.runA.stdout);
+      lc.parsedB = parseSplitOutput(lc.runB.stdout);
+      const sess = {
+        A: [runExit(lc.runA, 'part A: battle, warp, Save'), ...judgeSplit(lc.parsedA, lc.built.ctx, { lifecycle: true })],
+        B: [runExit(lc.runB, 'part B: power-on and Continue'), ...judgeSplit(lc.parsedB, lc.built.ctx, { lifecycle: true })]
+      };
+      const lcj = judgeLifecycle(lc.parsedA, lc.parsedB, lc.built.ctx);
+      items = [...foldLifecycle(items, sess), ...lcj.items];
+    }
   }
 } catch (e) {
   finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: String(e.message).split('\n')[0], message: String(e.stack ?? e.message).slice(0, 4000) } });
@@ -135,19 +152,23 @@ out(verdictLine);
 // ---- the Mesen invocation chain, the user's saves, the stamp
 const chain = iso.chain();
 const statusOk = controlId ? [0, 5, 7, 8, 9] : [0];
-const chainProblems = auditChain(chain, [{ spec: PURPOSE, purpose: PURPOSE }], { statusOk });
+const chainProblems = auditChain(chain, [PURPOSE, ...(SESSION ? ['row8-split-lc-a', 'row8-split-lc-b'] : [])].map((x) => ({ spec: x, purpose: x })), { statusOk });
 if (chainProblems.length) { console.error(`run_s1c: the Mesen invocation chain is unsound:\n  ${chainProblems.join('\n  ')}`); finishAttempt(provPath, 'error', { consumed: consumedSnapshot(tree), error: { firstLine: 'Mesen invocation chain unsound', message: chainProblems.join('; ') } }); cleanup(); process.exit(2); }
 const savesAfter = userSavesSnapshot();
 const untouched = JSON.stringify(savesBefore) === JSON.stringify(savesAfter);
 if (!untouched) { console.error('run_s1c: the user\'s own Mesen save directory CHANGED during the run'); cleanup(); process.exit(2); }
-const result = { label, row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, declared, verdictOk, items, counts, failed, mesenStatus: run.status, romSha256: built.romSha256, luaSha256: built.luaSha256 };
+const result = { label, row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, declared, verdictOk, items, counts, failed, mesenStatus: run.status, ...(SESSION ? { lifecycleMesenStatus: [lc.runA.status, lc.runB.status] } : {}), romSha256: built.romSha256, luaSha256: built.luaSha256 };
 if (links.result) fs.writeFileSync(links.result, JSON.stringify(result, null, 1));
 // the recorder's raw output (what Mesen printed) is retained beside the result, gzipped and hashed in the stamp: the judged items are a function of it, so an auditor can re-judge or inspect it
 let retainedRaw = null;
-if (links.raw) { const gz = zlib.gzipSync(Buffer.from(String(run.stdout ?? ''), 'utf8'), { level: 9, mtime: 0 }); fs.writeFileSync(links.raw, gz); retainedRaw = { sha256: sha256(gz), bytes: gz.length, stdoutBytes: String(run.stdout ?? '').length }; }
+if (links.raw) {
+  // one blob: the plain stream, then (RPG row 8) the session's two parts, each under a marker line
+  const raw = SESSION ? `#### part main\n${run.stdout ?? ''}\n#### part lc-a\n${lc.runA.stdout ?? ''}\n#### part lc-b\n${lc.runB.stdout ?? ''}` : String(run.stdout ?? '');
+  const gz = zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 9, mtime: 0 }); fs.writeFileSync(links.raw, gz); retainedRaw = { sha256: sha256(gz), bytes: gz.length, stdoutBytes: raw.length };
+}
 if (provPath) {
   const stamps = mesenStamp(MESEN, [...loaded], [...loaded].sort().map((p) => fileStamp(p)).filter(Boolean).map((f) => ({ ...f, path: f.path.startsWith(home) ? `<isolated-HOME>${f.path.slice(home.length)}` : f.path })));
-  const planned = { row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, purpose: PURPOSE, romSha256: built.romSha256, luaSha256: built.luaSha256 };
+  const planned = { row, cell: cell.id, gameType: gt, placement, control: controlId ?? null, purpose: PURPOSE, romSha256: built.romSha256, luaSha256: built.luaSha256, ...(SESSION ? { lifecycle: { romSha256: lc.built.romSha256, luaSha256: lc.built.luaSha256, purposes: ['row8-split-lc-a', 'row8-split-lc-b'] } } : {}) };
   finishAttempt(provPath, 'built', {
     productionProof: refreshProof(tree), // re-proved after the run's builds: the stamp carries the latest check, not the one from tree creation
     consumed: consumedEvidence(tree), // what every build of this run CONSUMED: each engine copy and each loaded module verified as it was read (ringtree.mjs, the consumed-input guard); throws if no build went through the guard

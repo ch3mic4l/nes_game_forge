@@ -13,8 +13,8 @@
 //      battle region equals battleRegionBytesPlaced, and the isolated code delta against the baseline equals that feature's own *_BATTLE_ALLOWANCE -- so a term that is wrong
 //      only on a ring build (streaming + the feature) is seen. A ninth build switches all eight on at once.
 // (i)  the RPG depth pin: the STRUCTURAL region ceiling of an RPG on each horizontal board is 13 / 29 / 60 for ANY RPG project (the lightest, one-tileset one reaches it); the
-//      default two-tileset RPG reaches 13 / 29 / 59. The ring gate's RPG cells ran at 13 / 29 / 59 (S4c C2 certificate), so on UNROM 512 the 60th row is ADMITTED BY THE CAPACITY CHECK BUT
-//      NOT YET MEASURED: C3 resizes the U512-H RPG gate cells to the one-tileset workload (Chris, 2026-10-14, "Measure it in C3"). This pin does not call 60 certified. Since C2 the
+//      default two-tileset RPG reaches 13 / 29 / 59. The ring gate's RPG cells ran at 13 / 29 / 59 in the S4c C2 certificate; the S5 C3 certificate resized the U512-H RPG gate cells to the
+//      one-tileset workload (Chris, 2026-10-14, "Measure it in C3") and ran them at 60, so all three structural ceilings 13 / 29 / 60 are CERTIFIED. Since C2 the
 //      admission half of it runs on the REAL tree (errorsOf), so it fails if a future change admits an RPG deeper than 13 / 29 / 60.
 // (f)  the banked-placement close frame at the deepest world a close scene admits, on every ring board, with the talker on the second-deepest live screen: the mixed scene (an
 //      ordinary map, hence flip_tick: the full Flip + Flash + arrow + close-row queue) at its own ceiling, and the streamed map alone at the board's universal ceiling (no flip_tick,
@@ -166,10 +166,11 @@ for (const id of SIX_CELLS) {
 
 // ---- (i) the RPG depth pin: the structural region ceiling, not the workload one ----
 // RPG_CEILING = 62 regions (UNROM 512; MMC1 and MMC3 keep CHR in ROM: their own counts) - 1 minimum CHR payload - 1 RPG code region, for ANY RPG project. RPG_CERTIFIED = the N of
-// the ring gate's RPG cells in the S4c C2 certificate (handoff-next/s4c-c2-logs-final/s1b-<MMC1|MMC3|U512>-H-rpg-{resident,banked}.log, line 1). Hardcoded on purpose: a test that
-// read the ceiling from the code under test proves nothing. The UNROM 512 difference (60 vs 59) is the one-tileset RPG: C3 measures that row.
+// the ring gate's RPG cells in the S5 C3 certificate (handoff-next/s5-c3-logs-final/s1b-<MMC1|MMC3|U512>-H-rpg-{resident,banked}.json, field `n`). Hardcoded on purpose: a test that
+// read the ceiling from the code under test proves nothing. The UNROM 512 difference (60 vs 59) is the one-tileset RPG, which the S5 C3 gate measured; RPG_TWO_TILESET is the depth
+// of the default two-tileset workload (the S4c C2 certificate's U512-H cells, and the gate's campaign scenes still).
 const RPG_CEILING = { 'MMC1-H': 13, 'MMC3-H': 29, 'U512-H': 60 };
-const RPG_CERTIFIED = { 'MMC1-H': 13, 'MMC3-H': 29, 'U512-H': 59 };
+const RPG_CERTIFIED = { 'MMC1-H': 13, 'MMC3-H': 29, 'U512-H': 60 };
 const RPG_TWO_TILESET = { 'MMC1-H': 13, 'MMC3-H': 29, 'U512-H': 59 };
 const hRpg = (cell, n, tilesets) => {
   const p = createStreamedProject({ gameType: 'rpg', mapper: cell.mapper, mirroring: 'horizontal', gridW: 1, gridH: n, camera: true });
@@ -214,16 +215,16 @@ for (const [id, ceiling] of Object.entries(RPG_CEILING)) {
   });
 }
 
-test('(i) depth pin: the gate workloads (ringProject, two tilesets) are admitted exactly as deep as the certified RPG cells -- and the lightest one-tileset RPG is one row deeper on UNROM 512 only', { skip }, async () => {
+test('(i) depth pin: the gate workloads (ringProject, two tilesets) are admitted exactly as deep as the two-tileset RPG ceilings -- and the lightest one-tileset RPG, which the S5 C3 gate cells run, is one row deeper on UNROM 512 only', { skip }, async () => {
   const gate = {};
-  for (const [id, certified] of Object.entries(RPG_CERTIFIED)) {
+  for (const [id, certified] of Object.entries(RPG_TWO_TILESET)) {
     const cell = cellById(id);
     const at = (talkers, placement) => bisect(async (n) => errorsOf(ringProject({ cell, gameType: 'rpg', n, talkers, bulkText: placement === 'banked' ? BULK : 0 }).project).length === 0);
     // the workloads the gate's campaign scenes use: no per-screen talkers (campaign scenes' `talkers ?? 'none'`), plus the never-reached 3000-character text when the overlay is banked
     gate[id] = { resident: await at('none', 'resident'), banked: await at('none', 'banked') };
-    assert.deepEqual(gate[id], { resident: certified, banked: certified }, `${id}: the gate's workload ceiling is the certified N`);
+    assert.deepEqual(gate[id], { resident: certified, banked: certified }, `${id}: the two-tileset gate workload's ceiling`);
   }
-  // the SAME gate workload on a one-tileset project (what C3 will run): one row deeper on UNROM 512, unchanged on the CHR-ROM boards
+  // the SAME gate workload on a one-tileset project (what the S5 C3 gate cells run, and the certified N): one row deeper on UNROM 512, unchanged on the CHR-ROM boards
   for (const [id, ceiling] of Object.entries(RPG_CEILING)) {
     const cell = cellById(id);
     const deeper = await bisect(async (n) => errorsOf(ringProject({ cell, gameType: 'rpg', n, talkers: 'none', bulkText: BULK, mutate: oneTilesetRpg }).project).length === 0);
@@ -275,9 +276,9 @@ for (const id of SIX_CELLS) {
       assert.notEqual(errorsOf(scene(ceiling + 1, true)).length === 0, true, 'N + 1 is refused');
       await runAt(ceiling, true, `${id} mixed N=${ceiling}`);
     });
-    const depths = id === 'U512-H' ? [RPG_CERTIFIED[id], RPG_CEILING[id]] : [UNIVERSAL_CEILING[id]];
+    const depths = id === 'U512-H' ? [RPG_TWO_TILESET[id], RPG_CERTIFIED[id]] : [UNIVERSAL_CEILING[id]];
     for (const n of depths) {
-      test(`(f) close frame at the RPG ceiling, streamed map alone (Flash + arrow + row), N=${n}${id === 'U512-H' ? (n === RPG_CERTIFIED[id] ? ' (certified depth)' : ' (admitted, not yet measured: C3)') : ''}: ${id} rpg ${placement}`, { skip }, async () => {
+      test(`(f) close frame at the RPG ceiling, streamed map alone (Flash + arrow + row), N=${n}${id === 'U512-H' ? (n === RPG_CERTIFIED[id] ? ' (certified depth, S5 C3)' : ' (the S4c C2 depth)') : ''}: ${id} rpg ${placement}`, { skip }, async () => {
         assert.equal(await bisect(async (m) => errorsOf(scene(m, false)).length === 0, 255, 4), UNIVERSAL_CEILING[id], `${id}: the deepest world the streamed map alone admits`);
         await runAt(n, false, `${id} alone N=${n}`);
       });

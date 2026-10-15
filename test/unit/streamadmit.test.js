@@ -359,7 +359,7 @@ for (const board of RING_BOARDS) test(`capacity: the largest 1 x N on a horizont
 // A streamed RPG's horizontal depth, measured by handoff-next/s5-c2/capacity.mjs (log capacity.log) through validateProject + checkCapacity + a real build (no bypass): the battle bank takes one
 // 8 KB region off the front, so an RPG is one row shallower than the same action project on MMC1 / MMC3 (13 / 29 against 14 / 30) and, on UNROM 512, two regions shallower when it keeps
 // its two default tilesets (Main + Battle; each CHR-RAM tileset is a payload region): 59 against 61, and 60 for the lightest (one-tileset) RPG. The vertical ring is bounded by the grid only.
-// Hardcoded on purpose. The U512 figure 60 is ADMITTED, not certified: the ring gate's RPG cells ran at 59 (S4c C2); C3 measures the 60th row (docs/design-streamed-worlds-phase3b.md section 17).
+// Hardcoded on purpose. The U512 figure 60 is admitted AND certified: the ring gate's U512-H RPG cells ran at 59 in the S4c C2 certificate and at 60 in the S5 C3 one (docs/design-streamed-worlds-phase3b.md sections 17 and 19).
 const RPG_CAPACITY = {
   [MMC1]: { oneTileset: 13, twoTilesets: 13 },
   [MMC3]: { oneTileset: 29, twoTilesets: 29 },

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { runManifest, GATE, MESEN_DEFAULT } from './run_sw_manifest.mjs';
 import { REPO } from './sw_manifest_scene.mjs';
 import { BOUND_TILE } from './sw_sweep_mutate.mjs';
+import { oneTilesetRpg } from './ring_gate/ringlayout.mjs';
 import { ANIM_PRESETS } from './sw_bound_sweep.mjs';
 
 export { GATE };
@@ -129,6 +130,7 @@ export function ringWalkFrames(ring, touchY = TOUCH.y) {
 /** The scene's authored mutation: the touch actor relocated, and (bound) the one switch-bound tile on an ordinary second map. */
 export function sceneMutation({ y = TOUCH.y, bound = false, code = null, title = false, ring = null } = {}) {
   return (project, { createMap, createScreen } = {}) => {
+    if (ring?.oneTileset) oneTilesetRpg(project); // S5 C3: the gate's one-tileset RPG layout (ringlayout.mjs), only where ringcli.mjs rpgLayoutFor chose it
     if (ring) relocateTouchActorRing(project, y, ring); else relocateTouchActor(project, y);
     // a Save command is refused without a title screen: the scene's first map and screen serve (the harness holds Start through the boot)
     if (title) { project.project.titleMap = 0; project.project.titleScreen = 0; }

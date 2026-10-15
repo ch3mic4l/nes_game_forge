@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// Regenerates test/lua/ring_gate/00-refusal-lift.patch (what production does NOT ship: the validateProject refusal lift),
-// test/lua/ring_gate/sabotage/*.patch (each on top of the horizontal production tree) and test/lua/ring_gate/sabotage/vertical/*.patch (each on top of the vertical production tree) from the
-// CURRENT engine/ main/ shared/, which must equal ringtree.mjs's BASELINE. A ring tree has two forms (lifted = BASELINE + 00-refusal-lift, unlifted = BASELINE itself, ringtree.mjs liftNeeded): each
-// sabotage is cut on BOTH and the two cuts must be byte-identical, so the ONE file serves a sabotage control on a lifted cell and on an unlifted one. The patches are the
+// Regenerates test/lua/ring_gate/sabotage/*.patch (each on top of the horizontal production tree) and test/lua/ring_gate/sabotage/vertical/*.patch (each on top of the vertical production tree) from the
+// CURRENT engine/ main/ shared/, which must equal ringtree.mjs's BASELINE. A ring tree is BASELINE itself (the refusal lift is retired, S5 C3), so each sabotage is cut once, against it. The patches are the
 // artifact the gate applies (ringtree.mjs); this script is only how they were made, kept so a
 // rebase onto a moved HEAD is a re-run, not a hand edit. Each edit asserts that its anchor text is
 // found exactly once, so a moved site fails here, loudly, not as a silently shorter patch.
@@ -13,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { verifyBaseline, patchSetFor, RETIRED_PATCHES, checkRetiredShipped } from './ringtree.mjs';
+import { verifyBaseline, RETIRED_PATCHES, checkRetiredShipped, checkNoLiftNeeded } from './ringtree.mjs';
 import { sabotageRings } from './ringsabotage.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -57,33 +55,11 @@ function diffTrees(base, work, out, files) {
   fs.writeFileSync(out, text);
 }
 
-// ---------------------------------------------------------------- the patches (BASELINE = S4c C1: BOTH rings are production code, admitted on UNROM 512, MMC1 and MMC3 for action games)
-// What production (S4c C1) does NOT ship, and the gate therefore still patches in -- only for a cell production refuses (ringtree.mjs liftNeeded):
-//   00  the validateProject refusal of a streamed RPG on a two-nametable board (kind 'ringGame'; S5). It is the `else if (!streamRingAdmitted(...))` arm of streamedBoardProblems' two-nametable block; the lift deletes that arm ONLY (the grid
-//       and dead-axis refusals that follow, and the `capability` arm before it, stay). Since S4c every registered board has the ring, so the `capability` arm ("not implemented yet on this board") is unreachable and the lift leaves it
-//       intact: the lifted RPG tree then differs from production by the one arm S5 retires and nothing else, which is as close to what S5 ships as a lift can be.
-// A cell production admits (UNROM 512, MMC1 or MMC3, an action game, both mirrorings) needs none: its tree is BASELINE itself.
+// ---------------------------------------------------------------- the patches (BASELINE = S5 C2: every ring cell is production code, NOTHING is lifted)
+// The gate patches in NOTHING but a control's own sabotage. The refusal lift (00-refusal-lift.patch: what production did NOT ship until S5 C2, the `ringGame` arm of streamedBoardProblems) is RETIRED -- ringtree.mjs
+// RETIRED_PATCHES records its S4c C2 sha256 and the shipped datum that made it unnecessary, and main() proves the retirement (checkRetiredShipped: the file is gone, the datum is shipped; checkNoLiftNeeded: production admits all 12 cell x game-type pairs).
 // The S1 prototype's horizontal half -- 01-ring-select (SW_RING_ROW_LEN, the mode-2 render step, the lift of generate.js's mode-2 refusal), 02-ring-engine (the row-strip
-// fork and the row wrap) and 03-player-far-branch -- is RETIRED: C1 ships all of it, line for line, so at this baseline each would be an empty patch. Their stage recipes are
-// deleted, not kept dead; main() proves the retirement instead (ringtree.mjs checkRetiredShipped: the production sources carry what each used to add, and the files are gone).
-const stages = [
-  {
-    name: '00-refusal-lift.patch',
-    files: ['shared/project.js'],
-    apply(t) {
-      // lift the one refusal production still has for a two-nametable ring (no ring for this game type: an RPG), keeping the capability arm before it and the grid and dead-axis refusals after it
-      const p = path.join(t, 'shared/project.js');
-      let s = fs.readFileSync(p, 'utf8');
-      const startMark = "      } else if (!streamRingAdmitted(mapper, mirroringId, gameType)) {\n        add(\n          'ringGame',";
-      const endMark = '      }\n    }\n    for (const problem of gridProblems)';
-      const { a, b } = locateBlock(s, startMark, endMark, 'project.js ringGame arm');
-      s = s.slice(0, a) + s.slice(b);
-      fs.writeFileSync(p, s);
-    }
-  }
-];
-/** The stages a LIFTED ring tree carries (ringtree.mjs patchSetFor(true) says the same; regen asserts the two agree; an unlifted tree carries none). */
-const LIFTED_STAGES = ['00-refusal-lift.patch'];
+// fork and the row wrap) and 03-player-far-branch -- is RETIRED the same way: C1 ships all of it, line for line.
 
 // ---------------------------------------------------------------- sabotage patches (each on top of its ring's production tree)
 const sabotages = {
@@ -220,50 +196,30 @@ function main() {
   verifyBaseline(); // the patches are made against, and only against, BASELINE (ringtree.mjs)
   const retired = checkRetiredShipped(); // every retired prototype patch's effect is in BASELINE already and its file is gone; a violation throws
   console.log(`retired ${Object.keys(RETIRED_PATCHES).join(', ')}: ${retired} shipped/absent needles verified at BASELINE`);
-  if (JSON.stringify(patchSetFor(true)) !== JSON.stringify(LIFTED_STAGES) || patchSetFor(false).length !== 0) throw new Error('ringtree.mjs patchSetFor disagrees with this script\'s stages');
+  console.log(`refusal lift retired: production admits all ${checkNoLiftNeeded()} cell x game-type pairs at BASELINE`);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-regen-'));
   const base = path.join(tmp, 'work', 'a');
   const cur = path.join(tmp, 'work', 'b');
   fs.mkdirSync(base, { recursive: true });
   copyTree(base);
   copyTree(cur);
-  // stage patches: a -> b accumulates, patch k is the diff between the tree before and after stage k
-  let before = path.join(tmp, 'work', 'a');
-  // the tree a sabotage is cut against: `unlifted` = BASELINE itself (an action cell's tree on UNROM 512, MMC1 or MMC3), `lifted` = BASELINE after every stage (a cell production refuses)
-  const unlifted = path.join(tmp, 'snap-unlifted');
-  fs.cpSync(path.join(tmp, 'work', 'a'), unlifted, { recursive: true });
-  for (const stage of stages) {
-    const wk = path.join(tmp, 'work', 'b');
-    stage.apply(wk);
-    // diff `before` vs `wk` for this stage's files only
-    const pair = path.join(tmp, `pair-${stage.name}`);
-    fs.mkdirSync(pair, { recursive: true });
-    fs.cpSync(before, path.join(pair, 'a'), { recursive: true });
-    fs.cpSync(wk, path.join(pair, 'b'), { recursive: true });
-    diffTrees(path.join(pair, 'a'), path.join(pair, 'b'), path.join(HERE, stage.name), stage.files);
-    before = path.join(tmp, `snap-${stage.name}`);
-    fs.cpSync(wk, before, { recursive: true });
-  }
-  const lifted = before;
+  // the tree a sabotage is cut against: BASELINE itself (every cell's tree)
+  const baseTree = path.join(tmp, 'snap-baseline');
+  fs.cpSync(path.join(tmp, 'work', 'a'), baseTree, { recursive: true });
   fs.mkdirSync(path.join(HERE, 'sabotage', 'vertical'), { recursive: true });
   for (const [name, s] of Object.entries(sabotages)) {
     // the rings a sabotage is cut for ARE the rings ringsabotage.mjs SABOTAGE_RINGS declares (the single writer); a form for any other ring would be an equivalent mutant, so a stale file is removed
     if (JSON.stringify(s.rings ?? [1, 2]) !== JSON.stringify(sabotageRings(name))) throw new Error(`regen_patches.mjs cuts ${name} for rings [${(s.rings ?? [1, 2]).join(', ')}] but SABOTAGE_RINGS says [${sabotageRings(name).join(', ')}]`);
     for (const ring of [1, 2]) if (!sabotageRings(name).includes(ring)) fs.rmSync(path.join(HERE, ring === 1 ? path.join('sabotage', 'vertical') : 'sabotage', `${name}.patch`), { force: true });
     for (const ring of s.rings ?? [1, 2]) {
-      // cut on BOTH forms of the ring tree. The sabotage must not touch what the lift touches, so the two cuts are the same bytes and the one file is the sabotage on either tree.
-      const cut = {};
-      for (const [form, snap] of [['unlifted', unlifted], ['lifted', lifted]]) {
-        const pair = path.join(tmp, `sab-${ring}-${form}-${name}`);
-        fs.mkdirSync(pair, { recursive: true });
-        fs.cpSync(snap, path.join(pair, 'a'), { recursive: true });
-        fs.cpSync(snap, path.join(pair, 'b'), { recursive: true });
-        s.apply(path.join(pair, 'b'), ring);
-        cut[form] = path.join(pair, 'cut.patch');
-        diffTrees(path.join(pair, 'a'), path.join(pair, 'b'), cut[form], s.files);
-      }
-      if (!fs.readFileSync(cut.unlifted).equals(fs.readFileSync(cut.lifted))) throw new Error(`sabotage ${name} (ring ${ring}) cuts differently on the lifted and the unlifted tree: it touches what the refusal lift touches, so one file cannot serve both`);
-      fs.copyFileSync(cut.unlifted, path.join(HERE, ring === 1 ? path.join('sabotage', 'vertical') : 'sabotage', `${name}.patch`));
+      const pair = path.join(tmp, `sab-${ring}-${name}`);
+      fs.mkdirSync(pair, { recursive: true });
+      fs.cpSync(baseTree, path.join(pair, 'a'), { recursive: true });
+      fs.cpSync(baseTree, path.join(pair, 'b'), { recursive: true });
+      s.apply(path.join(pair, 'b'), ring);
+      const cut = path.join(pair, 'cut.patch');
+      diffTrees(path.join(pair, 'a'), path.join(pair, 'b'), cut, s.files);
+      fs.copyFileSync(cut, path.join(HERE, ring === 1 ? path.join('sabotage', 'vertical') : 'sabotage', `${name}.patch`));
     }
   }
   fs.rmSync(tmp, { recursive: true, force: true });

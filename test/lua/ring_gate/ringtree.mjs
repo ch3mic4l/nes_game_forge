@@ -3,13 +3,15 @@
 // (buildProject). It fails loudly if a patch does not apply and never falls back to the unpatched tree: a silent four-screen
 // fallback counted as a ring pass is the exact defect the row-1 identity cell exists to catch.
 //
-// Two kinds of ring tree, by STREAM_RING mode, each in two forms (lifted / unlifted). Phase 3b S2 rebaselined the gate onto C2's production vertical ring, S3 C2 onto C1's production
-// horizontal ring, S4a C2 onto the commit that admits the ring on MMC3 for action games, S4b C2 onto the one that admits it on MMC1, S4c C2 onto the one that admits it on UNROM 512; ALL of it is production code and the gate patches in only what production does not ship:
-//   ring 1 (vertical)   = BASELINE [+ 00-refusal-lift.patch when the cell needs it] (+ the sabotage's ring-1 form). The vertical ring's forks are C2's SHIPPED code, byte for byte.
-//   ring 2 (horizontal) = BASELINE [+ 00-refusal-lift.patch when the cell needs it] (+ the sabotage's ring-2 form). The horizontal ring's forks are C1's SHIPPED code, byte for byte
+// Two kinds of ring tree, by STREAM_RING mode. Phase 3b S2 rebaselined the gate onto C2's production vertical ring, S3 C2 onto C1's production horizontal ring, S4a C2 onto the commit that admits the ring on MMC3 for
+// action games, S4b C2 onto the one that admits it on MMC1, S4c C2 onto the one that admits it on UNROM 512, S5 C3 onto the one that admits a streamed RPG (f3833db); ALL of it is production code and the gate patches in NOTHING but a control's own sabotage:
+//   ring 1 (vertical)   = BASELINE (+ the sabotage's ring-1 form on a control job). The vertical ring's forks are C2's SHIPPED code, byte for byte.
+//   ring 2 (horizontal) = BASELINE (+ the sabotage's ring-2 form on a control job). The horizontal ring's forks are C1's SHIPPED code, byte for byte
 //                         (the S1 prototype's 01-ring-select / 02-ring-engine / 03-player-far-branch are RETIRED: see RETIRED_PATCHES).
-// Whether a cell needs the lift is ONE question with ONE answer (`liftNeeded`): production itself refuses the cell, read from BASELINE's own streamRingAdmitted. An action cell on any of the three two-nametable boards (MMC1, MMC3, UNROM 512) is admitted
-// by production, so its tree is BASELINE byte for byte (plus only a sabotage patch on a control job) -- the certificate then measures what a user builds, not a patched approximation of it.
+// THE REFUSAL LIFT IS RETIRED (S5 C3). Until S5 C2 production refused a streamed RPG on a two-nametable board and the gate patched that one arm out (00-refusal-lift.patch) for the RPG cells; since the datum
+// `streamRingGameTypes: ['action', 'rpg']` every one of the 18 cells is admitted by production, so every tree is BASELINE itself. `liftNeeded` is kept as a GUARD, not a switch: it asks BASELINE's own streamRingAdmitted and
+// every runner/audit that would need a lift throws instead, because a gate that patched a refusal back out would certify something production still refuses. The `lifted` field of a tree and of a stamp's proof stays
+// (always false, never defaulted) so a stamp's shape did not change; a stamp or a proof that says otherwise is an audit FAILURE (ringprovindex.mjs).
 // `verifyProduction` rebuilds the EXACT expected content of a tree (BASELINE's blobs with the canonical, hashed patches applied in order) and requires every file of
 // the tree to equal it by git blob hash -- an edit inside a file a sabotage already declares is a mismatch too. `loadTree` re-proves it at every build, and the
 // consumed-input guard (below) binds the bytes a build actually read. Both rings get the SAME proof; only the forks the baseline must carry differ (SHIPPED_FORKS).
@@ -25,20 +27,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const PATCH_DIR = path.join(ROOT, 'test/lua/ring_gate');
-/** The one non-sabotage patch a ring tree may carry: it lifts the one validateProject refusal production STILL has for a two-nametable ring: the game type the board's ring is not admitted for (`ringGame`, a streamed RPG on MMC1, MMC3 or UNROM 512; S5). */
+/** The name of the RETIRED refusal-lift patch (see RETIRED_PATCHES): no tree carries it and no file of that name exists; the name survives only so the audit can refuse a stamp that lists it, by name. */
 export const LIFT_PATCH = '00-refusal-lift.patch';
-/** The required patches (in application order) of a ring tree: the lift for a cell production refuses, nothing for a cell it admits. Sabotage forms come after, never before. */
-export const patchSetFor = (lifted) => (lifted ? [LIFT_PATCH] : []);
+/** The one place the retirement is stated: a ring tree is never lifted. `lifted` must be the boolean false (never defaulted, never true). */
+export function assertNotLifted(lifted, what) {
+  if (lifted === true) throw new Error(`${what}: the refusal lift (${LIFT_PATCH}) is retired at S5 C3 -- production admits all 18 ring cells, so no ring tree is lifted and no stamp may carry a lift`);
+  if (lifted !== false) throw new Error(`${what}: a ring tree is unlifted (false), never defaulted: got ${JSON.stringify(lifted)}`);
+}
+/** The required patches (in application order) of a ring tree: none -- the lift is retired (S5 C3). Sabotage forms are the only patches a ring tree carries. */
+export const patchSetFor = (lifted) => { assertNotLifted(lifted, 'patchSetFor'); return []; };
 /** The treeKind a stamp of each ring must carry. A ring-2 stamp of kind 'prototype-horizontal' belongs to a certificate built before S3 C2 and is refused at this baseline. */
 export const TREE_KIND = { 1: 'production-vertical', 2: 'production-horizontal' };
 export const PROTOTYPE_TREE_KIND = 'prototype-horizontal';
 /**
- * The S1 prototype's horizontal patches, RETIRED at S3 C2: C1 (aaa678a) ships all of their effect as production code, so at this baseline each would be empty. A retired
- * patch is never applied, hashed or listed again: patchFile() refuses its name, no ring's patch set holds it, and no file of that name exists (prov_unit.mjs pins all three).
- * `sha256` identifies the retired file (the bytes at aaa678a's parent, 803a252); `shipped` are needles the baseline's own sources must still carry, so a baseline that
+ * The RETIRED ring patches: the S1 prototype's horizontal patches (retired at S3 C2: C1 (aaa678a) ships all of their effect as production code) and the test-only refusal lift (retired at S5 C3: C2 (f3833db)
+ * admits every ring cell, so the lift would be empty). At this baseline each would change nothing. A retired patch is never applied, hashed or listed again: patchFile() refuses its name, no ring's patch set holds it, and no file of that name exists (prov_unit.mjs pins all three).
+ * `sha256` identifies the retired file (its last committed bytes: the prototype patches at aaa678a's parent, 803a252; the lift at 61ed7f3); `shipped` are needles the baseline's own sources must still carry, so a baseline that
  * lost the code a retired patch used to add fails loudly (checkRetiredShipped, run by regen_patches.mjs and the unit tests).
  */
 export const RETIRED_PATCHES = {
+  [LIFT_PATCH]: { sha256: '3943e8318eca35c121b3163841165ac324831cc53b807f4b393fd32df273c1b5', reason: 'the refusal lift (it deleted the `ringGame` arm of streamedBoardProblems) is not needed since S5 C2: every registered board admits an action AND an rpg game on its ring (the `streamRingGameTypes` datum), so production refuses none of the 18 cells; the file is the S4c C2 re-cut (git 61ed7f3)',
+    shipped: [['shared/cartridge.js', ["streamRingGameTypes: ['action', 'rpg'],"]]], absent: [] },
   '01-ring-select.patch': { sha256: '187251bd580b86fa47d3c0de75d915b1c80b31da3b058a916c358e28603bd165', reason: 'the generated constants SW_RING_ROW_LEN and the mode-2 render step, and the lift of generate.js\'s mode-2 refusal, are production code since S3 C1',
     shipped: [['main/build/generate.js', ['`SW_RING_ROW_LEN = ${ringMode === 2 ? 16 : 32}`', '`SW_RW_NT_STEP = ${ringMode === 2 ? 2 : 1}`']]], absent: [['main/build/generate.js', ['not implemented yet']]] },
   '02-ring-engine.patch': { sha256: '212ec1cc1c43e57107de2d8fb22f47e67cf75b47b79775524e7cc600a896c70f', reason: 'the row-strip fork (compare, length load) and the row wrap in engine/streamworld.asm are production code since S3 C1',
@@ -47,13 +56,13 @@ export const RETIRED_PATCHES = {
     shipped: [['engine/player.asm', ['ring_far1:', 'bne ring_far1']]], absent: [] }
 };
 const COPIED = ['engine', 'main', 'shared'];
-/** The certification baseline: the tree makeTree copies must equal it (S4c commit C1, bb43a2c: the production vertical AND horizontal rings, admitted on UNROM 512, MMC1 and MMC3 for action games). */
-export const BASELINE = 'bb43a2cbd5127b91430aa162b7e8388409272143';
+/** The certification baseline: the tree makeTree copies must equal it (S5 commit C2, f3833db: the production vertical AND horizontal rings, admitted on UNROM 512, MMC1 and MMC3 for action AND rpg games -- nothing is refused, so nothing is lifted). */
+export const BASELINE = 'f3833dbefe85378b6d305f16a0bb341fd5044e96';
 /** The baseline the S1b certificate (rounds 1-3) was built at, before the rebaseline onto C2: the only baseline a historical re-judgment (s1b_rejudge.mjs) may carry. */
 export const PRE_C2_BASELINE = '5138c1f0c33107016a90423da17dcbb33d8697ca';
 
 import { noFormReason } from './ringsabotage.mjs';
-import { cellById, GAME_TYPES } from './ringcells.mjs';
+import { cellById, GAME_TYPES, CELLS } from './ringcells.mjs';
 import { createRequire } from 'node:module';
 export const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -73,14 +82,20 @@ function baselineCartridge() {
   return baselineCartridgeModule;
 }
 /**
- * Does the tree for ring cell `cell` ({ mapper, mirroring }) running game type `gameType` need 00-refusal-lift.patch? Exactly when production REFUSES that board / mirroring / game type:
- * `!streamRingAdmitted(...)` read from BASELINE's shared/cartridge.js (the datum validateProject itself asks). The single source of the per-cell patch set: makeTree, the cell/ring checks, the audit
- * of every stamp and the unit tests all call this, none restates a board list. `gameType` is required: an RPG on MMC3 needs the lift where an action game on it does not.
+ * Would the cell `cell` ({ mapper, mirroring }) running game type `gameType` need a refusal lift? Exactly when production REFUSES that board / mirroring / game type:
+ * `!streamRingAdmitted(...)` read from BASELINE's shared/cartridge.js (the datum validateProject itself asks). At f3833db the answer is false for all 18 cell x game-type pairs (checkNoLiftNeeded), and the
+ * lift is retired: this is the GUARD every runner and the audit call (a true answer makes makeCellTree throw and the audit fail), none restates a board list. `gameType` is required.
  */
 export function liftNeeded(cell, gameType) {
   if (!GAME_TYPES.includes(gameType)) throw new Error(`liftNeeded: gameType must be one of ${GAME_TYPES.join(', ')}, got ${JSON.stringify(gameType)} (the lift depends on it: production admits a board for some game types and not others)`);
   const { resolveMapper, streamRingAdmitted } = baselineCartridge();
   return !streamRingAdmitted(resolveMapper(cell.mapper), cell.mirroring, gameType);
+}
+/** Every ring cell x game type is admitted by production at BASELINE (no refusal is left to lift). Returns the number of pairs checked; throws naming the first pair production refuses. */
+export function checkNoLiftNeeded() {
+  let n = 0;
+  for (const gameType of GAME_TYPES) for (const cell of CELLS) { if (liftNeeded(cell, gameType)) throw new Error(`production refuses ${cell.id} ${gameType} at ${BASELINE}: the gate would need a refusal lift, which is retired (the gate certifies only what production admits)`); n += 1; }
+  return n;
 }
 /** The cell id of a stamp -> its cell record, or null when it names none of the six. */
 export function cellOfId(id) { try { return cellById(id); } catch { return null; } }
@@ -166,16 +181,14 @@ const shippedForksOf = (ring) => (ring === 1 ? VERTICAL_FORKS : [...VERTICAL_FOR
 
 /** Checks that `applied` ([{name, file, sha256?}]) is a canonical patch list for ring `ring` in its `lifted` / unlifted form: the required set (patchSetFor) in order, then only sabotage forms of that ring (sabotage/ for ring 2, sabotage/vertical/ for ring 1). Returns [{name, file, sha256, bytes}]: each canonical file is read ONCE, and the hash, the parse and the `git apply` all use those same bytes. */
 function canonicalPatches(applied, ring, lifted) {
-  if (typeof lifted !== 'boolean') throw new Error(`a ring tree is lifted or it is not: lifted must be true or false, got ${JSON.stringify(lifted)} (never a default)`);
-  const base = patchSetFor(lifted);
-  const word = `${ring === 1 ? 'vertical (ring 1)' : 'horizontal (ring 2)'}${lifted ? '' : ' unlifted'}`;
+  const base = patchSetFor(lifted); // [] (and throws for any lifted other than false)
+  const word = `${ring === 1 ? 'vertical (ring 1)' : 'horizontal (ring 2)'}`;
+  const names = applied.map(({ name }) => name);
+  if (names.includes(LIFT_PATCH)) throw new Error(`a ${word} tree carries ${LIFT_PATCH}: the refusal lift is retired (S5 C3) -- production admits every ring cell, so every tree is BASELINE itself (plus a sabotage form on a control job)`);
   const retired = applied.find(({ name }) => RETIRED_NAMES.includes(name));
   if (retired) throw new Error(`a ${word} tree carries the retired prototype patch ${retired.name}: both rings run on the shipped code, a retired patch is never applied again`);
-  const names = applied.map(({ name }) => name);
-  if (!lifted && names.includes(LIFT_PATCH)) throw new Error(`an unlifted ${word.replace(' unlifted', '')} tree carries ${LIFT_PATCH}: production admits this cell, so its tree is BASELINE (plus a sabotage form on a control job) and the lift must not be applied`);
-  base.forEach((n, i) => { if (names[i] !== n) throw new Error(`a ${word} tree's patch list must start ${base.join(', ') || '(nothing: it is BASELINE)'} in that order, got ${names.join(', ') || '(none)'}`); });
   return applied.map(({ name, file, sha256: claimed }, i) => {
-    if (i >= base.length && name.endsWith('.patch')) throw new Error(`a ${word} tree may carry only sabotage forms after the required set, not ${name}`);
+    if (i >= base.length && name.endsWith('.patch')) throw new Error(`a ${word} tree may carry only sabotage forms (no patch is required at this baseline), not ${name}`);
     const canonical = patchFile(name, ring);
     if (path.resolve(file) !== path.resolve(canonical)) throw new Error(`ring patch ${name} was applied from ${file}, not the canonical ${canonical}`);
     const bytes = fs.readFileSync(canonical);
@@ -189,7 +202,7 @@ const expectedCache = new Map();
 /** Test hook: forgets the cached expected contents, so the next derivation applies the patches again. */
 export const resetExpectedCache = () => expectedCache.clear();
 /**
- * The exact content a ring `ring` tree (`lifted`: carrying the refusal lift, or not) must have, built from nothing but BASELINE and the patch files: every file the patches declare is written to a scratch dir as
+ * The exact content a ring `ring` tree (`lifted`: always false, the lift is retired) must have, built from nothing but BASELINE and the patch files: every file the patches declare is written to a scratch dir as
  * BASELINE's blob, then the patches are applied in order with `git apply -p2`. Returns { patches, declared, expected: {file -> git blob sha1} }; cached by ring and patch hashes.
  */
 export function expectedContent(applied, ring, lifted) {
@@ -257,7 +270,7 @@ export function checkRetiredShipped() {
  * { exact: true, ring, baseline, patches, declared, changed, expected, forksChecked, unmodifiedShippedFiles }.
  */
 export function verifyProduction(root, applied, ring, lifted) {
-  const word = `${ring === 1 ? 'vertical (ring 1)' : 'horizontal (ring 2)'}${lifted ? '' : ' unlifted'}`;
+  const word = ring === 1 ? 'vertical (ring 1)' : 'horizontal (ring 2)';
   const { patches, declared, expected } = expectedContent(applied, ring, lifted);
   const changed = filesDifferingFromBaseline(root);
   const extra = changed.filter((f) => !declared.includes(f));
@@ -268,8 +281,8 @@ export function verifyProduction(root, applied, ring, lifted) {
     const actual = gitBlobSha1(fs.readFileSync(path.join(root, f)));
     if (actual !== expected[f]) throw new Error(`a ${word} tree's ${f} is not ${BASELINE} plus its applied patches (git blob ${actual.slice(0, 12)}, expected ${expected[f].slice(0, 12)}): an undeclared edit inside a declared file`);
   }
-  if (patches.some(({ name }) => name === LIFT_PATCH) !== lifted) throw new Error(`a ${word} tree ${lifted ? `is missing ${LIFT_PATCH}` : `carries ${LIFT_PATCH}`}`);
-  if (!lifted && patches.length === 0 && changed.length !== 0) throw new Error(`an unlifted tree without a sabotage must equal ${BASELINE} byte for byte in engine/ main/ shared/, but differs in ${changed.join(', ')}`);
+  if (patches.some(({ name }) => name === LIFT_PATCH)) throw new Error(`a ${word} tree carries ${LIFT_PATCH}: the refusal lift is retired`);
+  if (patches.length === 0 && changed.length !== 0) throw new Error(`an unlifted tree without a sabotage must equal ${BASELINE} byte for byte in engine/ main/ shared/, but differs in ${changed.join(', ')}`);
   return proofOf(patches, declared, changed, expected, ring, lifted);
 }
 
@@ -280,7 +293,7 @@ function proofOf(patches, declared, changed, expected, ring, lifted) {
 /**
  * The tree-provenance fields ({ baseline, patches, treeKind, productionProof, consumed }) a stamp for ring `ring` (1|2) with the sabotage forms `extras` must carry -- in its `lifted` form (a cell
  * production refuses) or its unlifted one (a cell production admits) -- computed from BASELINE and the canonical patch files alone: no tree is made. What the audit (ringprovindex.mjs
- * `auditTreeProvenance`) accepts for a cell of that kind; the controls start from it.
+ * `auditTreeProvenance`) accepts for a cell; the controls start from it. `lifted` must be false (the lift is retired): the parameter is kept so a caller that asks for a lifted stamp fails loudly.
  */
 export function provenanceFor(ring, lifted, extras = []) {
   if (ring !== 1 && ring !== 2) throw new Error(`provenanceFor: ring must be 1 or 2, got ${ring}`);
@@ -295,12 +308,12 @@ export function provenanceFor(ring, lifted, extras = []) {
 /**
  * makeTree({ ring: 1|2|false, lifted, extra: ['strip-len-30-vertical'] }) -> { root, ring, lifted, kind, patches: [{name, sha256}], head, status, production }.
  * ring 1 = the vertical production tree, ring 2 = the horizontal production tree, ring false = the pristine copy (the control for the STREAM_RING=0 identity proof). `ring: true` is refused: which
- * ring a tree is for is never a default, and neither is `lifted` (true = BASELINE + the refusal lift, false = BASELINE itself): a cell's tree is `makeCellTree`, which asks `liftNeeded`.
+ * ring a tree is for is never a default, and neither is `lifted`, which must be false (BASELINE itself; true was BASELINE + the refusal lift, retired at S5 C3): a cell's tree is `makeCellTree`.
  * Sabotages apply in their form for that ring, on either form of the tree.
  */
 export function makeTree({ ring, lifted, extra = [] } = {}) {
   if (ring !== false && ring !== 1 && ring !== 2) throw new Error(`makeTree: ring must be 1 (vertical production), 2 (horizontal production) or false (pristine), got ${JSON.stringify(ring)}`);
-  if (ring === false ? lifted !== undefined : typeof lifted !== 'boolean') throw new Error(`makeTree: ${ring === false ? 'a pristine tree has no lift' : `a ring tree is lifted (true) or unlifted (false), never defaulted: got ${JSON.stringify(lifted)} (makeCellTree derives it from the cell)`}`);
+  if (ring === false) { if (lifted !== undefined) throw new Error('makeTree: a pristine tree has no lift'); } else assertNotLifted(lifted, 'makeTree');
   verifyBaseline();
   if (!ring && extra.length) throw new Error('extra patches need a ring tree');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `ring-tree-${ring || 0}-`));
@@ -329,20 +342,21 @@ export function makeTree({ ring, lifted, extra = [] } = {}) {
   } catch (e) { fs.rmSync(root, { recursive: true, force: true }); throw e; }
 }
 
-/** The tree of ring cell `cell` running `gameType`: its ring, lifted exactly when production refuses that cell (`liftNeeded`) -- the only way a runner makes a cell's tree. */
+/** The tree of ring cell `cell` running `gameType`: its ring, BASELINE itself -- the only way a runner makes a cell's tree. Refuses a cell production refuses (there is no lift to make it buildable). */
 export function makeCellTree({ cell, gameType, extra = [] }) {
-  return makeTree({ ring: cell.ring, lifted: liftNeeded(cell, gameType), extra });
+  if (liftNeeded(cell, gameType)) throw new Error(`cell ${cell.id} ${gameType} is refused by production at ${BASELINE} and the refusal lift is retired: the gate certifies only what production admits`);
+  return makeTree({ ring: cell.ring, lifted: false, extra });
 }
 
 /**
- * One tree per (STREAM_RING mode, lifted) form, made lazily, for a runner that builds both orientations (and both game types) in one process. `forCell(cell, gameType)` is the only way a cell gets
- * its tree: a vertical cell gets a production-vertical tree, a horizontal one a production-horizontal tree, never the other, lifted exactly when production refuses the cell.
+ * One tree per STREAM_RING mode, made lazily, for a runner that builds both orientations (and both game types) in one process. `forCell(cell, gameType)` is the only way a cell gets
+ * its tree: a vertical cell gets a production-vertical tree, a horizontal one a production-horizontal tree, never the other, never lifted.
  */
 export function makeTreeSet({ extra = [] } = {}) {
   const trees = new Map();
   return {
-    forRing(ring, lifted) { const key = `${ring}${lifted ? 'L' : 'U'}`; if (!trees.has(key)) trees.set(key, makeTree({ ring, lifted, extra })); return trees.get(key); },
-    forCell(cell, gameType) { return this.forRing(cell.ring, liftNeeded(cell, gameType)); },
+    forRing(ring, lifted = false) { assertNotLifted(lifted, 'forRing'); if (!trees.has(ring)) trees.set(ring, makeTree({ ring, lifted: false, extra })); return trees.get(ring); },
+    forCell(cell, gameType) { if (liftNeeded(cell, gameType)) throw new Error(`cell ${cell.id} ${gameType} is refused by production at ${BASELINE}: no lift exists`); return this.forRing(cell.ring); },
     roots() { return [...trees.values()].map((t) => t.root); },
     dispose() { for (const t of trees.values()) fs.rmSync(t.root, { recursive: true, force: true }); trees.clear(); }
   };
@@ -482,12 +496,13 @@ export function readTreeText(tree, rel) {
 
 /**
  * Throws unless `tree` is the tree of cell `cell`'s ring (a vertical cell is built only through the production-vertical tree, a horizontal one only through the production-horizontal tree) AND
- * of its lift form for `gameType` (an action cell on any two-nametable board only through the unlifted tree, an RPG on any of them only through the lifted one).
+ * of its (only) form: unlifted, for either game type, and only for a cell production admits.
  */
 export function assertCellRing(tree, cell, gameType) {
   if (!cell || cell.ring === undefined) return;
   if (tree.ring !== cell.ring) throw new Error(`cell ${cell.id ?? '?'} is ring ${cell.ring} but the tree is ${tree.kind} (ring ${tree.ring}): a vertical cell is built only through the production-vertical tree, a horizontal one only through the production-horizontal tree`);
-  if (tree.lifted !== liftNeeded(cell, gameType)) throw new Error(`cell ${cell.id ?? '?'} ${gameType} needs ${liftNeeded(cell, gameType) ? 'the lifted' : 'the UNLIFTED'} tree (production ${liftNeeded(cell, gameType) ? 'refuses' : 'admits'} it), but the tree is ${tree.lifted ? 'lifted' : 'unlifted'}`);
+  if (liftNeeded(cell, gameType)) throw new Error(`cell ${cell.id ?? '?'} ${gameType} is refused by production at ${BASELINE} and the refusal lift is retired: the gate certifies only what production admits`);
+  if (tree.lifted !== false) throw new Error(`cell ${cell.id ?? '?'} ${gameType}: the tree is lifted, but the refusal lift is retired (S5 C3)`);
 }
 
 /** The ring check plus, for a production ring tree, the exact-content proof re-run NOW from the files on disk. Returns that proof (also stored as `tree.production`), or null for the pristine tree. */

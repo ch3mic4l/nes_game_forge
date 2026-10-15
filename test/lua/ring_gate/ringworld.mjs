@@ -82,7 +82,7 @@ function parseBuildLog(lines) {
  * prov is the S1a certificate-build record (plan review 3, obligation 2).
  */
 export async function buildCell({ tree, project, cell, gameType, label, provDir, requestedPlacement = null, links = {}, sabotage = null }) {
-  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the production-horizontal tree, each lifted exactly when production refuses the cell
+  // a vertical cell is built only through the production-vertical tree (re-proved from the files on disk), a horizontal one only through the production-horizontal tree (neither carries a lift: production admits every cell, S5 C2)
   assertCellRing(tree, cell, gameType);
   const loaded = await loadTree(tree); // re-proves a ring-1 tree from the files on disk, NOW; the stamps carry that proof (loaded.proof)
   const proof = loaded.proof;

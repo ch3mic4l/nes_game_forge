@@ -170,16 +170,9 @@ export function displayedTile(nes, vram, row, col) {
 }
 export const vramOf = dumpVram;
 
-/**
- * The lightest valid RPG: ONE tileset, the battle drawn on the field's (rpg.battleTilesetId 0). On UNROM 512 every tileset takes an 8 KB CHR region off the front, so this is the
- * shape that reaches the board's universal RPG ceiling (62 regions - 1 minimum CHR payload - 1 RPG code region = 60); the default two-tileset RPG (Main + Battle) reaches 59.
- * MMC1 and MMC3 keep their tilesets in CHR ROM, so the shape moves neither of their ceilings (13, 29).
- */
-export function oneTilesetRpg(project) {
-  project.tilesets = project.tilesets.slice(0, 1);
-  project.rpg.battleTilesetId = 0;
-  return project;
-}
+// The lightest valid RPG (one tileset; the board's universal ceiling on UNROM 512). Defined once, in the leaf module the ring gate also uses.
+import { oneTilesetRpg } from '../lua/ring_gate/ringlayout.mjs';
+export { oneTilesetRpg };
 
 /**
  * C1's own banked-close scene (the gate's ringclose.mjs is read-only here): a streamed RPG of `n` screens whose talker stands on the SECOND-deepest live screen (n - 2), where

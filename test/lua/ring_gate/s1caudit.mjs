@@ -2,7 +2,7 @@
 // result's own items and recomputes every claim from them against the CURRENT declarations (s1ccontrols.mjs), so a result that is missing, empty, contradictory or for another run
 // cannot be certified by a stamp that says it passed. Pure (no fs, no emulator); the provenance audit (ringprovindex.mjs) and the gate (s1c_gate.mjs) both call it, and the unit
 // tests mutate synthetic records against it.
-import { CONTROLS, CELL_IDS, MMC3_CELLS, REQUIRED_ITEMS, UNSOUND_IDS, CONTROL_EXIT_OK, BUILDS, controlBuilds, controlHasForm, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
+import { CONTROLS, CELL_IDS, MMC3_CELLS, requiredItems, UNSOUND_IDS, CONTROL_EXIT_OK, BUILDS, controlBuilds, controlHasForm, declaredFor, positiveLabel, controlLabel } from './s1ccontrols.mjs';
 
 export const LEGAL_STATUS = ['PASS', 'FAIL', 'UNMEASURED'];
 const LABEL = /^s1c-r([568])-(?:ctl-(.+)-)?((?:MMC1|MMC3|U512)-[VH])-(action|rpg)-(resident|banked)$/;
@@ -75,7 +75,7 @@ export function validateS1cResult(result, stamp, label) {
   if (!items?.length) return bad;
   const ids = items.map((i) => i?.id);
   need(items.every((i) => i && typeof i.id === 'string' && typeof i.detail === 'string'), 'an item lacks its id or detail');
-  const required = REQUIRED_ITEMS[d.row];
+  const required = requiredItems(d.row, d.gt);
   const dup = [...new Set(ids.filter((id, k) => ids.indexOf(id) !== k))];
   const missing = required.filter((id) => !ids.includes(id));
   const extra = ids.filter((id) => !required.includes(id));

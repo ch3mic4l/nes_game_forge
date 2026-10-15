@@ -6,7 +6,7 @@ import { auditChain } from './ringhome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { sha256, BASELINE, PRE_C2_BASELINE, CONSUMED_MECHANISM, REQUIRED_JS, patchSetFor, LIFT_PATCH, liftNeeded, cellOfId, TREE_KIND, PROTOTYPE_TREE_KIND, patchFile, sabotageHasRing, expectedContent, expectedTreeBlobs, expectedEngineNames } from './ringtree.mjs';
+import { sha256, BASELINE, PRE_C2_BASELINE, CONSUMED_MECHANISM, REQUIRED_JS, LIFT_PATCH, liftNeeded, cellOfId, TREE_KIND, PROTOTYPE_TREE_KIND, patchFile, sabotageHasRing, expectedContent, expectedTreeBlobs, expectedEngineNames } from './ringtree.mjs';
 import { controlFlags } from './s1ccontrols.mjs';
 import { GAME_TYPES } from './ringcells.mjs';
 import zlib from 'node:zlib';
@@ -94,17 +94,18 @@ function auditConsumed(st, name, expected, ring) {
 /**
  * The tree provenance of a build or run stamp (round-1 review, finding 2): a stamp that names the wrong baseline, the wrong ring's tree kind, patches other than the ring's required
  * set (names, ORDER and content hashes, checked against the canonical patch files) plus the one sabotage the stamp declares, or a production proof that is not the exact expected
- * content of BASELINE plus those patches, is refused -- a truthy head/baseline and an array of patches certify nothing. BOTH rings are production trees with the same proof, and the required
- * patch set is a function of the stamp's CELL and GAME TYPE (S4a C2): the refusal lift exactly when production refuses that cell (`liftNeeded`, from BASELINE's own streamRingAdmitted), so an MMC1, MMC3 or UNROM 512
- * action stamp carries NO lift (its tree is BASELINE itself) and an RPG stamp on any two-nametable board carries it. A stamp whose patches, proof or consumed evidence disagree with its cell is refused.
- *   ring 1 (a -V cell)  treeKind 'production-vertical', patches = [00 when lifted] (+ the declared sabotage's ring-1 form), productionProof = the exact proof recomputed here from the patch files, consumed-input evidence.
- *   ring 2 (a -H cell)  treeKind 'production-horizontal', patches = [00 when lifted] (+ the sabotage's ring-2 form), the same proof and evidence. A 'prototype-horizontal' stamp is refused at this baseline: the
+ * content of BASELINE plus those patches, is refused -- a truthy head/baseline and an array of patches certify nothing. BOTH rings are production trees with the same proof. NO STAMP CARRIES A LIFT
+ * (S5 C3; the refusal lift is retired because production admits all 18 cells): a stamp that lists `${LIFT_PATCH}`, a proof made for a lifted tree, or a cell `liftNeeded` (BASELINE's own streamRingAdmitted)
+ * says production refuses, is an audit FAILURE, not a tolerated variant. A stamp whose patches, proof or consumed evidence disagree with its cell is refused.
+ *   ring 1 (a -V cell)  treeKind 'production-vertical', patches = [] (+ the declared sabotage's ring-1 form), productionProof = the exact proof recomputed here from the patch files, consumed-input evidence.
+ *   ring 2 (a -H cell)  treeKind 'production-horizontal', patches = [] (+ the sabotage's ring-2 form), the same proof and evidence. A 'prototype-horizontal' stamp is refused at this baseline: the
  *                       prototype tree was retired, and the only admissible old prototype stamps are the pre-C2 S1b certificate's, waived by auditStamp under their own historical baseline.
- *   ring 0              a ring-0 identity build: the 'pristine' side carries no patches and no tree kind, proof or evidence; the 'patched' side is a build through the LIFTED ring-2 tree (no cell: the
- *                       lift is part of what the six-fixture comparison measures) and carries exactly what a lifted ring-2 build does, and the comparison names that tree (kind and proof, no build of its own, so no consumed evidence).
+ *   ring 0              a ring-0 identity build: the 'pristine' side carries no patches and no tree kind, proof or evidence; the 'patched' side is a build through the ring-2 production tree (no cell; since the
+ *                       lift is retired that tree is BASELINE itself, so the six-fixture comparison measures the harness path, design doc section 19) and carries exactly what an unlifted ring-2 build does, and the comparison names that tree (kind and proof, no build of its own, so no consumed evidence).
  * A declared sabotage control (st.sabotage on a build / witness stamp, st.control's patch on an s1c run) must be exactly the one extra patch, and an extra patch must be declared.
+ * `opts.refuses(cell, gameType)` says whether production refuses a cell (default: `liftNeeded`, from BASELINE's own datum); a unit test injects a refusing one to prove a cell declared lifted fails.
  */
-export function auditTreeProvenance(st, name) {
+export function auditTreeProvenance(st, name, { refuses = liftNeeded } = {}) {
   const bad = [];
   const need = (cond, msg) => { if (!cond) bad.push(`${name}: tree provenance: ${msg}`); };
   need(st.baseline === BASELINE, `baseline ${JSON.stringify(st.baseline)} is not the certification baseline ${BASELINE}`);
@@ -118,22 +119,18 @@ export function auditTreeProvenance(st, name) {
   // the tree kind: required for every production tree (a -V/-H cell, the ring-0 patched side and the comparison); the pristine ring-0 side has none
   if (ring === 0) need(st.treeKind === undefined, `a pristine ring-0 stamp carries treeKind ${st.treeKind}`);
   else need(st.treeKind === TREE_KIND[ring], `treeKind ${JSON.stringify(st.treeKind)}, a ${ring0 ? `ring-0 ${st.kind === 'ring0-build' ? st.tree : 'comparison'}` : st.cell} stamp (ring ${ring}) needs ${TREE_KIND[ring]}${st.treeKind === PROTOTYPE_TREE_KIND ? ' (the prototype-horizontal tree was retired at S3 C2)' : ''}`);
-  // does this stamp's tree carry the refusal lift? ring 0: the pristine side none, the patched side / comparison the lifted ring-2 tree. A cell stamp: exactly when production refuses its cell and game type.
-  let lifted;
-  if (ring === 0) lifted = false;
-  else if (ring0) lifted = true;
-  else {
+  // NO tree carries a refusal lift (retired at S5 C3). A cell stamp must be a cell production admits: a cell `liftNeeded` says production refuses could only have been built through a lift.
+  const lifted = false;
+  if (ring !== 0 && !ring0) {
     const cell = cellOfId(st.cell);
     if (!cell || cell.ring !== ring) { need(false, `cell ${JSON.stringify(st.cell)} is none of the six ring cells`); return bad; }
-    if (!GAME_TYPES.includes(st.gameType)) { need(false, `gameType ${JSON.stringify(st.gameType)} is none of ${GAME_TYPES.join(', ')}: the required patch set depends on it`); return bad; }
-    lifted = liftNeeded(cell, st.gameType);
+    if (!GAME_TYPES.includes(st.gameType)) { need(false, `gameType ${JSON.stringify(st.gameType)} is none of ${GAME_TYPES.join(', ')}`); return bad; }
+    need(!refuses(cell, st.gameType), `${st.cell} ${st.gameType} is declared lifted: production refuses it at ${BASELINE}, and the gate certifies only cells production admits (no stamp carries a lift)`);
   }
-  // the patch list: required set in order, with hashes; then the declared sabotage only
+  // the patch list: no required set (no lift), then the declared sabotage only
   const patches = Array.isArray(st.patches) ? st.patches : [];
-  const base = ring === 0 ? [] : patchSetFor(lifted);
-  if (ring !== 0 && !ring0) need(patches.some((p) => p?.name === LIFT_PATCH) === lifted, `the stamp's tree ${lifted ? 'lacks' : 'carries'} ${LIFT_PATCH}: production ${lifted ? 'refuses' : 'admits'} ${st.cell} ${st.gameType}, so its tree is ${lifted ? 'BASELINE plus the lift' : 'BASELINE itself (no lift)'}`);
-  need(patches.length >= base.length && base.every((n, i) => patches[i]?.name === n), `patches [${patches.map((p) => p?.name).join(', ')}] do not start with the ring-${ring} required set [${base.join(', ')}] in that order`);
-  const extras = patches.slice(base.length);
+  need(!patches.some((p) => p?.name === LIFT_PATCH), `the stamp's tree carries ${LIFT_PATCH}: the refusal lift is retired (S5 C3), no stamp carries a lift -- every tree is BASELINE itself plus, on a control job, the declared sabotage form`);
+  const extras = patches;
   const canonicalHash = (n) => { try { return sha256(fs.readFileSync(patchFile(n, ring))); } catch { return null; } };
   for (const p of patches) need(isHex(p?.sha256) && p.sha256 === canonicalHash(p?.name), `patch ${p?.name} hash ${String(p?.sha256).slice(0, 12)} is not the canonical ring-${ring} patch file's`);
   for (const p of extras) need(!String(p?.name).endsWith('.patch') && ring !== 0 && sabotageHasRing(p.name, ring), `extra patch ${p?.name} is not a ring-${ring} sabotage form`);
@@ -146,7 +143,7 @@ export function auditTreeProvenance(st, name) {
   const pv = st.productionProof;
   if (ring === 1 || ring === 2) {
     need(pv && typeof pv === 'object' && pv.exact === true && pv.baseline === BASELINE && pv.ring === ring, `a ring-${ring} stamp carries no exact production proof for ring ${ring}`);
-    if (pv && pv.exact === true) need(pv.lifted === lifted, `the proof was made for a ${pv.lifted ? 'lifted' : 'unlifted'} tree, the stamp's cell needs ${lifted ? 'a lifted' : 'an unlifted'} one`);
+    if (pv && pv.exact === true) need(pv.lifted === false, `the proof was made for ${pv.lifted === true ? 'a LIFTED tree' : `a tree with lifted ${JSON.stringify(pv.lifted)}`}: no stamp carries a lift (retired at S5 C3), the proof's lifted must be exactly false`);
     if (pv && pv.exact === true) {
       try {
         const exp = expectedContent(patches.map((p) => ({ name: p.name, file: patchFile(p.name, ring) })), ring, lifted);
@@ -247,8 +244,16 @@ export function auditStamp(st, name, exists, read = undefined, { historicalTree 
     need(st.build?.placement?.requested === st.placement && st.build.placement.assembled === (st.placement === 'banked' ? 'switchable' : 'resident'), `s1c: the assembled dialogue placement ${st.build?.placement?.assembled} is not what ${st.placement} requires`);
     need(st.verdictOk === true, 's1c: the declared verdict was not reached');
     need(st.userSavesUntouched === true, 's1c: the run does not attest that the user\'s own Mesen saves were untouched');
-    need(Array.isArray(st.mesenChain) && st.mesenChain.length === 1 && st.mesenChain[0].purpose === `row${st.row}-${{ 5: 'nmi', 6: 'close', 8: 'split' }[st.row]}`, 's1c: the run does not retain exactly its one Mesen invocation');
-    for (const p of auditChain(st.mesenChain, [{ spec: st.mesenChain?.[0]?.spec, purpose: st.mesenChain?.[0]?.purpose }], { statusOk: st.control ? [0, 5, 7, 8, 9] : [0] })) need(false, `s1c: ${p}`);
+    // S5 C3: a row-8 RPG run is a SESSION -- the plain run, then the lifecycle ROM's part A and part B (same private HOME: the battery file persists) -- so it retains exactly those three invocations, in that order,
+    // and its stamp names the lifecycle ROM and Lua it ran; every other run retains exactly its one invocation and names no lifecycle.
+    const mainPurpose = `row${st.row}-${{ 5: 'nmi', 6: 'close', 8: 'split' }[st.row]}`;
+    const session = st.row === 8 && st.gameType === 'rpg';
+    const wantPurposes = session ? [mainPurpose, 'row8-split-lc-a', 'row8-split-lc-b'] : [mainPurpose];
+    need(Array.isArray(st.mesenChain) && st.mesenChain.length === wantPurposes.length && wantPurposes.every((x, i) => st.mesenChain[i]?.purpose === x), `s1c: the run does not retain exactly its ${wantPurposes.length} Mesen invocation(s) (${wantPurposes.join(', ')})`);
+    // (the lifecycle ROM and Lua are part of the plan, which hashes to its own sha256 and must describe the run)
+    const lcPlan = planned.lifecycle;
+    need(session ? isHex(lcPlan?.romSha256) && isHex(lcPlan?.luaSha256) && lcPlan.romSha256 !== st.romSha256 && JSON.stringify(lcPlan.purposes) === JSON.stringify(['row8-split-lc-a', 'row8-split-lc-b']) : lcPlan === undefined, session ? 's1c: a row-8 RPG session stamp does not name its lifecycle ROM and Lua' : 's1c: only a row-8 RPG session carries a lifecycle');
+    for (const p of auditChain(st.mesenChain, wantPurposes.map((x) => ({ spec: x, purpose: x })), { statusOk: st.control ? [0, 5, 7, 8, 9] : [0] })) need(false, `s1c: ${p}`);
     need(st.counts && Number.isFinite(st.counts.PASS) && st.counts.PASS > 0, 's1c: no verdict counts (or none PASS)');
     // round 2, finding 1: the stamp's summary is a claim about the result it links. The result is READ and every claim recomputed from its own items against the current
     // declarations (identity, the exact required item set, legal statuses, counts, failed ids, the verdict, the Mesen exit); the raw recorder output is retained and hashed.
@@ -337,11 +342,13 @@ export function auditProvenance(provDir, logDir, opts = {}) {
   if (!logDir) problems.push('no log directory was supplied: the results and logs the stamps link cannot be resolved');
   const index = { schema: 'ring-prov-index-4', stamps: {}, logs: {}, results: {}, counts: { stamps: files.length, built: 0, error: 0, comparisons: 0 } };
   const byLabel = new Map();
+  let liftedStamps = 0; // the positive statement: how many audited stamps carry a lift (00-refusal-lift.patch, or a proof made for a lifted tree). Always 0 on a passing audit.
   for (const f of files) {
     const file = path.join(provDir, f);
     let st;
     try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { note(f, [`${f}: unreadable (${e.message})`]); continue; }
     if (st.label) byLabel.set(st.label, st);
+    if ((Array.isArray(st.patches) && st.patches.some((p) => p?.name === LIFT_PATCH)) || st.productionProof?.lifted === true) liftedStamps++;
     note(f, auditStamp(st, f, exists, read));
     index.stamps[f] = sha256(fs.readFileSync(file));
     if (st.kind === 'ring0-identity-comparison') index.counts.comparisons++; else index.counts[st.status === 'error' ? 'error' : 'built']++;
@@ -393,7 +400,7 @@ export function auditProvenance(provDir, logDir, opts = {}) {
       }
     }
   }
-  return { ok: !problems.length, problems, byFile, index, mode };
+  return { ok: !problems.length, problems, byFile, index, mode, liftedStamps };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
@@ -409,6 +416,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const r = auditProvenance(path.resolve(prov), path.resolve(logs), { construct });
   if (construct) fs.writeFileSync(path.join(prov, 'INDEX.json'), JSON.stringify(r.index, null, 1));
   for (const p of r.problems.slice(0, 40)) console.log(`PROBLEM ${p}`);
-  console.log(`provenance audit (${construct ? 'construct mode: INDEX.json written, UNFINALIZED' : 'verify: recorded hashes checked'}): ${r.index.counts.stamps} stamps (${r.index.counts.built} built, ${r.index.counts.error} error, ${r.index.counts.comparisons} ring-0 comparisons), ${r.problems.length} problems`);
+  console.log(`provenance audit (${construct ? 'construct mode: INDEX.json written, UNFINALIZED' : 'verify: recorded hashes checked'}): ${r.index.counts.stamps} stamps (${r.index.counts.built} built, ${r.index.counts.error} error, ${r.index.counts.comparisons} ring-0 comparisons), ${r.problems.length} problems; no stamp carries a lift: ${r.liftedStamps} of ${r.index.counts.stamps} stamps list ${LIFT_PATCH} or a lifted proof`);
   process.exit(r.ok ? 0 : 1);
 }

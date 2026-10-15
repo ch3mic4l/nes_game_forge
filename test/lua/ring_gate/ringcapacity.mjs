@@ -42,7 +42,7 @@ export async function maxAdmitted(tree, spec) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree, lifted only where production refuses the cell (both rings are production code)
+  const trees = makeTreeSet(); // each cell is checked through ITS ring's tree (both rings are production code; nothing is lifted)
   const rows = [];
   for (const cell of CELLS) for (const gameType of GAME_TYPES) for (const talkers of RESOURCE_SHAPES) for (const bulk of gameType === 'rpg' && talkers === 'landing' ? [false, true] : [false]) {
     const r = await maxAdmitted(trees.forCell(cell, gameType), { cell, gameType, talkers, bulk });

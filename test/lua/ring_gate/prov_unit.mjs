@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { makeTree, makeCellTree, makeTreeSet, LIFT_PATCH, patchSetFor, liftNeeded, PATCH_DIR, sha256, BASELINE, patchFile, sabotageHasRing, patchedFiles, verifyProduction, assertTreeForCell, filesDifferingFromBaseline, loadTree, provenanceFor, refreshProof, PRE_C2_BASELINE, expectedContent, resetExpectedCache, consumedEvidence, verifyBuildDir, readTreeText, RETIRED_PATCHES, TREE_KIND, PROTOTYPE_TREE_KIND, checkRetiredShipped } from './ringtree.mjs';
+import { makeTree, makeCellTree, makeTreeSet, LIFT_PATCH, patchSetFor, liftNeeded, checkNoLiftNeeded, PATCH_DIR, sha256, BASELINE, patchFile, sabotageHasRing, patchedFiles, verifyProduction, assertTreeForCell, filesDifferingFromBaseline, loadTree, provenanceFor, refreshProof, PRE_C2_BASELINE, expectedContent, resetExpectedCache, consumedEvidence, verifyBuildDir, readTreeText, RETIRED_PATCHES, TREE_KIND, PROTOTYPE_TREE_KIND, checkRetiredShipped } from './ringtree.mjs';
 import { makeBypassTree, loadBypassTree, buildThrough } from '../../lib/ringbypass.js';
 import { fileOffsetOfKernelAddr } from './ringidentity.mjs';
 import fsp from 'node:fs/promises';
@@ -32,16 +32,10 @@ import { identityFailures } from './ringidentity.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../..');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ring-prov-unit-'));
-// The cell + game type that stands for "a cell production still REFUSES, so its tree is the lifted form", per ring: found by asking liftNeeded (an action game first), never named, so a slice that
-// admits another board or game type moves it with no edit here. Since S4c every action cell is admitted, so an RPG on a two-nametable board stands in (until S5), and `UNLIFTED` is the converse: an action cell production admits.
-const LIFTED = Object.fromEntries([1, 2].map((ring) => {
-  for (const gameType of GAME_TYPES) for (const c of CELLS) if (c.ring === ring && liftNeeded(c, gameType)) return [ring, { id: c.id, gameType }];
-  throw new Error(`no cell of ring ${ring} needs the lift at ${BASELINE}: the lifted tree form has no representative`);
-}));
-const UNLIFTED = Object.fromEntries([1, 2].map((ring) => {
-  for (const gameType of GAME_TYPES) for (const c of CELLS) if (c.ring === ring && !liftNeeded(c, gameType)) return [ring, { id: c.id, gameType }];
-  throw new Error(`every cell of ring ${ring} needs the lift at ${BASELINE}: the unlifted tree form has no representative`);
-}));
+// A representative cell + game type per ring, found by asking the cell table (never named), so a slice that adds a board moves it with no edit here. Since S5 C2 production admits EVERY cell for both game types
+// (no cell needs a refusal lift: checkNoLiftNeeded), so `REP` is an RPG cell (the game type that was lifted until S5) and `ACTION` an action cell; both are built on the one unlifted tree.
+const REP = Object.fromEntries([1, 2].map((ring) => [ring, { id: CELLS.find((c) => c.ring === ring).id, gameType: 'rpg' }]));
+const ACTION = Object.fromEntries([1, 2].map((ring) => [ring, { id: CELLS.find((c) => c.ring === ring).id, gameType: 'action' }]));
 
 // ---- the Mesen implementation stamp identifies the core, not only the host (review 2: a dummy sibling core left the old stamp unchanged).
 // Built from a COMPLETE SYNTHETIC release in a mkdtemp directory, so the core assertions need no installed Mesen. `release(dir, {core})` writes the five
@@ -103,23 +97,24 @@ test('an installed Mesen release, when one resolves, stamps as itself with its o
 test('harnessFingerprint covers the matrix, the fixture-hash script and every patch file', () => {
   const fp = Object.keys(harnessFingerprint());
   for (const must of ['test/lua/ring_gate/run_matrix.mjs', 'test/lua/ring_gate/ringprovindex.mjs', 'test/lua/ring_gate/judge_unit.mjs', 'test/lua/ring_gate/fixture-hashes.mjs', 'test/lua/ring_gate/fixture-hashes-before.txt', 'test/lua/ring_gate/fixture-hashes-r4-before.txt',
-    'test/lua/ring_gate/ring_oracle.lua.template', 'test/lua/ring_gate/00-refusal-lift.patch', 'test/lua/ring_gate/sabotage/instant-text.patch', 'test/lua/ring_gate/sabotage/vertical/instant-text.patch']) assert.ok(fp.includes(must), `${must} is not in the harness fingerprint`);
+    'test/lua/ring_gate/ring_oracle.lua.template', 'test/lua/ring_gate/sabotage/instant-text.patch', 'test/lua/ring_gate/sabotage/vertical/instant-text.patch']) assert.ok(fp.includes(must), `${must} is not in the harness fingerprint`);
+  assert.ok(!fp.includes('test/lua/ring_gate/00-refusal-lift.patch'), 'the retired refusal lift is gone from the tree and so from the fingerprint');
 });
 
 // ---- attempt stamps: written before the build, completed with the outcome, an errored build leaves one
 test('a failing build leaves an error stamp that was written as an attempt first', async () => {
   const dir = tmp();
-  const tree = makeTree({ ring: 1, lifted: true });
+  const tree = makeTree({ ring: 1, lifted: false });
   try {
-    const cell = cellById(LIFTED[1].id);
-    const { project } = ringProject({ cell, gameType: LIFTED[1].gameType, n: 400 }); // beyond any admitted world: the generator refuses it before assembling
+    const cell = cellById(REP[1].id);
+    const { project } = ringProject({ cell, gameType: REP[1].gameType, n: 400 }); // beyond any admitted world: the generator refuses it before assembling
     let err;
-    try { await buildCell({ tree, project, cell, gameType: LIFTED[1].gameType, provDir: dir, label: 'doomed', links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } }); } catch (e) { err = e; }
+    try { await buildCell({ tree, project, cell, gameType: REP[1].gameType, provDir: dir, label: 'doomed', links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } }); } catch (e) { err = e; }
     assert.ok(err, 'the oversized world must fail to build');
     const st = JSON.parse(fs.readFileSync(path.join(dir, 'doomed.json'), 'utf8'));
     assert.equal(st.status, 'error');
     assert.ok(st.attempt.startedAt && st.finishedAt && st.error.firstLine, 'attempt time, finish time and the error text are recorded');
-    assert.ok(st.projectSha256 && st.patches.length === 1 && st.treeKind === 'production-vertical' && st.productionProof.changed.join() === 'shared/project.js' && Object.keys(st.harness).length > 20 && st.nesasm?.sha256, 'inputs were stamped BEFORE the build');
+    assert.ok(st.projectSha256 && st.patches.length === 0 && st.treeKind === 'production-vertical' && st.productionProof.changed.length === 0 && Object.keys(st.harness).length > 20 && st.nesasm?.sha256, 'inputs were stamped BEFORE the build');
     assert.equal(err.provPath, path.join(dir, 'doomed.json'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
 });
@@ -134,7 +129,7 @@ test('writeAttempt alone (a build that died) is status "started" and the audit r
 });
 test('auditStamp rejects a built stamp without links, resources, results, or the Mesen native core', () => {
   const full = {
-    schema: 'ring-prov-3', kind: 'cell-build', status: 'built', cell: UNLIFTED[1].id, gameType: UNLIFTED[1].gameType, attempt: { startedAt: 'x' }, head: 'h', ...provenanceFor(1, false),
+    schema: 'ring-prov-3', kind: 'cell-build', status: 'built', cell: ACTION[1].id, gameType: ACTION[1].gameType, attempt: { startedAt: 'x' }, head: 'h', ...provenanceFor(1, false),
     harness: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`f${i}`, 'x'])), links: { result: '/r', log: '/l' }, nesasm: { sha256: 'x' }, host: { kernel: 'k' },
     romSha256: 'a'.repeat(64), projectSha256: 'b'.repeat(64), header: {}, streamRing: 1, ringConsts: {}, resources: { kernelLoFree: 1, kernelHiFree: 2 }, placement: { assembled: 'resident' },
     results: [{ emulatorStamp: { emulator: 'Mesen2 --testRunner', binarySha256: 'x', host: { kernel: 'k' }, loadedFiles: [{ path: '/m/MesenCore.so', sha256: 'c'.repeat(64) }, { path: '/m/Mesen.dll', sha256: 'd'.repeat(64) }] } }]
@@ -459,6 +454,7 @@ test('auditCampaignResult: an oracle Mesen row without userSavesUntouched or its
 
 // ---- S3 C2: the gate certifies the PRODUCTION vertical AND horizontal rings; neither cell kind is ever re-patched into the S1 prototype
 const RETIRED = Object.keys(RETIRED_PATCHES);
+const PROTO_RETIRED = RETIRED.filter((n) => n !== LIFT_PATCH); // the S1 prototype's three (the refusal lift's retirement is a different one: S5 C3, tested below)
 const PROTO_BASE = 'cd7a9f8'; // the last baseline whose ring-2 tree was the S1 prototype: its three patches (and the prototype's 00) are in git history at 803a252
 const gitHead = (...a) => execFileSync('git', a, { cwd: REPO, encoding: 'utf8' }).trim();
 const gitShow = (spec) => execFileSync('git', ['show', spec], { cwd: REPO, maxBuffer: 64 << 20 });
@@ -469,7 +465,7 @@ function prototypeFiles() {
   if (protoCache) return protoCache;
   const scratch = tmp();
   try {
-    const patches = ['00-refusal-lift.patch', ...RETIRED].map((n) => gitShow(`803a252:test/lua/ring_gate/${n}`));
+    const patches = ['00-refusal-lift.patch', ...PROTO_RETIRED].map((n) => gitShow(`803a252:test/lua/ring_gate/${n}`));
     const files = new Set(patches.flatMap((b) => patchedFiles(b.toString('utf8'))));
     for (const f of files) { fs.mkdirSync(path.dirname(path.join(scratch, f)), { recursive: true }); fs.writeFileSync(path.join(scratch, f), gitShow(`${PROTO_BASE}:${f}`)); }
     for (const b of patches) execFileSync('git', ['apply', '-p2', '--whitespace=nowarn', '-'], { cwd: scratch, input: b, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -479,28 +475,27 @@ function prototypeFiles() {
 }
 /** Re-patches a production ring tree into the S1 prototype: the prototype's ring files replace the tree's. */
 const repatchIntoPrototype = (root) => { for (const [f, bytes] of Object.entries(prototypeFiles())) fs.writeFileSync(path.join(root, f), bytes); };
-const RING_CELL = { 1: LIFTED[1].id, 2: LIFTED[2].id };
-test('BASELINE is a real commit whose engine/main/shared the working tree equals; a lifted ring tree carries exactly the refusal lift and an unlifted one carries nothing', () => {
+const RING_CELL = { 1: REP[1].id, 2: REP[2].id };
+test('BASELINE is a real commit whose engine/main/shared the working tree equals; a ring tree carries no required patch (the refusal lift is retired)', () => {
   assert.match(BASELINE, /^[0-9a-f]{40}$/);
   assert.equal(gitHead('cat-file', '-t', BASELINE), 'commit');
-  assert.equal(BASELINE, 'bb43a2cbd5127b91430aa162b7e8388409272143', 'S4c C1: the commit that admits the two-nametable ring on UNROM 512 (and, since S4b C1 and S4a C1, MMC1 and MMC3) for action games');
-  assert.deepEqual(patchSetFor(true), ['00-refusal-lift.patch']);
+  assert.equal(BASELINE, 'f3833dbefe85378b6d305f16a0bb341fd5044e96', 'S5 C2: the commit that admits a streamed RPG on the two-nametable ring (UNROM 512, MMC1, MMC3), so production refuses none of the 18 cells');
   assert.deepEqual(patchSetFor(false), []);
+  assert.throws(() => patchSetFor(true), /refusal lift .* is retired at S5 C3/);
   assert.equal(LIFT_PATCH, '00-refusal-lift.patch');
-  for (const n of patchSetFor(true)) assert.ok(fs.statSync(patchFile(n)).size > 0, `${n} is empty`);
 });
 test('the S1 prototype patches are RETIRED: in no ring\'s patch set, not on disk, not in the fingerprint, refused by name, and production ships what each one added (none still applies to BASELINE)', () => {
-  assert.deepEqual(RETIRED, ['01-ring-select.patch', '02-ring-engine.patch', '03-player-far-branch.patch']);
+  assert.deepEqual(PROTO_RETIRED, ['01-ring-select.patch', '02-ring-engine.patch', '03-player-far-branch.patch']);
   const fp = Object.keys(harnessFingerprint());
-  for (const n of RETIRED) {
-    for (const lifted of [true, false]) assert.ok(!patchSetFor(lifted).includes(n), `${n} is in the ${lifted ? 'lifted' : 'unlifted'} patch set`);
+  for (const n of PROTO_RETIRED) {
+    assert.ok(!patchSetFor(false).includes(n), `${n} is in the patch set`);
     assert.ok(!fs.existsSync(path.join(PATCH_DIR, n)), `${n} still exists on disk`);
     assert.ok(!fp.includes(`test/lua/ring_gate/${n}`), `${n} is in the harness fingerprint`);
     assert.ok(RETIRED_PATCHES[n].reason.length > 20, `${n}: a retirement records its reason`);
     assert.throws(() => patchFile(n), /is retired/);
     assert.throws(() => patchFile(n, 1), /is retired/);
-    assert.throws(() => makeTree({ ring: 2, lifted: true, extra: [n] }), /is retired/);
-    assert.throws(() => makeTree({ ring: 1, lifted: true, extra: [n] }), /is retired/);
+    assert.throws(() => makeTree({ ring: 2, lifted: false, extra: [n] }), /is retired/);
+    assert.throws(() => makeTree({ ring: 1, lifted: false, extra: [n] }), /is retired/);
     // the retired file is identified by its bytes in git history, and it can no longer be applied to BASELINE (its effect is shipped: checkRetiredShipped below names the needles)
     const bytes = gitShow(`803a252:test/lua/ring_gate/${n}`);
     assert.equal(sha256(bytes), RETIRED_PATCHES[n].sha256, `${n}: the recorded hash is the file's at 803a252`);
@@ -531,7 +526,7 @@ test('the declared rings of each sabotage equal the patch files that exist (a ri
     const gone = 3 - rings[0];
     assert.deepEqual(Object.keys(NO_FORM_REASON[n]).map(Number), [gone], `${n}: the reason names the ring that has no form`);
     assert.match(noFormReason(n, gone), /equivalent mutant/);
-    assert.throws(() => makeTree({ ring: gone, lifted: true, extra: [n] }), new RegExp(`no ring-${gone} form: .*equivalent mutant`));
+    assert.throws(() => makeTree({ ring: gone, lifted: false, extra: [n] }), new RegExp(`no ring-${gone} form: .*equivalent mutant`));
   }
 });
 // The three equivalent mutants, each shown by building both rings' ROMs with and without the mutation (the edit is the one regen_patches.mjs cuts for the ring that keeps the form).
@@ -563,15 +558,15 @@ test('wrap-row-32 on ring 1, wrap-col-30 and strip-len-30-vertical on ring 2 are
 });
 test('every patch of the shipped set and every sabotage form applies to its own ring\'s tree and changes something; each tree changes only what its patches declare', () => {
   for (const ring of [1, 2]) {
-    const t = makeTree({ ring, lifted: true });
+    const t = makeTree({ ring, lifted: false });
     try {
       assert.equal(t.kind, TREE_KIND[ring]);
-      assert.deepEqual(t.patches.map((p) => p.name), patchSetFor(true));
-      assert.deepEqual(filesDifferingFromBaseline(t.root), ['shared/project.js'], `ring ${ring}: the files that differ from ${BASELINE}`);
+      assert.deepEqual(t.patches.map((p) => p.name), patchSetFor(false));
+      assert.deepEqual(filesDifferingFromBaseline(t.root), [], `ring ${ring}: the files that differ from ${BASELINE}`);
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
     for (const n of Object.keys(IDENTITY_OUTCOME)) {
       if (!sabotageRings(n).includes(ring)) continue;
-      const s = makeTree({ ring, lifted: true, extra: [n] });
+      const s = makeTree({ ring, lifted: false, extra: [n] });
       try {
         const declared = new Set(s.patches.flatMap((p) => patchedFiles(fs.readFileSync(patchFile(p.name, ring), 'utf8'))));
         assert.deepEqual(new Set(filesDifferingFromBaseline(s.root)), declared, `${n} (ring ${ring}) changes exactly the files its patches declare`);
@@ -582,11 +577,11 @@ test('every patch of the shipped set and every sabotage form applies to its own 
     }
   }
 });
-test('a ring tree is the shipped forks unmodified: only shared/project.js differs from BASELINE, the shipped fork text is in the tree\'s own files, and the proof names the ring it was made for', () => {
+test('a ring tree is the shipped forks unmodified: no file differs from BASELINE, the shipped fork text is in the tree\'s own files, and the proof names the ring it was made for', () => {
   for (const ring of [1, 2]) {
-    const t = makeTree({ ring, lifted: true });
+    const t = makeTree({ ring, lifted: false });
     try {
-      assert.deepEqual(t.production.changed, ['shared/project.js']);
+      assert.deepEqual(t.production.changed, []);
       assert.equal(t.production.ring, ring);
       assert.equal(t.production.exact, true);
       assert.deepEqual(t.production.unmodifiedShippedFiles.sort(), ring === 1 ? ['engine/streamworld.asm', 'main/build/generate.js', 'shared/cartridge.js'] : ['engine/player.asm', 'engine/streamworld.asm', 'main/build/generate.js', 'shared/cartridge.js']);
@@ -594,33 +589,33 @@ test('a ring tree is the shipped forks unmodified: only shared/project.js differ
       for (const l of ['sw_ring_col_cmp:', 'sw_ring_col_len:', 'sw_ring_wrap_col:', 'sw_ring_nt_step:', 'sw_ring_nt_end:', 'sw_ring_row_cmp:', 'sw_ring_row_len:', 'sw_ring_wrap_row:']) assert.ok(asm.includes(l), `ring ${ring}: ${l}`);
       assert.ok(fs.readFileSync(path.join(t.root, 'main/build/generate.js'), 'utf8').includes('SW_RING_ROW_LEN'));
       assert.ok(fs.readFileSync(path.join(t.root, 'engine/player.asm'), 'utf8').includes('bne ring_far1'));
-      assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring, true));
+      assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring, false));
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
   }
 });
 test('SABOTAGE of the production assertion: a ring tree re-patched into the S1 prototype, or edited by hand, FAILS it (and a cell will not build through it); a retired patch named among the applied ones is refused', async () => {
   for (const ring of [1, 2]) {
     const cell = cellById(RING_CELL[ring]);
-    const t = makeTree({ ring, lifted: true });
+    const t = makeTree({ ring, lifted: false });
     try {
       repatchIntoPrototype(t.root);
       assert.ok(filesDifferingFromBaseline(t.root).includes('engine/player.asm'), 'the prototype really differs from the shipped ring');
-      assert.throws(() => verifyProduction(t.root, t.applied, ring, true), /differs from .* in files no applied patch declares/, `ring ${ring}`);
-      assert.throws(() => assertTreeForCell(t, cell, LIFTED[ring].gameType), /differs from/, `ring ${ring}`);
+      assert.throws(() => verifyProduction(t.root, t.applied, ring, false), /differs from .* in files no applied patch declares/, `ring ${ring}`);
+      assert.throws(() => assertTreeForCell(t, cell, REP[ring].gameType), /differs from/, `ring ${ring}`);
       await assert.rejects(loadTree(t), /differs from/);
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-    const u = makeTree({ ring, lifted: true });
+    const u = makeTree({ ring, lifted: false });
     try {
-      for (const n of RETIRED) assert.throws(() => verifyProduction(u.root, [...u.applied, { name: n, file: path.join(PATCH_DIR, n) }], ring, true), /retired prototype patch/, n);
+      for (const n of PROTO_RETIRED) assert.throws(() => verifyProduction(u.root, [...u.applied, { name: n, file: path.join(PATCH_DIR, n) }], ring, false), /retired prototype patch/, n);
       // a hand edit of one shipped fork operand (what a partial re-patch would do)
       const f = path.join(u.root, 'engine/streamworld.asm');
       fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('cmp #SW_RING_COL_LEN\n  .else', 'cmp #30\n  .else'));
-      assert.throws(() => verifyProduction(u.root, u.applied, ring, true), /engine\/streamworld\.asm/);
-      // a tree that equals BASELINE where the refusal lift should be: the patch did nothing
-      const u2 = makeTree({ ring, lifted: true });
+      assert.throws(() => verifyProduction(u.root, u.applied, ring, false), /engine\/streamworld\.asm/);
+      // a tree that equals BASELINE where its sabotage form should be: the patch did nothing
+      const u2 = makeTree({ ring, lifted: false, extra: ['dest-plus08-vertical'] });
       try {
-        fs.writeFileSync(path.join(u2.root, 'shared/project.js'), gitShow(`${BASELINE}:shared/project.js`));
-        assert.throws(() => verifyProduction(u2.root, u2.applied, ring, true), /the patch did nothing/);
+        fs.writeFileSync(path.join(u2.root, 'engine/streamworld.asm'), gitShow(`${BASELINE}:engine/streamworld.asm`));
+        assert.throws(() => verifyProduction(u2.root, u2.applied, ring, false), /the patch did nothing/);
       } finally { fs.rmSync(u2.root, { recursive: true, force: true }); }
     } finally { fs.rmSync(u.root, { recursive: true, force: true }); }
   }
@@ -640,20 +635,20 @@ test('a cell is built only through its own ring\'s tree: a vertical cell refuses
     assert.throws(() => assertTreeForCell(set.forRing(2, false), cellById('MMC3-V'), 'action'), /vertical cell is built only through the production-vertical tree/);
     assert.throws(() => assertTreeForCell(set.forRing(1, false), cellById('MMC3-H'), 'action'), /horizontal one only through the production-horizontal tree/);
   } finally { set.dispose(); }
-  assert.throws(() => makeTree({ ring: true, lifted: true }), /ring must be 1/);
+  assert.throws(() => makeTree({ ring: true, lifted: false }), /ring must be 1/);
   assert.throws(() => makeTree({}), /ring must be 1/);
 });
 test('row 1 on a production build of EACH ring: the shipped fork operands pass identity; a forged record or ROM (a missing fork, a wrong constant, a flipped operand, the other ring\'s geometry) fails it; the stamp carries the exact proof and the consumed evidence', async () => {
   for (const ring of [1, 2]) {
     const cell = cellById(RING_CELL[ring]);
-    const tree = makeTree({ ring, lifted: true });
-    const { project } = ringProject({ cell, gameType: LIFTED[ring].gameType });
+    const tree = makeTree({ ring, lifted: false });
+    const { project } = ringProject({ cell, gameType: REP[ring].gameType });
     let built;
     try {
-      built = await buildCell({ tree, project, cell, gameType: LIFTED[ring].gameType, label: `unit-identity-${cell.id}` });
+      built = await buildCell({ tree, project, cell, gameType: REP[ring].gameType, label: `unit-identity-${cell.id}` });
       assert.deepEqual(identityFailures(built, cell, { expectBanked: false }), [], `the production ring-${ring} ROM passes row 1`);
       assert.equal(built.prov.treeKind, TREE_KIND[ring]);
-      assert.deepEqual(built.prov.productionProof, provenanceFor(ring, true).productionProof, 'the build\'s stamp carries the exact proof of the check that gated it');
+      assert.deepEqual(built.prov.productionProof, provenanceFor(ring, false).productionProof, 'the build\'s stamp carries the exact proof of the check that gated it');
       assert.equal(built.prov.consumed.engine.builds, 1, 'and the consumed-input evidence of its verified build');
       assert.equal(built.prov.ringConsts.SW_RING_ROW_LEN, ring === 1 ? 32 : 16, 'the generator emits the ring\'s own row length');
       assert.ok(Number.isFinite(built.fns.sw_ring_row_cmp), 'the row fork is assembled on every ring');
@@ -671,68 +666,67 @@ test('row 1 on a production build of EACH ring: the shipped fork operands pass i
 });
 
 // ---- C3 fix 1, finding 1 (now for BOTH rings): the production proof compares EXACT content (BASELINE + the canonical hashed patches), not the set of changed file names
-test('SABOTAGE of the exact-content proof, on BOTH rings: an edit inside a file a sabotage already declares (the review\'s repro shape), its #32 build variant, a second edit in shared/project.js and in a sabotage\'s other file are all refused', async () => {
+test('SABOTAGE of the exact-content proof, on BOTH rings: an edit inside a file a sabotage already declares (the review\'s repro shape), its #32 build variant, an edit of an undeclared file and one in a sabotage\'s other file are all refused', async () => {
   for (const ring of [1, 2]) {
     const cell = cellById(RING_CELL[ring]);
     // (1) dest-plus08-vertical declares engine/streamworld.asm; an UNDECLARED edit inside it keeps the changed-file NAMES exactly the declared ones
-    const t = makeTree({ ring, lifted: true, extra: ['dest-plus08-vertical'] });
+    const t = makeTree({ ring, lifted: false, extra: ['dest-plus08-vertical'] });
     try {
-      assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring, true), 'the legitimate sabotage form is accepted');
+      assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring, false), 'the legitimate sabotage form is accepted');
       const f = path.join(t.root, 'engine/streamworld.asm');
       fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replaceAll('#SW_RING_ROW_LEN', '#32'));
-      assert.deepEqual(filesDifferingFromBaseline(t.root), patchedFiles(fs.readFileSync(patchFile('dest-plus08-vertical', ring), 'utf8')).concat('shared/project.js').sort(), 'the file NAMES are exactly the declared ones, which is why a name-set comparison passed this');
-      assert.throws(() => verifyProduction(t.root, t.applied, ring, true), /engine\/streamworld\.asm is not .* plus its applied patches/);
-      assert.throws(() => assertTreeForCell(t, cell, LIFTED[ring].gameType), /plus its applied patches/);
+      assert.deepEqual(filesDifferingFromBaseline(t.root), patchedFiles(fs.readFileSync(patchFile('dest-plus08-vertical', ring), 'utf8')).sort(), 'the file NAMES are exactly the declared ones, which is why a name-set comparison passed this');
+      assert.throws(() => verifyProduction(t.root, t.applied, ring, false), /engine\/streamworld\.asm is not .* plus its applied patches/);
+      assert.throws(() => assertTreeForCell(t, cell, REP[ring].gameType), /plus its applied patches/);
       // (2) the #32 build variant: the build would complete -- the proof, run by loadTree at every build, refuses it first
       await assert.rejects(loadTree(t), /plus its applied patches/);
-      const { project } = ringProject({ cell, gameType: LIFTED[ring].gameType });
+      const { project } = ringProject({ cell, gameType: REP[ring].gameType });
       const dir = tmp();
-      try { await assert.rejects(buildCell({ tree: t, project, cell, gameType: LIFTED[ring].gameType, provDir: dir, label: 'forged-row-fork' }), /plus its applied patches/); assert.deepEqual(fs.readdirSync(dir), [], 'no stamp is written for a build the proof refused'); }
+      try { await assert.rejects(buildCell({ tree: t, project, cell, gameType: REP[ring].gameType, provDir: dir, label: 'forged-row-fork' }), /plus its applied patches/); assert.deepEqual(fs.readdirSync(dir), [], 'no stamp is written for a build the proof refused'); }
       finally { fs.rmSync(dir, { recursive: true, force: true }); }
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-    // (3) an extra edit in shared/project.js beyond the exact refusal lift, and one inside a sabotage's other declared file
-    const a = makeTree({ ring, lifted: true });
+    // (3) an edit of a file no patch declares (shared/project.js, where the retired refusal lift used to live), and one inside a sabotage's other declared file
+    const a = makeTree({ ring, lifted: false });
     try {
       fs.appendFileSync(path.join(a.root, 'shared/project.js'), '\n// unauthorized additional source edit\n');
-      assert.throws(() => assertTreeForCell(a, cell, LIFTED[ring].gameType), /shared\/project\.js is not .* plus its applied patches/);
+      assert.throws(() => assertTreeForCell(a, cell, REP[ring].gameType), /no applied patch declares .*: shared\/project\.js/);
     } finally { fs.rmSync(a.root, { recursive: true, force: true }); }
-    const b = makeTree({ ring, lifted: true, extra: ['render-four-nts'] });
+    const b = makeTree({ ring, lifted: false, extra: ['render-four-nts'] });
     try {
       fs.appendFileSync(path.join(b.root, 'main/build/generate.js'), '\n// a second edit in a file the sabotage declares\n');
-      assert.throws(() => verifyProduction(b.root, b.applied, ring, true), /generate\.js is not .* plus its applied patches/);
+      assert.throws(() => verifyProduction(b.root, b.applied, ring, false), /generate\.js is not .* plus its applied patches/);
     } finally { fs.rmSync(b.root, { recursive: true, force: true }); }
   }
 });
-test('the exact-content proof pins the patch list too, on both rings: non-canonical files, a hash changed since the tree was made, a non-sabotage name, a reordered or missing required patch, a retired patch', () => {
+test('the exact-content proof pins the patch list too, on both rings: non-canonical files, a hash changed since the tree was made, a non-sabotage name, a missing sabotage form, the retired lift, a retired prototype patch', () => {
   for (const ring of [1, 2]) {
-    const t = makeTree({ ring, lifted: true, extra: ['render-four-nts'] });
+    const t = makeTree({ ring, lifted: false, extra: ['render-four-nts'] });
     try {
-      const [lift, sab] = t.applied;
-      const copy = path.join(t.root, 'copy-of-lift.patch');
-      fs.copyFileSync(lift.file, copy);
-      assert.throws(() => verifyProduction(t.root, [{ ...lift, file: copy }, sab], ring, true), /not the canonical/);
-      assert.throws(() => verifyProduction(t.root, [{ ...lift, sha256: '0'.repeat(64) }, sab], ring, true), /changed on disk since the tree was made/);
-      assert.throws(() => verifyProduction(t.root, [lift, sab, { name: 'not-a-sabotage.patch', file: lift.file }], ring, true), /only sabotage forms/);
-      assert.throws(() => verifyProduction(t.root, [sab, lift], ring, true), /must start 00-refusal-lift\.patch/);
-      assert.throws(() => verifyProduction(t.root, [sab], ring, true), /must start 00-refusal-lift\.patch/);
-      assert.throws(() => verifyProduction(t.root, [], ring, true), /must start 00-refusal-lift\.patch/);
-      for (const n of RETIRED) assert.throws(() => verifyProduction(t.root, [lift, { name: n, file: lift.file }], ring, true), /retired prototype patch/);
-      if (ring === 1) assert.throws(() => verifyProduction(t.root, [lift, { name: 'wrap-row-32', file: sab.file }], ring, true), /no ring-1 form/);
-      else for (const n of ['strip-len-30-vertical', 'wrap-col-30']) assert.throws(() => verifyProduction(t.root, [lift, { name: n, file: sab.file }], ring, true), /no ring-2 form/);
+      const [sab] = t.applied;
+      const copy = path.join(t.root, 'copy-of-sab.patch');
+      fs.copyFileSync(sab.file, copy);
+      assert.throws(() => verifyProduction(t.root, [{ ...sab, file: copy }], ring, false), /not the canonical/);
+      assert.throws(() => verifyProduction(t.root, [{ ...sab, sha256: '0'.repeat(64) }], ring, false), /changed on disk since the tree was made/);
+      assert.throws(() => verifyProduction(t.root, [sab, { name: 'not-a-sabotage.patch', file: sab.file }], ring, false), /only sabotage forms/);
+      assert.throws(() => verifyProduction(t.root, [], ring, false), /no applied patch declares/, 'the sabotage form missing from the list');
+      assert.throws(() => verifyProduction(t.root, [{ name: LIFT_PATCH, file: sab.file }, sab], ring, false), /refusal lift is retired/);
+      for (const n of PROTO_RETIRED) assert.throws(() => verifyProduction(t.root, [{ name: n, file: sab.file }, sab], ring, false), /retired prototype patch/);
+      if (ring === 1) assert.throws(() => verifyProduction(t.root, [{ name: 'wrap-row-32', file: sab.file }], ring, false), /no ring-1 form/);
+      else for (const n of ['strip-len-30-vertical', 'wrap-col-30']) assert.throws(() => verifyProduction(t.root, [{ name: n, file: sab.file }], ring, false), /no ring-2 form/);
     } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
   }
 });
 test('every build check re-proves the tree, on both rings: loadTree and assertTreeForCell return the CURRENT proof, not the one cached at tree creation; a pristine tree has none', async () => {
   for (const ring of [1, 2]) {
     const cell = cellById(RING_CELL[ring]);
-    const t = makeTree({ ring, lifted: true, extra: ['dest-plus08-vertical'] });
+    const t = makeTree({ ring, lifted: false, extra: ['dest-plus08-vertical'] });
     try {
       const made = t.production;
-      const checked = assertTreeForCell(t, cell, LIFTED[ring].gameType);
+      const checked = assertTreeForCell(t, cell, REP[ring].gameType);
       assert.deepEqual(checked, made);
       assert.notEqual(checked, made, 'a fresh proof object, computed from the files on disk now');
       assert.equal(t.production, checked, 'the tree keeps the latest check');
-      assert.deepEqual((await loadTree(t)).proof, provenanceFor(ring, true, ['dest-plus08-vertical']).productionProof, 'loadTree returns the proof of ITS check, equal to the one computed from the patches alone');
+      assert.deepEqual((await loadTree(t)).proof, provenanceFor(ring, false, ['dest-plus08-vertical']).productionProof, 'loadTree returns the proof of ITS check, equal to the one computed from the patches alone');
       // the tree is edited AFTER it was made: the next check refuses, and the stale cached proof is not what a stamp would carry
       fs.appendFileSync(path.join(t.root, 'engine/streamworld.asm'), '\n; late edit\n');
       assert.throws(() => refreshProof(t), /plus its applied patches/);
@@ -747,12 +741,12 @@ test('every build check re-proves the tree, on both rings: loadTree and assertTr
 test('SABOTAGE of the audit, on BOTH rings: a REAL build stamp with missing or contradictory tree provenance is refused (baseline, treeKind, patch names/order/hashes, the exact proof, the declared sabotage, a retired patch, the other ring\'s proof)', async () => {
   for (const ring of [1, 2]) {
     const cell = cellById(RING_CELL[ring]);
-    const tree = makeTree({ ring, lifted: true });
+    const tree = makeTree({ ring, lifted: false });
     const dir = tmp();
     let built;
     try {
-      const { project } = ringProject({ cell, gameType: LIFTED[ring].gameType });
-      built = await buildCell({ tree, project, cell, gameType: LIFTED[ring].gameType, provDir: dir, label: 'real-stamp', links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } });
+      const { project } = ringProject({ cell, gameType: REP[ring].gameType });
+      built = await buildCell({ tree, project, cell, gameType: REP[ring].gameType, provDir: dir, label: 'real-stamp', links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } });
       const real = JSON.parse(fs.readFileSync(path.join(dir, 'real-stamp.json'), 'utf8'));
       assert.equal(real.status, 'built');
       assert.equal(real.treeKind, TREE_KIND[ring]);
@@ -772,24 +766,24 @@ test('SABOTAGE of the audit, on BOTH rings: a REAL build stamp with missing or c
       refuse((s) => { delete s.treeKind; delete s.productionProof; }, /treeKind undefined|carries no exact production proof/, 'both fields omitted');
       refuse((s) => { s.baseline = 'wrong-baseline'; s.patches = []; }, /baseline "wrong-baseline"/, 'wrong baseline and no patches');
       refuse((s) => { s.baseline = PRE_C2_BASELINE; }, /certification baseline/, 'the pre-C2 baseline on a current stamp');
-      refuse((s) => { s.patches = []; }, new RegExp(`do not start with the ring-${ring} required set`), 'no patches');
-      refuse((s) => { s.patches[0].sha256 = '0'.repeat(64); }, new RegExp(`is not the canonical ring-${ring} patch file's`), 'a patch hash that is not the canonical file\'s');
-      for (const n of RETIRED) refuse((s) => { s.patches = [s.patches[0], { name: n, sha256: RETIRED_PATCHES[n].sha256 }]; }, new RegExp(`not a ring-${ring} sabotage form|canonical ring-${ring}`), `the retired ${n} listed`);
+      refuse((s) => { s.patches = [{ name: LIFT_PATCH, sha256: RETIRED_PATCHES[LIFT_PATCH].sha256 }]; }, /carries 00-refusal-lift\.patch: the refusal lift is retired .*no stamp carries a lift/, 'the retired lift listed');
+      refuse((s) => { s.patches = [{ name: 'dest-plus08-vertical', sha256: '0'.repeat(64) }]; s.sabotage = 'dest-plus08-vertical'; }, new RegExp(`is not the canonical ring-${ring} patch file's`), 'a patch hash that is not the canonical file\'s');
+      for (const n of RETIRED) refuse((s) => { s.patches = [{ name: n, sha256: RETIRED_PATCHES[n].sha256 }]; }, new RegExp(`not a ring-${ring} sabotage form|canonical ring-${ring}`), `the retired ${n} listed`);
       refuse((s) => { s.patches.push({ name: 'dest-plus08-vertical', sha256: sha256(fs.readFileSync(patchFile('dest-plus08-vertical', ring))) }); }, /not exactly its declared sabotage/, 'an extra patch with no declared sabotage');
       refuse((s) => { s.sabotage = 'dest-plus08-vertical'; }, /not exactly its declared sabotage/, 'a declared sabotage with no patch');
-      refuse((s) => { s.productionProof.expected['shared/project.js'] = '0'.repeat(40); }, /expected file contents are not BASELINE plus/, 'a proof whose expected content is altered');
+      refuse((s) => { s.productionProof.expected['engine/streamworld.asm'] = '0'.repeat(40); }, /expected file contents are not BASELINE plus/, 'a proof whose expected content is altered');
       refuse((s) => { s.productionProof.exact = false; }, /carries no exact production proof/, 'a proof that is not marked exact');
       refuse((s) => { s.productionProof.ring = 3 - ring; }, new RegExp(`carries no exact production proof for ring ${ring}`), 'a proof made for the other ring');
-      refuse((s) => { s.productionProof.changed = ['shared/project.js', 'engine/streamworld.asm']; }, /changed files are not exactly/, 'a proof listing a changed file the patches do not declare');
-      refuse((s) => { s.productionProof.patches = []; }, /different patches than the stamp lists/, 'a proof made for other patches');
+      refuse((s) => { s.productionProof.changed = ['engine/streamworld.asm']; }, /changed files are not exactly/, 'a proof listing a changed file the patches do not declare');
+      refuse((s) => { s.productionProof.patches = [{ name: 'dest-plus08-vertical', sha256: '0'.repeat(64) }]; }, /different patches than the stamp lists/, 'a proof made for other patches');
       refuse((s) => { s.productionVertical = s.productionProof; }, /legacy productionVertical/, 'the legacy field name');
       refuse((s) => { delete s.consumed; }, /carries none/, 'a stamp lacking consumed-input evidence');
       // the whole other ring's provenance on this ring's cell
-      refuse((s) => { Object.assign(s, provenanceFor(3 - ring, true)); }, new RegExp(`needs ${want}|required set`), 'the other ring\'s whole provenance');
+      refuse((s) => { Object.assign(s, provenanceFor(3 - ring, false)); }, new RegExp(`needs ${want}|required set`), 'the other ring\'s whole provenance');
       assert.ok(prov({ ...real, cell: 'MMC1-X' }).some((b) => /no tree can be derived/.test(b)));
       if (ring === 2) {
         // a ring-2 cell RE-PATCHED INTO THE PROTOTYPE: the stamp such a tree would honestly produce (prototype kind, the three retired patches with their hashes, no proof, no evidence) is refused, with or without the historical option
-        const proto = { ...real, treeKind: PROTOTYPE_TREE_KIND, patches: [real.patches[0], ...RETIRED.map((n) => ({ name: n, sha256: RETIRED_PATCHES[n].sha256 }))], productionProof: null, consumed: null };
+        const proto = { ...real, treeKind: PROTOTYPE_TREE_KIND, patches: [...PROTO_RETIRED.map((n) => ({ name: n, sha256: RETIRED_PATCHES[n].sha256 }))], productionProof: null, consumed: null };
         const bad = prov(proto);
         for (const re of [/needs production-horizontal/, /not a ring-2 sabotage form/, /carries no exact production proof/]) assert.ok(bad.some((b) => re.test(b)), `${re}: ${bad.join('|')}`);
         assert.ok(auditStamp(proto, 'x.json', () => true, undefined, { historicalTree: true }).some((b) => /tree provenance/.test(b)), 'and the historical option does not admit it at the current baseline');
@@ -809,7 +803,7 @@ test('the audit handles ring-0 comparisons and declared sabotage controls explic
   // declared sabotage controls: exactly the declared patch, in its ring's form
   for (const ring of [1, 2]) {
     const cell = RING_CELL[ring];
-    const sab = { kind: 'cell-build', cell, gameType: LIFTED[ring].gameType, sabotage: 'dest-plus08-vertical', ...provenanceFor(ring, true, ['dest-plus08-vertical']) };
+    const sab = { kind: 'cell-build', cell, gameType: REP[ring].gameType, sabotage: 'dest-plus08-vertical', ...provenanceFor(ring, false, ['dest-plus08-vertical']) };
     assert.deepEqual(prov(sab), [], `ring ${ring}`);
     assert.ok(prov({ ...sab, sabotage: 'no-walk-v' }).some((b) => /not exactly its declared sabotage/.test(b)), 'a different sabotage declared');
     assert.ok(prov({ ...sab, sabotage: null }).some((b) => /not exactly its declared sabotage/.test(b)));
@@ -817,24 +811,25 @@ test('the audit handles ring-0 comparisons and declared sabotage controls explic
     assert.ok(prov(wrongForm).some((b) => new RegExp(`canonical ring-${ring} patch file`).test(b)), `the ring-${3 - ring} form of a sabotage on a ring-${ring} cell`);
     assert.ok(prov({ ...sab, kind: 's1b-witness' }).length === 0, 'an s1b witness declares its sabotage the same way');
     // an s1c control declares its sabotage through its control id
-    const ctl = { kind: 's1c-run', cell, gameType: LIFTED[ring].gameType, control: 'nmi-dest-plus08-vertical', ...provenanceFor(ring, true, ['dest-plus08-vertical']) };
+    const ctl = { kind: 's1c-run', cell, gameType: REP[ring].gameType, control: 'nmi-dest-plus08-vertical', ...provenanceFor(ring, false, ['dest-plus08-vertical']) };
     assert.deepEqual(prov(ctl), []);
     assert.ok(prov({ ...ctl, control: null }).some((b) => /not exactly its declared sabotage/.test(b)));
     assert.ok(prov({ ...ctl, control: 'no-such-control' }).some((b) => /not a declared S1c control/.test(b)));
-    assert.deepEqual(prov({ kind: 's1c-run', cell, gameType: LIFTED[ring].gameType, ...provenanceFor(ring, true) }), [], 'an s1c positive');
+    assert.deepEqual(prov({ kind: 's1c-run', cell, gameType: REP[ring].gameType, ...provenanceFor(ring, false) }), [], 'an s1c positive');
   }
   const hsab = { kind: 'cell-build', cell: 'MMC3-H', gameType: 'action', sabotage: 'wrap-row-32', ...provenanceFor(2, false, ['wrap-row-32']) }; // an MMC3 action cell: production admits it, so no lift
   assert.deepEqual(prov(hsab), [], 'wrap-row-32 exists only for ring 2');
   assert.ok(prov({ ...hsab, cell: 'MMC3-V' }).length > 0, 'and a ring-1 cell cannot carry it');
   // ring 0: the pristine side has no patches and no tree; the patched side is a ring-2 production build; the six-fixture comparison names that tree
-  const p2 = provenanceFor(2, true);
+  const p2 = provenanceFor(2, false);
   const ring0 = (tree, patches) => (tree === 'patched' ? { kind: 'ring0-build', tree, ...p2, patches } : { kind: 'ring0-build', tree, baseline: BASELINE, patches });
   assert.deepEqual(prov(ring0('pristine', [])), []);
   assert.deepEqual(prov(ring0('patched', p2.patches)), []);
-  assert.ok(prov(ring0('pristine', p2.patches)).some((b) => /required set|declared sabotage/.test(b)), 'a pristine side that carries patches');
+  assert.ok(prov(ring0('pristine', provenanceFor(2, false, ['dest-plus08-vertical']).patches)).some((b) => /declared sabotage/.test(b)), 'a pristine side that carries patches');
   assert.ok(prov({ ...ring0('pristine', []), treeKind: 'production-horizontal' }).some((b) => /pristine ring-0 stamp carries treeKind/.test(b)), 'a pristine side with a tree kind');
   assert.ok(prov({ ...ring0('pristine', []), productionProof: p2.productionProof }).some((b) => /pristine ring-0 stamp carries a production proof/.test(b)));
-  assert.ok(prov(ring0('patched', [])).some((b) => /ring-2 required set/.test(b)), 'a patched side without its patches');
+  const LIFT_LISTED = [{ name: LIFT_PATCH, sha256: RETIRED_PATCHES[LIFT_PATCH].sha256 }];
+  assert.ok(prov(ring0('patched', LIFT_LISTED)).some((b) => /no stamp carries a lift/.test(b)), 'a patched side that lists the retired lift');
   assert.ok(prov({ ...ring0('patched', p2.patches), baseline: 'old' }).some((b) => /certification baseline/.test(b)));
   assert.ok(prov({ ...ring0('patched', p2.patches), treeKind: 'production-vertical' }).some((b) => /needs production-horizontal/.test(b)));
   assert.ok(prov({ ...ring0('patched', p2.patches), treeKind: PROTOTYPE_TREE_KIND }).some((b) => /needs production-horizontal/.test(b)));
@@ -844,11 +839,11 @@ test('the audit handles ring-0 comparisons and declared sabotage controls explic
   const cmp = { kind: 'ring0-identity-comparison', ...p2NoEvidence };
   assert.deepEqual(prov(cmp), []);
   assert.ok(prov({ ...cmp, consumed: p2.consumed }).some((b) => /comparison builds nothing/.test(b)), 'a comparison cannot claim consumed evidence');
-  assert.ok(prov({ ...cmp, patches: p2.patches.slice(0, 0) }).some((b) => /ring-2 required set/.test(b)), 'a comparison with a patch missing');
+  assert.ok(prov({ ...cmp, patches: LIFT_LISTED }).some((b) => /no stamp carries a lift/.test(b)), 'a comparison that lists the retired lift');
   assert.ok(prov({ ...cmp, treeKind: PROTOTYPE_TREE_KIND }).some((b) => /needs production-horizontal/.test(b)), 'a comparison against the prototype');
   assert.ok(prov({ ...cmp, baseline: '5138c1f' }).some((b) => /certification baseline/.test(b)), 'a comparison against the pre-C2 baseline');
   // and auditStamp runs it on the comparison and on an errored build stamp
-  assert.ok(auditStamp({ schema: 'ring-prov-3', ...cmp, patches: [], status: 'built' }, 'c.json', () => true).some((b) => /tree provenance/.test(b)));
+  assert.ok(auditStamp({ schema: 'ring-prov-3', ...cmp, patches: LIFT_LISTED, status: 'built' }, 'c.json', () => true).some((b) => /tree provenance/.test(b)));
   assert.ok(auditStamp({ schema: 'ring-prov-3', kind: 'cell-build', cell: 'MMC1-V', status: 'error', head: 'h', baseline: 'wrong-baseline', patches: [] }, 'e.json', () => true).some((b) => /tree provenance/.test(b)), 'an errored attempt is audited too');
 });
 
@@ -865,7 +860,7 @@ test('regen_patches locateBlock: the end anchor must be unique after the start; 
 
 // ---- C3 fix 2, finding 1: a vertical build is bound to the bytes it CONSUMED, not to a check of the mutable tree before and after it ----------------------------------------------
 // The reviewer's repro: a source that is edited only while the generator copies it (and restored right after) passes the check before the build and the check after it.
-const SCENE = { gt: LIFTED[1].gameType, sizes: [2, 2, 2, 2, 2, 2, 2, 2], wide: true, ring: { mapper: cellById(LIFTED[1].id).mapper, mirroring: cellById(LIFTED[1].id).mirroring, ring: 1, n: 4, bulk: 0 } };
+const SCENE = { gt: REP[1].gameType, sizes: [2, 2, 2, 2, 2, 2, 2, 2], wide: true, ring: { mapper: cellById(REP[1].id).mapper, mirroring: cellById(REP[1].id).mirroring, ring: 1, n: 4, bulk: 0 } };
 /** Runs `body` with fs/promises.copyFile hooked: while the generator copies the tree's engine/streamworld.asm, the row length operand is replaced by #32 (an undeclared edit); the source is restored right after the copy. Returns the number of edited copies. */
 async function withSourceRestoredDuringCopy(tree, body) {
   const source = path.join(tree.root, 'engine/streamworld.asm');
@@ -883,19 +878,19 @@ async function withSourceRestoredDuringCopy(tree, body) {
   return edits;
 }
 test('SABOTAGE of the consumed-input guard: the reviewer\'s restored-during-copy repro is REFUSED in buildCell, in a scene build (the S1b/S1c path) and when the copy bypasses the guard', async () => {
-  const cell = cellById(LIFTED[1].id);
-  const { project } = ringProject({ cell, gameType: LIFTED[1].gameType });
+  const cell = cellById(REP[1].id);
+  const { project } = ringProject({ cell, gameType: REP[1].gameType });
   // (1) buildCell, on BOTH rings: both tree checks (before and after) pass -- the check-time proof is exactly what the repro defeated -- and the BUILD is refused anyway
   for (const ring of [1, 2]) {
   const rcell = cellById(RING_CELL[ring]);
-  const rproject = ringProject({ cell: rcell, gameType: LIFTED[ring].gameType }).project;
-  const t = makeTree({ ring, lifted: true, extra: ['dest-plus08-vertical'] });
+  const rproject = ringProject({ cell: rcell, gameType: REP[ring].gameType }).project;
+  const t = makeTree({ ring, lifted: false, extra: ['dest-plus08-vertical'] });
   const dir = tmp();
   try {
     let before, after;
     const edits = await withSourceRestoredDuringCopy(t, async () => {
       before = refreshProof(t);
-      await assert.rejects(buildCell({ tree: t, project: rproject, cell: rcell, gameType: LIFTED[ring].gameType, sabotage: 'dest-plus08-vertical', provDir: dir, label: 'restored-during-copy' }), /consumed-input guard: the build read engine\/streamworld\.asm as git blob .* the source changed while the build consumed it/);
+      await assert.rejects(buildCell({ tree: t, project: rproject, cell: rcell, gameType: REP[ring].gameType, sabotage: 'dest-plus08-vertical', provDir: dir, label: 'restored-during-copy' }), /consumed-input guard: the build read engine\/streamworld\.asm as git blob .* the source changed while the build consumed it/);
       after = refreshProof(t);
     });
     assert.equal(edits, 1, 'the hook edited the one copy');
@@ -907,7 +902,7 @@ test('SABOTAGE of the consumed-input guard: the reviewer\'s restored-during-copy
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(t.root, { recursive: true, force: true }); }
   }
   // (2) a scene build from a vertical tree (what run_s1b.mjs / run_s1c.mjs do through runManifest and measureMove): the same hook, the same refusal
-  const s = makeTree({ ring: 1, lifted: true, extra: ['dest-plus08-vertical'] });
+  const s = makeTree({ ring: 1, lifted: false, extra: ['dest-plus08-vertical'] });
   const out = tmp();
   try {
     const edits = await withSourceRestoredDuringCopy(s, async () => {
@@ -919,54 +914,54 @@ test('SABOTAGE of the consumed-input guard: the reviewer\'s restored-during-copy
     assert.throws(() => consumedEvidence(s, { min: 1 }), /consumed-input guard: the build in .* copied \[/, 'the refused build leaves a partial copy: the tree can no longer produce evidence to stamp');
   } finally { fs.rmSync(out, { recursive: true, force: true }); fs.rmSync(s.root, { recursive: true, force: true }); }
   // (3) a copy that does not go through the guarded copyFile leaves no consumed-input evidence: the build is refused for it
-  const u = makeTree({ ring: 1, lifted: true });
+  const u = makeTree({ ring: 1, lifted: false });
   let udir = null;
   try {
     const copy = fsp.copyFile;
     fsp.copyFile = async (src, dest) => fsp.writeFile(dest, await fsp.readFile(src)); // an un-guarded copy
-    try { await assert.rejects(buildCell({ tree: u, project, cell, gameType: LIFTED[1].gameType, label: 'unguarded-copy' }), /no verified engine copy/); } finally { fsp.copyFile = copy; }
+    try { await assert.rejects(buildCell({ tree: u, project, cell, gameType: REP[1].gameType, label: 'unguarded-copy' }), /no verified engine copy/); } finally { fsp.copyFile = copy; }
   } finally { fs.rmSync(u.root, { recursive: true, force: true }); }
 });
 test('the consumed-input guard also binds a PERSISTENT edit seen only by a scene build, the loaded JS and a harness override; a clean scene build leaves evidence that the audit accepts', async () => {
   const out = tmp();
   // a persistent engine edit: no loadTree runs on the scene path, so only the copy-time guard stands between the edit and the ROM
-  const a = makeTree({ ring: 1, lifted: true });
+  const a = makeTree({ ring: 1, lifted: false });
   try {
     fs.appendFileSync(path.join(a.root, 'engine/text.asm'), '\n; an undeclared edit\n');
     await assert.rejects(buildScene({ root: a.root, ...SCENE, outDir: out }), /consumed-input guard: the build read engine\/text\.asm/);
   } finally { fs.rmSync(a.root, { recursive: true, force: true }); }
   // a persistent edit of a module the build imports: the loader's source is hashed, so the module never loads
-  const b = makeTree({ ring: 1, lifted: true });
+  const b = makeTree({ ring: 1, lifted: false });
   try {
     fs.appendFileSync(path.join(b.root, 'main/build/streamplacement.js'), '\n// an undeclared edit\n');
     await assert.rejects(buildScene({ root: b.root, ...SCENE, outDir: out }), /consumed-input guard: the loader read main\/build\/streamplacement\.js as git blob/);
   } finally { fs.rmSync(b.root, { recursive: true, force: true }); }
   // an override the harness derives from a tree file is read through the same verification
-  const c = makeTree({ ring: 1, lifted: true });
+  const c = makeTree({ ring: 1, lifted: false });
   try {
     assert.match(readTreeText(c, 'engine/text.asm'), /vram_drain_byte/);
     fs.appendFileSync(path.join(c.root, 'engine/text.asm'), '\n; an undeclared edit\n');
     assert.throws(() => readTreeText(c, 'engine/text.asm'), /read for a harness override is not/);
   } finally { fs.rmSync(c.root, { recursive: true, force: true }); }
   // the clean build: evidence is the engine set and the loaded modules, and it is what the audit expects
-  const d = makeTree({ ring: 1, lifted: true });
+  const d = makeTree({ ring: 1, lifted: false });
   try {
     await buildScene({ root: d.root, ...SCENE, outDir: out });
     const ev = consumedEvidence(d);
     assert.equal(ev.engine.builds, 1);
     assert.equal(Object.keys(ev.engine.files).length, 26);
     assert.ok(['main/build/generate.js', 'main/build/pipeline.js', 'shared/project.js'].every((m) => m in ev.js.files));
-    assert.deepEqual(auditTreeProvenance({ kind: 's1b-witness', cell: LIFTED[1].id, gameType: LIFTED[1].gameType, status: 'built', sabotage: null, baseline: BASELINE, ...provenanceFor(1, true), consumed: ev }, 's1b.json'), []);
+    assert.deepEqual(auditTreeProvenance({ kind: 's1b-witness', cell: REP[1].id, gameType: REP[1].gameType, status: 'built', sabotage: null, baseline: BASELINE, ...provenanceFor(1, false), consumed: ev }, 's1b.json'), []);
   } finally { fs.rmSync(d.root, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true }); }
 });
 test('SABOTAGE of the audit, on BOTH rings: a real build stamp with missing, wrong or incomplete consumed-input evidence is refused (and an errored attempt may be partial but never wrong)', async () => {
   for (const ring of [1, 2]) {
     const cell = cellById(RING_CELL[ring]);
-    const tree = makeTree({ ring, lifted: true, extra: ['render-four-nts'] });
-    const { project } = ringProject({ cell, gameType: LIFTED[ring].gameType });
+    const tree = makeTree({ ring, lifted: false, extra: ['render-four-nts'] });
+    const { project } = ringProject({ cell, gameType: REP[ring].gameType });
     let built;
     try {
-      built = await buildCell({ tree, project, cell, gameType: LIFTED[ring].gameType, sabotage: 'render-four-nts', label: 'unit-consumed' });
+      built = await buildCell({ tree, project, cell, gameType: REP[ring].gameType, sabotage: 'render-four-nts', label: 'unit-consumed' });
       const stamp = { kind: 'cell-build', status: 'built', ...built.prov, sabotage: 'render-four-nts' };
       const prov = (o) => auditTreeProvenance({ ...stamp, ...o }, 'c.json');
       const clone = () => structuredClone(stamp.consumed);
@@ -1006,34 +1001,32 @@ test('SABOTAGE of the audit, on BOTH rings: a real build stamp with missing, wro
   }
 });
 test('a patch file is read ONCE per use and git applies those bytes from stdin: the bytes hashed are the bytes parsed and applied (no path is reopened after it was hashed)', () => {
-  const lift = patchFile('00-refusal-lift.patch'), sab = patchFile('dest-plus08-vertical', 1);
+  const sab = patchFile('dest-plus08-vertical', 1);
   const reads = new Map();
   const real = fs.readFileSync, realExec = childProcess.execFileSync;
   const applies = [];
-  fs.readFileSync = function spy(p, ...rest) { if (typeof p === 'string' && (p === lift || p === sab)) reads.set(p, (reads.get(p) ?? 0) + 1); return real.call(this, p, ...rest); };
+  fs.readFileSync = function spy(p, ...rest) { if (typeof p === 'string' && p === sab) reads.set(p, (reads.get(p) ?? 0) + 1); return real.call(this, p, ...rest); };
   childProcess.execFileSync = function spyExec(cmd, args, opts, ...rest) { if (cmd === 'git' && args?.[0] === 'apply') applies.push({ args, input: opts?.input }); return realExec.call(this, cmd, args, opts, ...rest); };
   syncBuiltinESMExports();
   let t;
   try {
     resetExpectedCache();
-    t = makeTree({ ring: 1, lifted: true, extra: ['dest-plus08-vertical'] });
-    assert.equal(reads.get(lift), 2, 'makeTree reads the required patch twice: once to hash AND apply the same bytes, once for the exact-content proof it then runs');
-    assert.equal(reads.get(sab), 2, 'and the sabotage form likewise');
+    t = makeTree({ ring: 1, lifted: false, extra: ['dest-plus08-vertical'] });
+    assert.equal(reads.get(sab), 2, 'makeTree reads a patch twice: once to hash AND apply the same bytes, once for the exact-content proof it then runs');
     reads.clear();
-    expectedContent(t.applied, 1, true);
-    assert.equal(reads.get(lift), 1, 'the expected-content derivation reads each canonical patch once (hash, parse, apply)');
-    assert.equal(reads.get(sab), 1);
+    expectedContent(t.applied, 1, false);
+    assert.equal(reads.get(sab), 1, 'the expected-content derivation reads each canonical patch once (hash, parse, apply)');
     reads.clear();
-    verifyProduction(t.root, t.applied, 1, true);
-    assert.equal(reads.get(lift), 1, 'and so does the proof');
+    verifyProduction(t.root, t.applied, 1, false);
+    assert.equal(reads.get(sab), 1, 'and so does the proof');
     // every `git apply` (the tree's own and the expected-content derivation's) takes the patch on stdin from the captured bytes: no patch PATH is handed to git
-    assert.ok(applies.length >= 4, `${applies.length} git apply calls observed`);
+    assert.ok(applies.length >= 2, `${applies.length} git apply calls observed`);
     for (const { args, input } of applies) {
       assert.equal(args.at(-1), '-', `git apply reads stdin: ${args.join(' ')}`);
       assert.ok(Buffer.isBuffer(input) && input.length > 0, 'and is given the captured bytes');
       assert.ok(!args.some((a) => String(a).startsWith(PATCH_DIR)), 'no patch path');
     }
-    assert.ok(applies.some(({ input }) => input.equals(real.call(fs, lift))) && applies.some(({ input }) => input.equals(real.call(fs, sab))), 'the bytes applied are the patch files\' bytes');
+    assert.ok(applies.every(({ input }) => input.equals(real.call(fs, sab))), 'the bytes applied are the patch file\'s bytes');
   } finally { fs.readFileSync = real; childProcess.execFileSync = realExec; syncBuiltinESMExports(); if (t) fs.rmSync(t.root, { recursive: true, force: true }); }
 });
 
@@ -1085,75 +1078,73 @@ test('s1b_rejudge refuses a provenance directory holding a current-baseline stam
 });
 
 // ======================================================================================================================================================================
-// S4a commit C2: the per-cell refusal lift (S4b C2 moved MMC1 action to the unlifted side, S4c C2 UNROM 512 action). A ring tree has two forms: LIFTED (BASELINE + 00-refusal-lift.patch: a cell production still refuses -- an RPG on
-// a two-nametable board) and UNLIFTED (BASELINE itself: an action cell on MMC1, MMC3 or UNROM 512, which production admits). One rule says which (ringtree.mjs liftNeeded, read from BASELINE's own streamRingAdmitted); the tests below pin the
-// rule against a table written independently of it AND against production's own behaviour, then show the exact-content proof, the cell checks and the stamp audit all follow it.
+// S5 commit C3: the refusal lift is RETIRED. Until S5 C2 production refused a streamed RPG on a two-nametable board and the gate patched that one arm out (00-refusal-lift.patch) for the RPG cells; since the datum
+// `streamRingGameTypes: ['action', 'rpg']` all 18 cells are admitted, so every ring tree is BASELINE itself (plus a control's own sabotage form) and `liftNeeded` survives only as a guard that must say false. The tests below
+// pin that against a table written independently of it AND against production's own behaviour, show that nothing can build, apply or stamp a lift any more, and keep the audit's refusal of a lift a positive, named failure.
 // ======================================================================================================================================================================
-/** Written down independently of liftNeeded: does this cell + game type need the lift? (UNROM 512, MMC1 and MMC3 admit the ring for action games only; an RPG on a two-nametable board is S5.) */
-const LIFT_TABLE = {
-  'MMC1-V': { action: false, rpg: true }, 'MMC1-H': { action: false, rpg: true }, 'MMC3-V': { action: false, rpg: true }, 'MMC3-H': { action: false, rpg: true }, 'U512-V': { action: false, rpg: true }, 'U512-H': { action: false, rpg: true }
-};
-const ALL_CELLS = Object.keys(LIFT_TABLE);
-/** The action cells production admits (their tree is BASELINE itself): UNROM 512, MMC1 and MMC3, both mirrorings. */
-const PLAIN_CELLS = ALL_CELLS.filter((id) => !LIFT_TABLE[id].action);
-test('liftNeeded is the independent table AND production\'s own behaviour: BASELINE refuses exactly the cells that need the lift, the lifted tree admits all twelve, and ringtree.mjs holds no board list of its own', async () => {
-  for (const id of ALL_CELLS) for (const gt of ['action', 'rpg']) assert.equal(liftNeeded(cellById(id), gt), LIFT_TABLE[id][gt], `${id} ${gt}`);
+/** Written down independently of liftNeeded. */
+const ALL_CELLS = ['MMC1-V', 'MMC1-H', 'MMC3-V', 'MMC3-H', 'U512-V', 'U512-H'];
+const LIFT_LISTED = [{ name: LIFT_PATCH, sha256: RETIRED_PATCHES[LIFT_PATCH].sha256 }];
+test('liftNeeded is false for all twelve cell x game-type pairs, by the independent table AND by production\'s own behaviour (BASELINE\'s validateProject admits every one), and ringtree.mjs holds no board list of its own', async () => {
+  assert.deepEqual(CELLS.map((c) => c.id).sort(), [...ALL_CELLS].sort());
+  for (const id of ALL_CELLS) for (const gt of ['action', 'rpg']) assert.equal(liftNeeded(cellById(id), gt), false, `${id} ${gt}`);
+  assert.equal(checkNoLiftNeeded(), 12);
   assert.throws(() => liftNeeded(cellById('MMC3-V')), /gameType must be one of/);
   assert.throws(() => liftNeeded(cellById('MMC3-V'), 'puzzle'), /gameType must be one of/);
   // no second board list: the function body holds no mapper / cell literal, it asks production
   const src = fs.readFileSync(path.join(HERE, 'ringtree.mjs'), 'utf8');
-  const body = src.slice(src.indexOf('export function liftNeeded'), src.indexOf('/** The cell id of a stamp'));
+  const body = src.slice(src.indexOf('export function liftNeeded'), src.indexOf('/** Every ring cell x game type is admitted'));
   assert.ok(body.includes('streamRingAdmitted(') && !/MMC[0-9]|U512|mapper\s*===?|mapper\s*!==?|\b(?:4|30)\b/.test(body.replace(/\/\/.*$/gm, '')), 'liftNeeded asks streamRingAdmitted and names no board');
-  // production's behaviour: BASELINE (the unlifted tree) refuses a cell iff the table says it needs the lift, with the kind the board dictates; the lifted tree refuses none
-  const u = makeTree({ ring: 1, lifted: false }), l = makeTree({ ring: 1, lifted: true });
+  // production's behaviour: BASELINE (the one tree there is) refuses none of the twelve
+  const u = makeTree({ ring: 1, lifted: false });
   try {
-    const un = (await loadTree(u)).shared, li = (await loadTree(l)).shared;
+    const shared = (await loadTree(u)).shared;
     for (const id of ALL_CELLS) for (const gt of ['action', 'rpg']) {
       const { project } = ringProject({ cell: cellById(id), gameType: gt, n: 4 });
-      const refused = un.streamedBoardProblems(project).map((p) => p.kind);
-      assert.deepEqual(refused, LIFT_TABLE[id][gt] ? ['ringGame'] : [], `${id} ${gt}: BASELINE's own refusal (the only refusal left for a two-nametable ring is the game type)`);
-      assert.deepEqual(li.streamedBoardProblems(project), [], `${id} ${gt}: the lifted tree admits it`);
+      assert.deepEqual(shared.streamedBoardProblems(project), [], `${id} ${gt}: BASELINE's own validation admits it`);
     }
-  } finally { fs.rmSync(u.root, { recursive: true, force: true }); fs.rmSync(l.root, { recursive: true, force: true }); }
+  } finally { fs.rmSync(u.root, { recursive: true, force: true }); }
 });
-test('no second list of admitted boards in the lift path: the tree maker and the stamp audit hold no cell id literal and no mapper-number comparison, and the per-cell lift reaches them only through liftNeeded (S4b C2: MMC1 action left the lifted side with no edit to either; S4c C2: UNROM 512 action, the same)', () => {
+test('no second list of admitted boards in the lift path: the tree maker and the stamp audit hold no cell id literal and no mapper-number comparison, and the guard reaches them only through liftNeeded', () => {
   const code = (f) => fs.readFileSync(path.join(HERE, f), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).map((l) => l.replace(/\s\/\/.*$/, '')).join('\n');
   for (const f of ['ringtree.mjs', 'ringprovindex.mjs']) {
     const text = code(f);
     assert.deepEqual(text.match(/['"`](?:MMC[0-9]|U512)-[VH]\b/g) ?? [], [], `${f} names a cell id`);
     assert.deepEqual(text.match(/\.mapper\s*[=!]==?\s*\d+|mapper\s*[=!]==?\s*\d+|\bresolveMapper\(\s*\d+/g) ?? [], [], `${f} compares a mapper number`);
-    assert.ok(/\bliftNeeded\(/.test(text), `${f} asks liftNeeded`);
+    assert.ok(/\bliftNeeded\(/.test(text) || /refuses\s*=\s*liftNeeded/.test(text), `${f} asks liftNeeded`);
   }
 });
-test('S4c C2: the lift is reduced to the one refusal production still has -- the ringGame arm of streamedBoardProblems -- one hunk of shared/project.js that only deletes, and the capability arm stays; both lifted forms change exactly that file', () => {
-  const text = fs.readFileSync(patchFile(LIFT_PATCH), 'utf8');
-  assert.deepEqual(patchedFiles(text), ['shared/project.js']);
-  assert.equal((text.match(/^@@ /gm) ?? []).length, 1, 'one hunk');
-  const removed = text.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---')), added = text.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
-  assert.deepEqual(added, [], 'the lift only deletes');
-  assert.ok(removed.length > 0 && removed.every((l, i) => i === 0 ? /^-\s+\} else if \(!streamRingAdmitted\(mapper, mirroringId, gameType\)\) \{$/.test(l) : true), 'it starts at the ringGame arm');
-  assert.ok(removed.some((l) => l.includes("'ringGame'")) && !removed.some((l) => /capability|not implemented yet/.test(l)), 'it removes the ringGame arm and nothing of the capability arm');
-  const base = gitShow(`${BASELINE}:shared/project.js`).toString('utf8');
-  for (const ring of [1, 2]) {
-    const t = makeTree({ ring, lifted: true });
-    try {
-      const lifted = fs.readFileSync(path.join(t.root, 'shared/project.js'), 'utf8');
-      const arm = /add\(\s*'ringGame'/g;
-      assert.equal((base.match(arm) ?? []).length, 1, 'BASELINE has the ringGame arm once');
-      assert.equal((lifted.match(arm) ?? []).length, 0, `ring ${ring}: the lifted tree has none`);
-      assert.equal(lifted.split('not implemented yet on this board').length, base.split('not implemented yet on this board').length, `ring ${ring}: the capability arm is intact`);
-      assert.deepEqual(filesDifferingFromBaseline(t.root), ['shared/project.js'], `ring ${ring}: the lifted tree differs from BASELINE in exactly that file`);
-    } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
-  }
+test('S5 C3: the refusal lift is RETIRED -- the file is gone, its S4c C2 hash is recorded, nothing can name, apply, build or stamp it, and production ships the datum that made it unnecessary', () => {
+  assert.ok(!fs.existsSync(path.join(PATCH_DIR, LIFT_PATCH)), 'the file is gone');
+  assert.equal(RETIRED_PATCHES[LIFT_PATCH].sha256, sha256(gitShow(`61ed7f3:test/lua/ring_gate/${LIFT_PATCH}`)), 'the recorded hash is the S4c C2 re-cut\'s (git 61ed7f3)');
+  assert.ok(RETIRED_PATCHES[LIFT_PATCH].reason.length > 20, 'a retirement records its reason');
+  const set = makeTreeSet();
+  try {
+    for (const ring of [1, 2]) {
+      assert.throws(() => patchFile(LIFT_PATCH, ring), /is retired/);
+      assert.throws(() => makeTree({ ring, lifted: false, extra: [LIFT_PATCH] }), /is retired/);
+      assert.throws(() => makeTree({ ring, lifted: true }), /refusal lift .* is retired at S5 C3/);
+      assert.throws(() => provenanceFor(ring, true), /is retired at S5 C3/);
+      assert.throws(() => expectedContent([], ring, true), /is retired at S5 C3/);
+      assert.throws(() => verifyProduction('/nonexistent', [], ring, true), /is retired at S5 C3/);
+      assert.throws(() => expectedContent([{ name: LIFT_PATCH, file: '/x' }], ring, false), /carries 00-refusal-lift\.patch: the refusal lift is retired/);
+      assert.throws(() => set.forRing(ring, true), /is retired at S5 C3/);
+    }
+  } finally { set.dispose(); }
+  assert.throws(() => patchSetFor(true), /is retired at S5 C3/);
+  // the datum that made it unnecessary: three boards, each admitting both game types, in BASELINE's own cartridge.js
+  const cart = gitShow(`${BASELINE}:shared/cartridge.js`).toString('utf8');
+  assert.equal((cart.match(/streamRingGameTypes: \['action', 'rpg'\],/g) ?? []).length, 3);
+  assert.ok(checkRetiredShipped() >= 9, 'and checkRetiredShipped proves it (with the prototype patches\' needles)');
 });
-test('an UNLIFTED ring tree is BASELINE byte for byte in engine/ main/ shared/ (both rings); a sabotage form changes exactly the files it declares and none the lift touches, so the one patch file serves both forms', () => {
+test('a ring tree is BASELINE byte for byte in engine/ main/ shared/ (both rings); a sabotage form changes exactly the files it declares', () => {
   for (const ring of [1, 2]) {
     const t = makeTree({ ring, lifted: false });
     try {
       assert.equal(t.kind, TREE_KIND[ring]);
       assert.equal(t.lifted, false);
       assert.deepEqual(t.patches, []);
-      assert.deepEqual(filesDifferingFromBaseline(t.root), [], `ring ${ring}: an unlifted tree equals ${BASELINE} byte for byte`);
+      assert.deepEqual(filesDifferingFromBaseline(t.root), [], `ring ${ring}: a tree equals ${BASELINE} byte for byte`);
       assert.deepEqual([t.production.declared, t.production.changed, t.production.expected, t.production.lifted, t.production.exact], [[], [], {}, false, true]);
       assert.ok(t.production.forksChecked > 0 && t.production.unmodifiedShippedFiles.length > 0, 'it still proves the shipped forks are in BASELINE and unmodified');
       assert.doesNotThrow(() => verifyProduction(t.root, t.applied, ring, false));
@@ -1164,77 +1155,68 @@ test('an UNLIFTED ring tree is BASELINE byte for byte in engine/ main/ shared/ (
       const s = makeTree({ ring, lifted: false, extra: [n] });
       try {
         const sab = patchedFiles(fs.readFileSync(patchFile(n, ring), 'utf8'));
-        assert.ok(sab.length > 0 && !sab.includes('shared/project.js'), `${n} (ring ${ring}) declares files and never the lift's shared/project.js`);
-        assert.deepEqual(filesDifferingFromBaseline(s.root), [...sab].sort(), `${n} (ring ${ring}), unlifted: changes exactly the files it declares`);
+        assert.ok(sab.length > 0, `${n} (ring ${ring}) declares files`);
+        assert.deepEqual(filesDifferingFromBaseline(s.root), [...sab].sort(), `${n} (ring ${ring}): changes exactly the files it declares`);
         assert.deepEqual(s.patches.map((p) => p.name), [n]);
-        const lifted = provenanceFor(ring, true, [n]).productionProof.expected, plain = provenanceFor(ring, false, [n]).productionProof.expected;
-        for (const f of sab) assert.equal(plain[f], lifted[f], `${n}: ${f} is the same blob on the lifted and the unlifted tree`);
-        assert.deepEqual(Object.keys(lifted).sort(), [...sab, 'shared/project.js'].sort());
+        assert.deepEqual(Object.keys(provenanceFor(ring, false, [n]).productionProof.expected).sort(), [...sab].sort());
       } finally { fs.rmSync(s.root, { recursive: true, force: true }); }
     }
   }
   assert.throws(() => makeTree({ ring: 1 }), /never defaulted/);
   assert.throws(() => makeTree({ ring: 2, lifted: 'yes' }), /never defaulted/);
-  assert.throws(() => makeTree({ ring: false, lifted: true }), /pristine tree has no lift/);
-  assert.throws(() => provenanceFor(1, undefined), /lifted must be true or false/);
+  assert.throws(() => makeTree({ ring: false, lifted: false }), /pristine tree has no lift/);
+  assert.throws(() => provenanceFor(1, undefined), /never defaulted/);
 });
-test('SABOTAGE of the exact-content proof on the UNLIFTED tree: a hand edit, the lift patch applied by hand, the lift claimed in the patch list, and the wrong form checked are all refused (and so is the converse on a lifted tree)', async () => {
+test('SABOTAGE of the exact-content proof on the tree: a hand edit of a file no patch declares, the RETIRED lift applied by hand, the lift claimed in the patch list, and a lifted claim are all refused', async () => {
+  const liftBytes = gitShow(`61ed7f3:test/lua/ring_gate/${LIFT_PATCH}`);
   for (const ring of [1, 2]) {
-    const lift = { name: LIFT_PATCH, file: patchFile(LIFT_PATCH, ring) };
     const u = makeTree({ ring, lifted: false });
     try {
-      // a one-byte edit of shared/project.js on an unlifted tree
+      // a one-byte edit of shared/project.js
       fs.appendFileSync(path.join(u.root, 'shared/project.js'), '\n// edit\n');
       assert.throws(() => verifyProduction(u.root, u.applied, ring, false), /differs from .* in files no applied patch declares .*: shared\/project\.js/);
-      for (const id of PLAIN_CELLS.filter((x) => cellById(x).ring === ring)) assert.throws(() => assertTreeForCell(u, cellById(id), 'action'), /differs from/, id);
+      for (const id of ALL_CELLS.filter((x) => cellById(x).ring === ring)) for (const gt of ['action', 'rpg']) assert.throws(() => assertTreeForCell(u, cellById(id), gt), /differs from/, `${id} ${gt}`);
       await assert.rejects(loadTree(u), /differs from/);
-      // the real lift applied to the tree by hand, the tree still claiming to be BASELINE
-      fs.writeFileSync(path.join(u.root, 'shared/project.js'), gitShow(`${BASELINE}:shared/project.js`));
-      execFileSync('git', ['apply', '-p2', '--whitespace=nowarn', '-'], { cwd: u.root, input: fs.readFileSync(lift.file) });
+      // the retired lift applied to the tree by hand, the tree still claiming to be BASELINE
+      // (the S4c C2 file's hunk no longer applies to this baseline -- C2 moved its context -- so the same deletion is made by text: the old lift's own start and end marks, each unique)
+      const baseProject = gitShow(`${BASELINE}:shared/project.js`).toString('utf8');
+      const arm = locateBlock(baseProject, "      } else if (!streamRingAdmitted(mapper, mirroringId, gameType)) {\n        add(\n          'ringGame',", '      }\n    }\n    for (const problem of gridProblems)', 'project.js ringGame arm');
+      fs.writeFileSync(path.join(u.root, 'shared/project.js'), baseProject.slice(0, arm.a) + baseProject.slice(arm.b));
+      assert.ok(liftBytes.toString('utf8').includes("-          'ringGame',"), 'the retired file is the one that deleted that arm');
       assert.throws(() => verifyProduction(u.root, u.applied, ring, false), /differs from .* in files no applied patch declares .*: shared\/project\.js/);
-      // claiming the lift in the patch list of an unlifted tree
-      assert.throws(() => verifyProduction(u.root, [lift], ring, false), /unlifted .* tree carries 00-refusal-lift\.patch: production admits this cell/);
-      assert.throws(() => expectedContent([lift], ring, false), /production admits this cell/);
-      // ... and the unlifted claim for a tree that is lifted
-      assert.doesNotThrow(() => verifyProduction(u.root, [lift], ring, true), 'the very same files ARE the lifted tree');
+      // claiming the lift in the patch list, and claiming the tree is lifted
+      assert.throws(() => verifyProduction(u.root, [{ name: LIFT_PATCH, file: path.join(PATCH_DIR, LIFT_PATCH) }], ring, false), /refusal lift is retired/);
+      assert.throws(() => verifyProduction(u.root, [], ring, true), /is retired at S5 C3/);
     } finally { fs.rmSync(u.root, { recursive: true, force: true }); }
-    const l = makeTree({ ring, lifted: true });
-    try {
-      assert.throws(() => verifyProduction(l.root, l.applied, ring, false), /carries 00-refusal-lift\.patch/);
-      assert.throws(() => verifyProduction(l.root, [], ring, true), /must start 00-refusal-lift\.patch/);
-      assert.throws(() => expectedContent([], ring, true), /must start 00-refusal-lift\.patch/);
-      assert.throws(() => expectedContent(l.applied, ring, undefined), /lifted must be true or false/);
-    } finally { fs.rmSync(l.root, { recursive: true, force: true }); }
   }
 });
-test('a cell is built only through its own lift form: an action cell on any board refuses the lifted tree, an RPG on any board refuses the unlifted one; makeCellTree and the tree set choose by liftNeeded', () => {
+test('a cell is built only through its (one) form: every cell x game type gets the unlifted tree of its own ring; a forged lifted tree is refused; the tree set and makeCellTree refuse a cell production would refuse', () => {
   const set = makeTreeSet();
   try {
     for (const id of ALL_CELLS) for (const gt of ['action', 'rpg']) {
-      const cell = cellById(id), want = LIFT_TABLE[id][gt];
-      const right = set.forCell(cell, gt), wrong = set.forRing(cell.ring, !want);
-      assert.equal(right.lifted, want, `${id} ${gt}`);
-      assert.deepEqual(right.patches.map((p) => p.name), want ? [LIFT_PATCH] : []);
+      const cell = cellById(id);
+      const right = set.forCell(cell, gt);
+      assert.equal(right.lifted, false, `${id} ${gt}`);
+      assert.deepEqual(right.patches, []);
       assert.doesNotThrow(() => assertTreeForCell(right, cell, gt));
-      assert.throws(() => assertTreeForCell(wrong, cell, gt), want ? /needs the lifted tree \(production refuses it\), but the tree is unlifted/ : /needs the UNLIFTED tree \(production admits it\), but the tree is lifted/, `${id} ${gt}`);
+      assert.throws(() => assertTreeForCell({ ...right, lifted: true }, cell, gt), /the tree is lifted, but the refusal lift is retired/, `${id} ${gt}`);
       assert.throws(() => assertTreeForCell(right, cell, undefined), /gameType must be one of/);
     }
-    assert.equal(set.forCell(cellById('MMC3-V'), 'action'), set.forCell(cellById('MMC3-V'), 'action'), 'one tree per (ring, lift form)');
-    assert.notEqual(set.forCell(cellById('MMC3-V'), 'action'), set.forCell(cellById('MMC3-V'), 'rpg'), 'the same cell has two trees by game type');
-    assert.equal(set.forCell(cellById('MMC3-V'), 'action'), set.forCell(cellById('MMC3-V'), 'action'));
+    assert.equal(set.forCell(cellById('MMC3-V'), 'action'), set.forCell(cellById('MMC3-V'), 'rpg'), 'one tree per ring: the game type no longer picks a form');
+    assert.notEqual(set.forCell(cellById('MMC3-V'), 'action'), set.forCell(cellById('MMC3-H'), 'action'));
   } finally { set.dispose(); }
-  const t = makeCellTree({ cell: cellById('MMC3-H'), gameType: 'action', extra: ['render-four-nts'] });
+  const t = makeCellTree({ cell: cellById('MMC3-H'), gameType: 'rpg', extra: ['render-four-nts'] });
   try { assert.equal(t.lifted, false); assert.deepEqual(t.patches.map((p) => p.name), ['render-four-nts']); } finally { fs.rmSync(t.root, { recursive: true, force: true }); }
 });
-test('MMC1, MMC3 and UNROM 512 action cells build on PLAIN production: the ROM through the unlifted tree is byte-identical to `node main/build/cli.js` on the same project, the stamp carries no patch, and the consumed evidence is BASELINE\'s', async () => {
-  for (const id of PLAIN_CELLS) {
+test('every cell, ACTION and RPG, builds on PLAIN production: the ROM through the one tree is byte-identical to `node main/build/cli.js` on the same project, the stamp carries no patch, no lift and BASELINE\'s consumed evidence, and the audit refuses a lift on it', async () => {
+  for (const id of ALL_CELLS) for (const gt of ['action', 'rpg']) {
     const cell = cellById(id);
-    const tree = makeCellTree({ cell, gameType: 'action' });
+    const tree = makeCellTree({ cell, gameType: gt });
     const dir = tmp();
     let built, cli;
     try {
-      const { project } = ringProject({ cell, gameType: 'action' });
-      built = await buildCell({ tree, project, cell, gameType: 'action', label: `unit-plain-${id}`, provDir: dir, links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } });
+      const { project } = ringProject({ cell, gameType: gt });
+      built = await buildCell({ tree, project, cell, gameType: gt, label: `unit-plain-${id}-${gt}`, provDir: dir, links: { result: path.join(dir, 'r.json'), log: path.join(dir, 'l.log') } });
       assert.deepEqual(built.prov.patches, []);
       assert.deepEqual([built.prov.productionProof.changed, built.prov.productionProof.declared, built.prov.productionProof.lifted], [[], [], false]);
       assert.equal(built.prov.streamRing, cell.ring, 'a real ring build');
@@ -1244,70 +1226,88 @@ test('MMC1, MMC3 and UNROM 512 action cells build on PLAIN production: the ROM t
       fs.cpSync(built.dir, cli, { recursive: true, filter: (p) => path.basename(p) !== 'build' });
       const r = spawnSync(process.execPath, [path.join(REPO, 'main/build/cli.js'), cli], { encoding: 'utf8' });
       assert.equal(r.status, 0, r.stdout + r.stderr);
-      assert.ok(fs.readFileSync(path.join(cli, 'build/game.nes')).equals(built.rom), `${id}: the plain-production ROM equals the unlifted tree's`);
-      // the stamp is a clean unlifted one, and the audit accepts it
-      const real = JSON.parse(fs.readFileSync(path.join(dir, `unit-plain-${id}.json`), 'utf8'));
+      assert.ok(fs.readFileSync(path.join(cli, 'build/game.nes')).equals(built.rom), `${id} ${gt}: the plain-production ROM equals the tree's`);
+      // the stamp is a clean one, and the audit accepts it
+      const real = JSON.parse(fs.readFileSync(path.join(dir, `unit-plain-${id}-${gt}.json`), 'utf8'));
       assert.deepEqual(auditTreeProvenance(real, 'x.json'), []);
       assert.deepEqual(real.patches, []);
-      // the three refusals: the lift on an admitted action stamp (MMC1 and MMC3 alike), its proof for a lifted tree, and a patch list that disagrees with the rest of the stamp
-      const ring = cell.ring, refuse = (mut, re, label) => {
+      // the refusals: the lift listed, its proof for a lifted tree, a missing lift flag, a cell production would refuse, and a game type the table does not know
+      const refuse = (mut, re, label, opts) => {
         const s = structuredClone(real); mut(s);
-        const direct = auditTreeProvenance(s, 'x.json'), via = auditStamp(s, 'x.json', () => true).filter((b) => /tree provenance/.test(b));
-        assert.ok(direct.some((b) => re.test(b)), `${id} ${label}: direct ${direct.join('|') || '(accepted)'}`);
-        assert.ok(via.some((b) => re.test(b)), `${id} ${label}: auditStamp ${via.join('|') || '(accepted)'}`);
+        const direct = auditTreeProvenance(s, 'x.json', opts), via = auditStamp(s, 'x.json', () => true).filter((b) => /tree provenance/.test(b));
+        assert.ok(direct.some((b) => re.test(b)), `${id} ${gt} ${label}: direct ${direct.join('|') || '(accepted)'}`);
+        if (!opts) assert.ok(via.some((b) => re.test(b)), `${id} ${gt} ${label}: auditStamp ${via.join('|') || '(accepted)'}`);
       };
-      refuse((s) => { Object.assign(s, provenanceFor(ring, true)); }, new RegExp(`carries 00-refusal-lift\\.patch: production admits ${id} action`), `(a) ${id}: an action stamp that carries the lift (a self-consistent lifted stamp)`);
-      refuse((s) => { s.patches = provenanceFor(ring, true).patches; }, /carries 00-refusal-lift\.patch: production admits/, '(a) only the patch list claims the lift');
-      refuse((s) => { s.productionProof = provenanceFor(ring, true).productionProof; }, /the proof was made for a lifted tree|different patches than the stamp lists/, '(c) a lifted proof under an unlifted patch list');
-      refuse((s) => { s.consumed = provenanceFor(ring, true).consumed; }, /shared\/project\.js was loaded as git blob|consumed/, '(c) lifted consumed evidence under an unlifted patch list');
-      refuse((s) => { s.productionProof.lifted = true; }, /the proof was made for a lifted tree/, '(c) the proof\'s own lift flag flipped');
-      refuse((s) => { s.gameType = 'rpg'; }, new RegExp(`lacks 00-refusal-lift\\.patch: production refuses ${id} rpg`), `(b) the same unlifted stamp for an RPG on ${id} (production refuses it)`);
-      refuse((s) => { s.cell = ring === 1 ? 'U512-V' : 'U512-H'; s.gameType = 'rpg'; }, /lacks 00-refusal-lift\.patch: production refuses U512-[VH] rpg/, '(b) the same unlifted stamp relabelled as a UNROM 512 RPG');
-      refuse((s) => { s.cell = ring === 1 ? 'MMC3-V' : 'MMC3-H'; s.gameType = 'rpg'; }, /lacks 00-refusal-lift\.patch: production refuses MMC3-[VH] rpg/, '(b) the same unlifted stamp relabelled as an MMC3 RPG');
+      refuse((s) => { s.patches = LIFT_LISTED; }, /carries 00-refusal-lift\.patch: .*no stamp carries a lift/, '(a) only the patch list claims the lift');
+      refuse((s) => { Object.assign(s, provenanceFor(cell.ring, false, []), { patches: LIFT_LISTED }); }, /no stamp carries a lift/, '(a) a self-consistent stamp with the lift listed');
+      refuse((s) => { s.productionProof.lifted = true; }, /the proof was made for a LIFTED tree: no stamp carries a lift/, '(c) the proof\'s own lift flag flipped');
+      refuse((s) => { delete s.productionProof.lifted; }, /no stamp carries a lift .*exactly false/, '(c) a proof with no lift flag');
+      refuse((s) => { s.productionProof.lifted = 'no'; }, /no stamp carries a lift .*exactly false/, '(c) a truthy-looking lift flag');
+      refuse(() => {}, new RegExp(`${id} ${gt} is declared lifted: production refuses it`), '(b) a cell production would refuse (injected)', { refuses: () => true });
       refuse((s) => { delete s.gameType; }, /gameType undefined is none of action, rpg/, 'no game type');
       refuse((s) => { s.gameType = 'puzzle'; }, /is none of action, rpg/, 'an unknown game type');
     } finally { if (built) fs.rmSync(built.dir, { recursive: true, force: true }); for (const d of [dir, cli]) if (d) fs.rmSync(d, { recursive: true, force: true }); fs.rmSync(tree.root, { recursive: true, force: true }); }
   }
 });
-test('SABOTAGE of the audit by cell: for every cell and game type the stamp of the RIGHT form passes and the stamp of the WRONG form is refused, on a build, an S1b witness and an S1c run alike; the ring-0 patched side stays the lifted ring-2 tree', () => {
-  const prov = (s) => auditTreeProvenance(s, 'x.json');
+test('SABOTAGE of the audit by cell: for every cell and game type the stamp passes on a build, an S1b witness and an S1c run alike, and the lift (listed, flagged in the proof, or a refused cell) is refused on each; ring 0 is the unlifted ring-2 tree', () => {
+  const prov = (s, opts) => auditTreeProvenance(s, 'x.json', opts);
   for (const id of ALL_CELLS) for (const gt of ['action', 'rpg']) {
-    const cell = cellById(id), want = LIFT_TABLE[id][gt];
+    const cell = cellById(id);
     for (const kind of ['cell-build', 's1b-witness', 's1c-run']) {
       const base = { kind, cell: id, gameType: gt, sabotage: null };
-      assert.deepEqual(prov({ ...base, ...provenanceFor(cell.ring, want) }), [], `${kind} ${id} ${gt}: the right form`);
-      const bad = prov({ ...base, ...provenanceFor(cell.ring, !want) });
-      assert.ok(bad.some((b) => want ? /lacks 00-refusal-lift\.patch: production refuses/.test(b) : /carries 00-refusal-lift\.patch: production admits/.test(b)), `${kind} ${id} ${gt}: the wrong form is refused: ${bad.join('|') || '(accepted)'}`);
+      const ok = { ...base, ...provenanceFor(cell.ring, false) };
+      assert.deepEqual(prov(ok), [], `${kind} ${id} ${gt}`);
+      assert.ok(prov({ ...ok, patches: LIFT_LISTED }).some((b) => /no stamp carries a lift/.test(b)), `${kind} ${id} ${gt}: the lift listed`);
+      assert.ok(prov({ ...ok, productionProof: { ...ok.productionProof, lifted: true } }).some((b) => /no stamp carries a lift/.test(b)), `${kind} ${id} ${gt}: a lifted proof`);
+      assert.ok(prov(ok, { refuses: () => true }).some((b) => /is declared lifted: production refuses it/.test(b)), `${kind} ${id} ${gt}: a refused cell`);
       // with a declared sabotage on top: the same rule
-      const sab = { ...base, sabotage: 'render-four-nts', ...provenanceFor(cell.ring, want, ['render-four-nts']) };
-      if (kind !== 's1c-run') assert.deepEqual(prov(sab), [], `${kind} ${id} ${gt}: a sabotage control on the right form`);
-      if (kind !== 's1c-run') assert.ok(prov({ ...sab, ...provenanceFor(cell.ring, !want, ['render-four-nts']) }).length > 0, `${kind} ${id} ${gt}: a sabotage control on the wrong form`);
+      if (kind !== 's1c-run') {
+        const sab = { ...base, sabotage: 'render-four-nts', ...provenanceFor(cell.ring, false, ['render-four-nts']) };
+        assert.deepEqual(prov(sab), [], `${kind} ${id} ${gt}: a sabotage control`);
+        assert.ok(prov({ ...sab, patches: [...LIFT_LISTED, ...sab.patches] }).some((b) => /no stamp carries a lift/.test(b)), `${kind} ${id} ${gt}: a sabotage control that lists the lift`);
+      }
     }
   }
-  // ring 0: the pristine side has no tree, the patched side and the comparison are the LIFTED ring-2 tree (no cell: the lift is part of what the comparison measures); an unlifted one is refused
-  const lifted = provenanceFor(2, true), plain = provenanceFor(2, false);
-  assert.deepEqual(prov({ kind: 'ring0-build', tree: 'patched', ...lifted }), []);
-  assert.ok(prov({ kind: 'ring0-build', tree: 'patched', ...plain }).length > 0, 'the patched ring-0 side without the lift');
-  const { consumed: _c, ...liftedNoEv } = lifted, { consumed: _p, ...plainNoEv } = plain;
-  assert.deepEqual(prov({ kind: 'ring0-identity-comparison', ...liftedNoEv }), []);
-  assert.ok(prov({ kind: 'ring0-identity-comparison', ...plainNoEv }).length > 0, 'a comparison against an unlifted tree');
+  // ring 0: the pristine side has no tree, the patched side and the comparison are the (unlifted) ring-2 tree; a lifted one is refused
+  const plain = provenanceFor(2, false);
+  assert.deepEqual(prov({ kind: 'ring0-build', tree: 'patched', ...plain }), []);
+  assert.ok(prov({ kind: 'ring0-build', tree: 'patched', ...plain, productionProof: { ...plain.productionProof, lifted: true } }).some((b) => /no stamp carries a lift/.test(b)), 'the patched ring-0 side with a lifted proof');
+  const { consumed: _p, ...plainNoEv } = plain;
+  assert.deepEqual(prov({ kind: 'ring0-identity-comparison', ...plainNoEv }), []);
+  assert.ok(prov({ kind: 'ring0-identity-comparison', ...plainNoEv, productionProof: { ...plain.productionProof, lifted: true } }).some((b) => /no stamp carries a lift/.test(b)), 'a comparison against a lifted tree');
   assert.ok(prov({ kind: 'ring0-build', tree: 'pristine', baseline: BASELINE, patches: [] }).length === 0);
 });
-test('the audit\'s historical waiver is as narrow as before the per-cell lift: the same four kinds under the same one baseline, and a current-baseline MMC1, MMC3 or UNROM 512 action stamp with a lift is never waived', () => {
+test('the audit states "no stamp carries a lift" positively: auditProvenance counts the stamps that list the lift or a lifted proof (0 on a clean directory) and FAILS on one that does', () => {
+  const dir = tmp(), logs = tmp();
+  try {
+    const put = (name, over) => fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify({ schema: 'ring-prov-3', kind: 'cell-build', cell: 'MMC3-V', gameType: 'rpg', status: 'built', sabotage: null, results: [], ...provenanceFor(1, false), ...over }));
+    put('clean', {});
+    let r = auditProvenance(dir, logs, { construct: true });
+    assert.equal(r.liftedStamps, 0);
+    assert.ok(!r.problems.some((p) => /no stamp carries a lift/.test(p)), 'a clean stamp raises no lift problem');
+    put('lifted-patch', { patches: LIFT_LISTED });
+    put('lifted-proof', { productionProof: { ...provenanceFor(1, false).productionProof, lifted: true } });
+    r = auditProvenance(dir, logs, { construct: true });
+    assert.equal(r.liftedStamps, 2);
+    assert.equal(r.ok, false);
+    assert.ok(r.problems.filter((p) => /no stamp carries a lift/.test(p)).length >= 2, r.problems.join('\n'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(logs, { recursive: true, force: true }); }
+});
+test('the audit\'s historical waiver is as narrow as before the lift was retired: the same four kinds under the same one baseline, and a current-baseline stamp that lists the lift is never waived', () => {
   assert.deepEqual(HISTORICAL_KINDS, ['cell-build', 'ring0-build', 'ring0-identity-comparison', 's1b-witness']);
   assert.equal(PRE_C2_BASELINE, '5138c1f0c33107016a90423da17dcbb33d8697ca');
-  for (const id of PLAIN_CELLS) {
+  for (const id of ALL_CELLS) {
     const ring = cellById(id).ring;
-    const cur = { schema: 'ring-prov-3', kind: 'cell-build', cell: id, gameType: 'action', status: 'error', head: 'h', sabotage: null, attempt: { startedAt: 'x' }, error: { firstLine: 'x' }, ...provenanceFor(ring, true) };
+    const cur = { schema: 'ring-prov-3', kind: 'cell-build', cell: id, gameType: 'action', status: 'error', head: 'h', sabotage: null, attempt: { startedAt: 'x' }, error: { firstLine: 'x' }, ...provenanceFor(ring, false), patches: LIFT_LISTED };
     const bad = auditStamp(cur, 'x.json', () => true, undefined, { historicalTree: true });
-    assert.ok(bad.some((b) => new RegExp(`tree provenance.*carries 00-refusal-lift\\.patch: production admits ${id} action`).test(b)), `${id}: ${bad.join('|')}`);
+    assert.ok(bad.some((b) => /tree provenance.*carries 00-refusal-lift\.patch: .*no stamp carries a lift/.test(b)), `${id}: ${bad.join('|')}`);
     assert.ok(!isHistoricalStamp(cur), id);
   }
 });
-test('S4a C2: ringcells.mjs (the cell table the tree maker, the audit and the scene builder share) is in the harness fingerprint, and the patch directory listing carries the lift patch and every sabotage form', () => {
+test('S4a C2: ringcells.mjs (the cell table the tree maker, the audit and the scene builder share) is in the harness fingerprint, and the patch directory listing carries every sabotage form and NOT the retired lift', () => {
   const fp = harnessFingerprint();
   assert.ok('test/lua/ring_gate/ringcells.mjs' in fp, 'ringcells.mjs is hashed');
-  assert.ok('test/lua/ring_gate/00-refusal-lift.patch' in fp);
+  assert.ok(!('test/lua/ring_gate/00-refusal-lift.patch' in fp), 'the retired lift is not fingerprinted');
   for (const n of Object.keys(IDENTITY_OUTCOME)) for (const ring of sabotageRings(n)) assert.ok(`test/lua/ring_gate/${ring === 1 ? 'sabotage/vertical' : 'sabotage'}/${n}.patch` in fp, `${n} ring ${ring}`);
   assert.deepEqual(fingerprintGaps(fp), []);
 });

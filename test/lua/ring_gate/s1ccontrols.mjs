@@ -18,6 +18,10 @@ export const REQUIRED_ITEMS = {
   6: ['run:operational', 'close:queue', 'close:drain', 'close:publication', 'close:scroll', 'close:deadline'],
   8: ['run:exit', 'r8:run', 'r8:arm-grammar', 'r8:irq-grammar', 'r8:irq-count', 'r8:prg-group', 'r8:prg-window', 'r8:chr-regs', 'r8:terrain', 'r8:lock', 'r8:arm-deadline', 'r8:totals', 'r8:coverage']
 };
+/** Row 8 on an RPG build also judges the session (a battle, a warp, a Save, power-on and Continue; ringsplit.mjs judgeLifecycle): two more items. */
+export const RPG_ROW8_EXTRA = ['r8:lc-return', 'r8:lc-coverage'];
+/** The item set a row's result must hold on game type `gt` (REQUIRED_ITEMS is the action / row 5-6 set). */
+export const requiredItems = (row, gt) => (row === 8 && gt === 'rpg' ? [...REQUIRED_ITEMS[8], ...RPG_ROW8_EXTRA] : REQUIRED_ITEMS[row]);
 /** Items whose failure means the RUN was not a sound one (a harness error, a timeout, an incomplete workload): a control with one of these not passing is never "caught". */
 export const UNSOUND_IDS = ['run:exit', 'run:complete', 'run:operational', 'r8:run'];
 /** The Mesen exit statuses a control's recorder may legitimately end with (a template's own diagnostic exit); a positive must exit 0. */
@@ -62,7 +66,10 @@ export const CONTROLS = {
   'split-no-sei': { row: 8, kind: 'split', arg: 'no-sei', what: 'switch_prg_bank does not mask the scanline IRQ (sei removed)', declare: all('r8:prg-group', 'r8:terrain'), slice: SLICE, scope: 'MMC3 cells, action resident + rpg banked' },
   'split-no-lock': { row: 8, kind: 'split', arg: 'no-lock', what: 'split_arm ignores split_lock', declare: all('r8:lock', 'r8:prg-group', 'r8:arm-grammar'), slice: SLICE, scope: 'MMC3 cells, action resident + rpg banked' },
   'split-arm-while-locked': { row: 8, kind: 'split', arg: 'arm-while-locked', what: 'a locked frame still latches and enables the IRQ (skipping only the R1 select)', declare: all('r8:lock'), slice: SLICE, scope: 'MMC3 cells, action resident + rpg banked' },
-  'split-irq-left-armed': { row: 8, kind: 'split', arg: 'irq-left-armed', what: 'the IRQ handler leaves the line enabled when its program ends', declare: all('r8:irq-count', 'r8:irq-grammar'), slice: SLICE, scope: 'MMC3 cells, action resident + rpg banked' }
+  'split-irq-left-armed': { row: 8, kind: 'split', arg: 'irq-left-armed', what: 'the IRQ handler leaves the line enabled when its program ends', declare: all('r8:irq-count', 'r8:irq-grammar'), slice: SLICE, scope: 'MMC3 cells, action resident + rpg banked' },
+  // the S5 C3 session controls: the plain stream is unsabotaged, only the RPG session stream carries the mutation (ringsplit.mjs SPLIT_SABOTAGES lifecycleOnly)
+  'split-bank-restore-lost': { row: 8, kind: 'split', arg: 'bank-restore-lost', what: 'set_screen_ptr on a streamed map stops re-locating the field screen, so a battle\'s return leaves the battle bank in the switchable window (override of screens.asm)', declare: all('r8:lc-return'), slice: SLICE, scope: 'MMC3 cells, rpg session (resident + banked)' },
+  'split-lc-skip-warp': { row: 8, kind: 'split', arg: 'lc-skip-warp', what: 'the session script omits the warp (a harness mutation; the engine is the shipped one)', declare: all('r8:lc-coverage'), slice: SLICE, scope: 'MMC3 cells, rpg session (resident + banked)' }
 };
 
 export const controlIds = (row) => Object.keys(CONTROLS).filter((id) => CONTROLS[id].row === row);
@@ -72,7 +79,7 @@ export const controlHasForm = (id, ring) => CONTROLS[id].kind !== 'patch' || sab
 /** The runner flags for a control: { sabotage, mutation, breakMode }. */
 export const controlFlags = (id) => { const c = CONTROLS[id]; return { sabotage: c.kind === 'patch' ? c.arg : null, mutation: c.kind === 'mutation' ? c.arg : null, breakMode: c.kind === 'break' ? c.arg : null, split: c.kind === 'split' ? c.arg : null }; };
 /** Which (gameType, placement) builds a control runs on: a deadline control is also run on the banked RPG placement, which changes the timing. */
-export const controlBuilds = (id) => (CONTROLS[id].scope.includes('rpg banked') ? [['action', 'resident'], ['rpg', 'banked']] : [['action', 'resident']]);
+export const controlBuilds = (id) => (CONTROLS[id].scope.includes('rpg session') ? [['rpg', 'resident'], ['rpg', 'banked']] : CONTROLS[id].scope.includes('rpg banked') ? [['action', 'resident'], ['rpg', 'banked']] : [['action', 'resident']]);
 /** Every reachable (gameType, placement): action banked does not exist (N/A with a source proof). */
 export const BUILDS = [['action', 'resident'], ['rpg', 'resident'], ['rpg', 'banked']];
 export const positiveLabel = (row, cell, gt, placement) => `s1c-r${row}-${cell}-${gt}-${placement}`;

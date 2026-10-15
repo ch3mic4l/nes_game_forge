@@ -13,10 +13,15 @@
 -- (jsr hd_pre / hd_g0..hd_g4: RAM-counted delay loops, all zero unless this script pokes them): for each TRIAL the first switch_prg_bank of a frame is
 -- delayed so the next NMI (or the next split IRQ) is due inside the lock/sei window, at a swept offset P cycles after split_lock goes up, with a gap of
 -- GAP iterations (7 cycles each) after every mapper-register store. The delay is closed-loop (re-evaluated against the PPU position on every pass of the wait loop).
--- Exit codes: 0 done; 2 never reached ST_GAMEPLAY; 3 not a streamed map; 4 a stale anchor; 99 timeout.
+-- LIFECYCLE mode (S5 C3, PLAN.lifecycle non-nil; absent from every ordinary run, which is byte-identical to before): the same recorder and the same delay trials, but the stimulus is a
+-- scripted game session on an RPG ring (part "A": a battle entered and fought from a ring screen, a warp to another screen, a real Save; part "B", a second Mesen process on the same
+-- ROM and private HOME: the power-on, Continue from the title). split_mode is NOT poked (the engine's own split_select decides: SPL_BATTLE in a battle, SPL_BOX under a message box, off
+-- otherwise); `L` marks name the session points, and `M` is printed on every main_loop_ready pass (a completed return boundary: ui_tick / call_battle has returned), where the Node judge reads the register file (ringsplit.mjs judgeLifecycle).
+-- Exit codes: 0 done; 2 never reached ST_GAMEPLAY; 3 not a streamed map; 4 a stale anchor; 5 a lifecycle step never happened; 99 timeout.
 local A = __ADDR__
 local C = __CONSTS__
 local PLAN = __PLAN__
+local LC = PLAN.lifecycle -- nil: the ordinary row-8 stimulus
 
 local function rd(a) return emu.read(a, emu.memType.nesMemory) end
 local function wr(a, v) emu.write(a, v, emu.memType.nesMemory) end
@@ -57,7 +62,7 @@ local function onNmi()
   lastNmiClk = clk
   if stage == "run" then
     local forced = live ~= nil and live.kind == "nmi" and not live.landed
-    if armedAt(frame) or forced then wr(A.split_mode, C.SPL_BOX) end
+    if not LC and (armedAt(frame) or forced) then wr(A.split_mode, C.SPL_BOX) end
     frameArmed = rd(A.split_mode) ~= 0
   end
   put(string.format("N,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", clk, st["ppu.scanline"], st["ppu.cycle"], ipc, rd(A.split_lock), rd(A.split_mode), rd(A.st_active), rd(A.vram_ready), rd(A.vram_len), rd(A.chr_r1)))
@@ -180,18 +185,26 @@ local function onMainLoopReady()
     put(string.format("G,%d", frame))
     return
   end
+  if LC then
+    -- a completed return boundary: main_loop_ready is reached straight after ui_tick (call_battle, which ends `jmp set_screen_ptr`) or the field's update has returned, so no switch_prg_bank is open here
+    -- and the register file is whatever that return left. `M` is printed on EVERY pass (the judge checks each one), not only at the scripted marks.
+    put(string.format("M,%d,%d,%d,%d,%d,%d", rd(A.game_state), rd(A.chr_r1), rd(A.split_lock), rd(A.split_mode), rd(A.sw_col), rd(A.sw_row)))
+  end
   if stage == "settle" and frame >= settleAt then stage = "run"; tailLeft = nil end
   if stage ~= "run" then return end
-  local leg = math.floor((frame - settleAt) / PLAN.leg)
-  held = {}
-  held[(leg % 2 == 0) and PLAN.btnA or PLAN.btnB] = true
-  if (leg % PLAN.mixedEvery) == 1 and rd(A.st_active) ~= 0 and rd(A.vram_ready) == 0 and rd(A.vram_len) == 0 then queuePacket() end
+  if not LC then
+    local leg = math.floor((frame - settleAt) / PLAN.leg)
+    held = {}
+    held[(leg % 2 == 0) and PLAN.btnA or PLAN.btnB] = true
+    if (leg % PLAN.mixedEvery) == 1 and rd(A.st_active) ~= 0 and rd(A.vram_ready) == 0 and rd(A.vram_len) == 0 then queuePacket() end
+  end
   if not pending and trialIdx <= #PLAN.trials then
     pending = PLAN.trials[trialIdx]; trialIdx = trialIdx + 1; pendingAge = 0
   elseif pending then
     pendingAge = pendingAge + 1
     if pendingAge > 90 then put(string.format("T,%s,%d,stale", pending.kind, pending.p)); skipped = skipped + 1; consumed = consumed + 1; pending = nil end
   end
+  if LC then lcResume(); return end
   if trialIdx > #PLAN.trials and not pending and not live and tailLeft == nil then tailLeft = PLAN.tail end
 end
 
@@ -203,10 +216,15 @@ local function onFrame()
     end
   end
   if #ev > 0 then
-    put(string.format("Z,%d,%d,%d,%d,%d", frame, rd(A.st_active), rd(A.vram_len), rd(A.game_state), rd(A.split_mode)))
+    put(string.format("Z,%d,%d,%d,%d,%d", frame, rd(A.st_active), rd(A.vram_len), rd(A.game_state), rd(A.split_mode)) .. (LC and string.format(",%d,%d", rd(A.split_lock), rd(A.chr_r1)) or ""))
     say("F " .. frame .. " " .. table.concat(ev, " "))
     ev = {}
   end
+  if LC and stage == "boot" and rd(A.game_state) == C.ST_TITLE and frame > 60 then
+    -- the title: START begins a new game (part A); SELECT is Continue (part B, the far side of the power cycle)
+    held = {}
+    held[LC.part == "B" and "select" or "start"] = ((frame % 40) < 2) or nil
+  elseif LC and stage == "boot" then held = {} end
   if stage == "boot" and frame > 400 then fail(2, "never reached ST_GAMEPLAY within 400 frames"); return end
   if tailLeft ~= nil then
     tailLeft = tailLeft - 1
@@ -217,6 +235,88 @@ local function onFrame()
     end
   end
   if frame > PLAN.maxFrames then fail(99, "timed out in stage " .. stage .. " trial " .. trialIdx); return end
+end
+
+-- ---- the lifecycle script (a coroutine resumed once per main-loop pass; lcWait counts real frames) ------------------------------------------------------------------------------------------
+local sramWrites = 0
+local lcCo = nil
+local function lcWait(n) local f0 = frame; while frame < f0 + n do coroutine.yield() end end
+local function lcHalt() while true do coroutine.yield() end end
+local function lcFail(msg) held = {}; fail(5, "lifecycle: " .. msg); lcHalt() end
+local function lcPress(btn, down, up) held[btn] = true; lcWait(down or 1); held[btn] = nil; lcWait(up or 12) end
+local function lcMark(kind)
+  put(string.format("L,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d", kind, frame, rd(A.chr_r1), rd(A.split_lock), rd(A.game_state), rd(A.sw_col), rd(A.sw_row), rd(A.split_mode), rd(A.player_x), rd(A.player_y)))
+end
+local function lcWalk(btn, cond, max, what)
+  held[btn] = true
+  local f0 = frame
+  while not cond() do
+    if frame - f0 > max then lcFail(what .. " did not happen within " .. max .. " frames (player " .. rd(A.player_x) .. "," .. rd(A.player_y) .. " screen " .. rd(A.sw_col) .. "," .. rd(A.sw_row) .. " game_state " .. rd(A.game_state) .. ")") end
+    coroutine.yield()
+  end
+  held[btn] = nil
+end
+local function lcTrialsLeft() return trialIdx <= #PLAN.trials or pending ~= nil or live ~= nil end
+local function lcScript()
+  local gs = function() return rd(A.game_state) end
+  if LC.part == "B" then
+    -- Continue has loaded the saved session: the first gameplay frame is the landing; let it settle, then mark it
+    lcWait(40); lcMark("cont-out")
+    lcWait(60)
+  else
+    lcWait(60); lcMark("field")
+    -- a battle: walk into the monster, wait for the fight, loiter in it until the delay trials are spent (every battle tick calls switch_prg_bank), then fight it out
+    lcWalk(LC.toBattle, function() return gs() ~= 0 end, 400, "walking into the monster started no fight")
+    local f0 = frame
+    while gs() ~= C.ST_BATTLE do if frame - f0 > 60 then lcFail("game_state never reached ST_BATTLE") end coroutine.yield() end
+    lcMark("battle-in"); lcWait(8); lcMark("battle-mid")
+    local f1 = frame
+    while gs() == C.ST_BATTLE and lcTrialsLeft() and frame - f1 < LC.loiter do coroutine.yield() end
+    if gs() ~= C.ST_BATTLE then lcFail("the battle ended while idle") end
+    lcMark("battle-late")
+    local k = 0
+    while rd(A.bt_sel) ~= C.BC_FIGHT and k < 8 do lcPress("down", 1, 3); k = k + 1 end
+    lcPress("a", 1, 5); lcPress("a", 1, 19)
+    local r = 0
+    while gs() == C.ST_BATTLE and r < 80 do lcPress("a", 1, 11); r = r + 1 end
+    if gs() ~= 0 then lcFail("the battle never ended") end
+    lcMark("battle-ret"); lcWait(60); lcMark("battle-out")
+    local w0 = sramWrites
+    if not LC.skipWarp then
+      -- a warp: walk into the Doorway. The screen it lands on holds a Saver whose `enter` event saves on arrival, so the Save is made on the far side of the warp (the Continue landing is then not the start screen)
+      local col0, row0 = rd(A.sw_col), rd(A.sw_row)
+      lcWalk(LC.toDoor, function() return rd(A.sw_col) ~= col0 or rd(A.sw_row) ~= row0 end, 600, "walking into the doorway warped nowhere")
+      lcWait(60); lcMark("warp-out")
+    else
+      -- (the 'lc-skip-warp' control) no warp: save at the field screen's own Saver instead, so the session still ends in a Save and a Continue
+      lcWalk(LC.toSaver, function() return sramWrites > w0 end, 800, "walking into the saver wrote no battery RAM")
+    end
+    local f2 = frame
+    while sramWrites == w0 and frame - f2 < 300 do coroutine.yield() end
+    if sramWrites == w0 then lcFail("the session made no Save (no battery RAM write)") end
+    while gs() ~= 0 and frame - f2 < 600 do coroutine.yield() end
+    lcWait(60); lcMark("save")
+    lcWait(30)
+  end
+  say(string.format("TRIALS planned=%d consumed=%d skipped=%d done=%d", #PLAN.trials, consumed, skipped, done))
+  say(string.format("DONE frames=%d sram=%d", frame, sramWrites))
+  emu.stop(0); stage = "done"
+  lcHalt()
+end
+function lcResume()
+  if not lcCo then lcCo = coroutine.create(lcScript) end
+  if coroutine.status(lcCo) == "dead" then return end
+  local ok, err = coroutine.resume(lcCo)
+  if not ok then say("ERROR " .. tostring(err)); emu.stop(3) end
+end
+if LC then
+  emu.addMemoryCallback(function() sramWrites = sramWrites + 1 end, emu.callbackType.write, 0x6000, 0x7fff)
+  -- rendering on/off ($2001 bits 3-4): a battle's entry, a warp's redraw and the power-on write the mapper registers legitimately under forced blank; the judge needs to know when the picture was off
+  local renderOn = false
+  emu.addMemoryCallback(function(_, value)
+    local on = (value & 0x18) ~= 0
+    if on ~= renderOn then renderOn = on; put(on and "B,1" or "B,0") end
+  end, emu.callbackType.write, 0x2001, 0x2001)
 end
 
 emu.addEventCallback(onFrame, emu.eventType.endFrame)

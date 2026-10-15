@@ -7,6 +7,7 @@ import { decodeSeams, expectedOrigin, torusOf } from './ringseam.mjs';
 import { judgeCell, summary, GATE, REQUIRED, perClass, allRows } from './s1bjudge.mjs';
 import { SPEC_NAMES } from './s1bspecs.mjs';
 import { S1B_R3_REAL } from './ringjobs.mjs';
+import { CELLS } from './ringcells.mjs';
 
 // ---------------------------------------------------------------- classify: by observed execution only
 test('classify: each class comes from its own evidence', () => {
@@ -236,7 +237,7 @@ test('judge: every spec the runner names exists and the judge needs the specs it
 import { auditStamp } from './ringprovindex.mjs';
 import { sha256, provenanceFor } from './ringtree.mjs';
 const H = (c) => c.repeat(64);
-// MMC1-H action is admitted by production (S4b C1): its stamp carries the UNLIFTED tree (no refusal lift) -- ringtree.mjs liftNeeded.
+// MMC1-H action is admitted by production (S4b C1): its stamp carries the UNLIFTED tree (no refusal lift); since S5 C2 no cell needs one -- ringtree.mjs checkNoLiftNeeded.
 const INV = { n: 1, spec: 'walk', purpose: 'witness', pid: 1, status: 0, signal: null, isolated: true, homeSeen: '<isolated-HOME>', exe: '/x/Mesen', settingsSha256: H('f'), loadedFiles: [{ path: '/x/MesenCore.so', sha256: H('1') }] };
 function stamp(over = {}) {
   const planned = { cell: 'MMC1-H', gameType: 'action', placement: 'resident', n: 14, specs: [{ name: 'walk', kind: 'manifest', romSha256: H('a'), invocations: ['witness'] }] };
@@ -907,4 +908,68 @@ test('round 4 (real record, real command): the genuine record passes; 107 -> 999
   assert.notEqual(p1.run.status, 0); assert.equal(p1.res.verdictOk, false); assert.ok(p1.man.audit.problems >= 1); assert.match(p1.run.stdout, /reconciliation refused: .*agree:bodies/);
   const p2 = realProbe((rec) => { rec.items = rec.items.filter((x) => x.id !== 'agree:bodies'); });
   assert.notEqual(p2.run.status, 0); assert.equal(p2.res.verdictOk, false); assert.ok(p2.man.audit.problems >= 1); assert.match(p2.run.stdout, /agree:bodies: 0 recorded, 1 required/);
+});
+
+// ---------------------------------------------------------------- S5 C3: the gate's RPG cell runs at the board's real RPG ceiling
+// The production RPG ceiling on a horizontal ring (the most 8 KB regions any RPG project can give streamed worlds): MMC1 13, MMC3 29, UNROM 512 60 (a ONE-tileset RPG: the battle uses the field's tileset; the default
+// two-tileset RPG reaches 59); a vertical ring is bounded by the 255 grid limit alone. Hardcoded on purpose -- the figures `streamadmit.test.js` (i) pins -- AND re-derived here from the plain tree's own checkCapacity
+// on the lightest valid RPG, so the table cannot drift from production without this test failing. The gate's cell must run AT it, never shallower: a workload that quietly stays on the two-tileset layout would certify
+// 59 rows of a 60-row board (the S4c C2 certificate did exactly that, which S5 C1's F1 found).
+const RPG_CEILING = { 'MMC1-V': 255, 'MMC1-H': 13, 'MMC3-V': 255, 'MMC3-H': 29, 'U512-V': 255, 'U512-H': 60 };
+test('the gate\'s RPG cell on every board runs at the production RPG ceiling (derived layout), resident and banked; the layout is derived, ties keep the two-tileset project, and nothing but U512-H changes', async () => {
+  const { rpgLayoutFor, prepareRing, maxWorkloadN } = await import('./ringcli.mjs');
+  const { makeCellTree } = await import('./ringtree.mjs');
+  const { ringProject } = await import('./ringworld.mjs');
+  const { oneTilesetRpg } = await import('../../lib/ringrpg.js');
+  const { pathToFileURL } = await import('node:url');
+  const nodePath = await import('node:path'), nodeFs = await import('node:fs');
+  for (const cell of CELLS) {
+    const lay = await rpgLayoutFor(cell);
+    // the production side: the lightest valid RPG (one tileset), through BASELINE's own capacity check, no gate workload
+    const t = makeCellTree({ cell, gameType: 'rpg' });
+    try {
+      const gen = await import(pathToFileURL(nodePath.join(t.root, 'main/build/generate.js')).href);
+      const prod = await maxWorkloadN(t, cell, 'rpg', async (root, n) => ringProject({ cell, gameType: 'rpg', n, talkers: 'none', mutate: oneTilesetRpg }).project);
+      assert.equal(prod, RPG_CEILING[cell.id], `${cell.id}: the table equals production's lightest one-tileset RPG ceiling`);
+      void gen;
+    } finally { nodeFs.rmSync(t.root, { recursive: true, force: true }); }
+    assert.equal(Math.max(lay.depths.two, lay.depths.one), RPG_CEILING[cell.id], `${cell.id}: the deeper layout reaches the ceiling`);
+    assert.equal(lay.oneTileset, lay.depths.one > lay.depths.two, 'derived: one tileset only where it is strictly deeper');
+    assert.equal(lay.oneTileset, cell.id === 'U512-H', `${cell.id}: only the U512-H cell changes layout`);
+    if (cell.ring === 2) for (const bulk of [0, 3000]) {
+      const r = await prepareRing({ cellId: cell.id, gt: 'rpg', sizes: [2, 2, 2, 2, 2, 2, 2, 2], wide: true, bulk, scene: { nosfx: false } });
+      try {
+        assert.equal(r.ring.n, RPG_CEILING[cell.id], `${cell.id} ${bulk ? 'banked' : 'resident'}: the gate cell is not shallower than the production RPG ceiling`);
+        assert.equal(r.ring.oneTileset === true, lay.oneTileset);
+      } finally { r.dispose(); }
+    }
+  }
+});
+
+// The one-tileset layout reaches every path that builds a gate scene WITHOUT editing a pinned harness file: sw_provenance.mjs HARNESS_FILES (sw_manifest_scene.mjs among them) hash into every curve and identity certificate, so an
+// edit there silently invalidates evidence S5 C2 renewed. The layout lives in the leaf ringlayout.mjs and is applied as the scene's own `mutate` (run before normalization and validation).
+test('the one-tileset layout is a scene mutation: layoutMutate / sceneMutation apply it, absent the flag nothing changes, and no pinned harness file knows it', async () => {
+  const { layoutMutate, oneTilesetRpg } = await import('./ringlayout.mjs');
+  const { sceneMutation } = await import('../run_sw_move_manifest.mjs');
+  const { HARNESS_FILES } = await import('../sw_provenance.mjs');
+  const fsm = await import('node:fs'), pth = await import('node:path');
+  const mk = () => ({ tilesets: [{ id: 0 }, { id: 1 }], rpg: { battleTilesetId: 1 }, project: {}, maps: [{ screens: [{ entities: [{ props: { trigger: 'touch' } }] }] }], sprites: { actors: [] } });
+  // the flag absent: the SAME function back (inner or null), and the project untouched
+  const inner = () => 'x';
+  assert.equal(layoutMutate({ oneTileset: undefined }, inner), inner); assert.equal(layoutMutate(null, null), null);
+  // the flag present: one tileset, battle on the field's, the inner mutation's result passed through
+  const p = mk(); assert.equal(layoutMutate({ oneTileset: true }, () => 'r')(p, {}), 'r'); assert.equal(p.tilesets.length, 1); assert.equal(p.rpg.battleTilesetId, 0);
+  assert.equal(layoutMutate({ oneTileset: true })(mk(), {}), null);
+  const q = mk(); oneTilesetRpg(q); assert.deepEqual(q.tilesets, [{ id: 0 }]);
+  // measureMove's own mutation (sceneMutation) applies it before it does anything else with the project
+  assert.equal(typeof sceneMutation({ ring: { oneTileset: true } }), 'function');
+  const r = mk(); try { sceneMutation({ ring: { ring: 2, oneTileset: true } })(r, {}); } catch { /* the relocation needs a real scene: only the layout step is under test */ }
+  assert.equal(r.tilesets.length, 1, 'sceneMutation applied the layout');
+  const s = mk(); try { sceneMutation({ ring: { ring: 2 } })(s, {}); } catch { /* same */ }
+  assert.equal(s.tilesets.length, 2, 'no flag: untouched');
+  // no pinned harness file mentions the layout, and none imports the gate: an edit there would move the harness hash
+  for (const f of HARNESS_FILES) {
+    const text = fsm.readFileSync(pth.join(pth.dirname(new URL(import.meta.url).pathname), '..', f), 'utf8');
+    assert.doesNotMatch(text, /oneTileset|ringlayout|ringrpg/, `${f}: a pinned harness file must not know the gate's RPG layout`);
+  }
 });

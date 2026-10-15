@@ -11,11 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { renderSections } from './ringsections.mjs';
 import { vblankMargin, modelNmi, judgeNmi, splitArmed, parseNmiOutput, GEOM, planCases, requiredCover, worstMetatiles, queueShape, packetsFor, SHAPE_A, SHAPE_B } from './ringnmi.mjs';
 import { parseQueue, queueProblems, judgeClose, parseCloseOutput, closeShape } from './ringclose.mjs';
-import { analyze, judgeSplit, parseSplitOutput, SPLIT_SABOTAGES, harnessPsb } from './ringsplit.mjs';
-import { CONTROLS, controlIds, declaredFor, controlBuilds, controlFlags, controlHasForm, CELL_IDS, MMC3_CELLS, positiveLabel, controlLabel, REQUIRED_ITEMS } from './s1ccontrols.mjs';
+import { analyze, judgeSplit, judgeLifecycle, foldLifecycle, parseSplitOutput, SPLIT_SABOTAGES, harnessPsb } from './ringsplit.mjs';
+import { CONTROLS, controlIds, declaredFor, controlBuilds, controlFlags, controlHasForm, CELL_IDS, MMC3_CELLS, positiveLabel, controlLabel, REQUIRED_ITEMS, requiredItems } from './s1ccontrols.mjs';
 import { validateS1cResult, decodeLabel, recomputeVerdict } from './s1caudit.mjs';
 import zlib from 'node:zlib';
-import { sha256, provenanceFor, liftNeeded } from './ringtree.mjs';
+import { sha256, provenanceFor } from './ringtree.mjs';
 import { auditChain } from './ringhome.mjs';
 import { auditProvenance } from './ringprovindex.mjs';
 import { s1bRowStatus, buildGate, render } from './s1c_gate.mjs';
@@ -265,8 +265,7 @@ test('parseSplitOutput reads frame lines into events in order', () => {
   assert.deepEqual(p.trials, { planned: 2, consumed: 2, skipped: 0, done: 2 });
 });
 test('the split sabotage edits still apply to the stock engine source exactly once, and the harness PSB replaces the stock block exactly once', () => {
-  const split = fs.readFileSync(path.join(ROOT, 'engine/split.asm'), 'utf8');
-  for (const [id, s] of Object.entries(SPLIT_SABOTAGES)) if (s.edit) assert.notEqual(s.edit(split), split, `${id} changed nothing`);
+  for (const [id, s] of Object.entries(SPLIT_SABOTAGES)) if (s.edit) { const src = fs.readFileSync(path.join(ROOT, 'engine', s.file ?? 'split.asm'), 'utf8'); assert.notEqual(s.edit(src), src, `${id} changed nothing`); }
   const banks = fs.readFileSync(path.join(ROOT, 'engine/banks.asm'), 'utf8');
   assert.equal(banks.split('switch_prg_bank:\n  asl a').length - 1, 1);
   assert.ok(harnessPsb({}).includes('hd_psb_end') && !harnessPsb({ sei: false }).includes('  sei\n'));
@@ -285,7 +284,7 @@ test('controls: every control is declared for both rings with a mustFail set (or
     assert.equal([f.sabotage, f.mutation, f.breakMode, f.split].filter((x) => x).length, 1, `${id}: exactly one runner flag`);
     assert.ok(controlBuilds(id).length >= 1);
   }
-  assert.deepEqual(controlIds(8).length, 8);
+  assert.deepEqual(controlIds(8).length, 10);
 });
 test('controls: each row-8 control declares exactly the items its sabotage declares, and the six plan sabotages are all present', () => {
   for (const id of controlIds(8)) {
@@ -442,14 +441,14 @@ test('gate finding 5: the row-7 Mesen exception propagates a common FAIL/UNMEASU
 });
 
 // ---------------------------------------------------------------- finding 1: the result is READ and every claim recomputed from its items
-const itemsOf = (row, status = () => 'PASS') => REQUIRED_ITEMS[row].map((id) => ({ id, status: status(id), detail: `${id} detail` }));
+const itemsOf = (row, status = () => 'PASS', gt = 'action') => requiredItems(row, gt).map((id) => ({ id, status: status(id), detail: `${id} detail` }));
 const tallyOf = (items) => items.reduce((a, i) => ({ ...a, [i.status]: (a[i.status] ?? 0) + 1 }), {});
 const H64 = 'a'.repeat(64), H64b = 'b'.repeat(64);
 /** A consistent { result, stamp, label } for a row/cell/build (and control): the matching positive of validateS1cResult; each test then corrupts ONE thing. */
 function s1cPair({ row = 5, cell = 'MMC3-V', gt = 'action', pl = 'resident', control = null, items = null } = {}) {
   const label = control ? controlLabel(control, cell, gt, pl) : positiveLabel(row, cell, gt, pl);
   const declared = control ? declaredFor(control, cell.endsWith('-V') ? 1 : 2) : { outcome: 'pass-all' };
-  const its = items ?? (declared.outcome === 'caught' ? itemsOf(row, (id) => (declared.mustFail.includes(id) ? 'FAIL' : 'PASS')) : itemsOf(row));
+  const its = items ?? (declared.outcome === 'caught' ? itemsOf(row, (id) => (declared.mustFail.includes(id) ? 'FAIL' : 'PASS'), gt) : itemsOf(row, undefined, gt));
   const failed = its.filter((i) => i.status === 'FAIL').map((i) => i.id);
   const counts = tallyOf(its);
   const mesenStatus = control ? 5 : 0;
@@ -543,12 +542,15 @@ function certDir(pairs, { raw = true } = {}) {
   for (const p of pairs) {
     const rowName = { 5: 'nmi', 6: 'close', 8: 'split' }[p.result.row];
     const gz = zlib.gzipSync(Buffer.from(`raw ${p.label}`));
-    const plan = { row: p.result.row, cell: p.result.cell, gameType: p.result.gameType, placement: p.result.placement, control: p.result.control, purpose: `row${p.result.row}-${rowName}`, romSha256: H64, luaSha256: H64b };
+    const plan = { row: p.result.row, cell: p.result.cell, gameType: p.result.gameType, placement: p.result.placement, control: p.result.control, purpose: `row${p.result.row}-${rowName}`, romSha256: H64, luaSha256: H64b, ...(p.result.row === 8 && p.result.gameType === 'rpg' ? { lifecycle: { romSha256: H64b, luaSha256: H64, purposes: ['row8-split-lc-a', 'row8-split-lc-b'] } } : {}) };
     const stamp = {
       schema: 'ring-prov-3', kind: 's1c-run', status: 'built', ...p.stamp, slice: 'S1c', matchingPositive: p.result.control ? positiveLabel(p.result.row, p.result.cell, p.result.gameType, p.result.placement) : null,
-      attempt: { startedAt: 'x' }, harness: fp, head: 'h', ...provenanceFor(p.result.cell.endsWith('-V') ? 1 : 2, liftNeeded(CELLS.find((c) => c.id === p.result.cell), p.result.gameType), p.result.control && controlFlags(p.result.control).sabotage ? [controlFlags(p.result.control).sabotage] : []), nesasm: { sha256: H64 }, host: { kernel: 'k' },
+      attempt: { startedAt: 'x' }, harness: fp, head: 'h', ...provenanceFor(p.result.cell.endsWith('-V') ? 1 : 2, false, p.result.control && controlFlags(p.result.control).sabotage ? [controlFlags(p.result.control).sabotage] : []), nesasm: { sha256: H64 }, host: { kernel: 'k' },
       projectSha256: H64, plan: { ...plan, sha256: sha256(JSON.stringify(plan)) }, build: { streamRing: p.result.cell.endsWith('-V') ? 1 : 2, placement: { requested: p.result.placement, assembled: p.result.placement === 'banked' ? 'switchable' : 'resident' } },
-      userSavesUntouched: true, mesenChain: [{ n: 1, spec: plan.purpose, purpose: plan.purpose, pid: 7, status: p.result.mesenStatus, isolated: true, settingsSha256: 'a', exe: '/m', loadedFiles: ['/x'] }],
+      userSavesUntouched: true,
+      // a row-8 RPG run is a session: the plain run plus the lifecycle ROM's part A and part B (S5 C3)
+      mesenChain: [plan.purpose, ...(p.result.row === 8 && p.result.gameType === 'rpg' ? ['row8-split-lc-a', 'row8-split-lc-b'] : [])].map((purpose, i) => ({ n: i + 1, spec: purpose, purpose, pid: 7 + i, status: p.result.mesenStatus, isolated: true, settingsSha256: 'a', exe: '/m', loadedFiles: ['/x'] })),
+
       emulators: { mesen: {}, jsnes: { na: 'not measured: this slice has no jsnes timing recorder; Mesen is the authoritative measurement' } },
       results: p.stamp.results,
       links: { result: `/historical/elsewhere/${p.label}.json`, log: `/historical/elsewhere/${p.label}.log`, raw: `/historical/elsewhere/${p.label}.raw.gz` },
@@ -1150,3 +1152,305 @@ for (const ring of [1, 2]) {
     assert.equal(ok.status, 'PASS', 'an entry exactly at the charged delay is inside the bound');
   });
 }
+
+// ---------------------------------------------------------------- the session (lifecycle) judge: r8:lc-return, r8:lc-coverage, and the fold into the plain stream's items
+const LCTX = { ...CTX, battleL: 159, battleBank: 0, SPL_BATTLE: 2, SPL_TITLE: 3, ST_BATTLE: 5, ring: 1, warpTarget: 56, fieldScreen: 55 };
+const FIELD = 1, OTHER = 2; // switch_prg_bank arguments: the field screen's 16 KB bank (R6/R7 = 2/3), and the warp target's (4/5); the battle bank is 0 (R6/R7 = 0/1)
+/**
+ * One synthetic session stream from frame specs { sm, gs, banks: [PSB arguments in order], marks: [kinds], r1, col, row, land: 1|3 (an NMI lands after that many writes of the LAST call), span: true (the LAST call is
+ * still open when the frame ends -- the delayed switch_prg_bank, P printed but no lock/writes yet -- and is completed at the start of the next frame, so that frame ends with the OLD pair in R6/R7), chr: chr_r1 as the boundary reads it (default 2), noirq: an armed frame whose split IRQ never arrives, cont: true (this frame
+ * only continues the open call and ends without finishing it: a call spanning several frames) }. Every frame that is not inside a call ends in a main-loop boundary (`M`, printed by the recorder on every main_loop_ready pass).
+ * Every frame is contract-obeying (an armed frame has its IRQ; a battle frame calls the battle bank and then restores the field's, exactly as call_battle does); `mutate` edits the specs first.
+ */
+function lcStream(frames, { sram = 128, done = true, error = null } = {}) {
+  const ev = [];
+  let clk = 100000;
+  const w = (addr, val, pc, sl = 100, cy = 10) => ev.push({ t: 'W', addr, val, pc, sl, cy, clk: (clk += 7) });
+  // power-on: the tileset registers are the field's (R0, R2-R5), written by the boot code (outside every known routine)
+  [[0, 0], [2, 4], [3, 5], [4, 6], [5, 7]].forEach(([reg, v]) => { w(0x8000, reg, 0x3000); w(0x8001, v, 0x3002); });
+  ev.push({ t: 'G', f: 1 });
+  let open = null; // a switch_prg_bank left open across a frame end: its argument
+  const finish = (bank) => { ev.push({ t: 'K', v: 1, clk: (clk += 5) }); w(0x8000, 6, 0x1010); w(0x8001, bank * 2, 0x1012); w(0x8000, 7, 0x1014); w(0x8001, bank * 2 + 1, 0x1016); ev.push({ t: 'K', v: 0, clk: (clk += 5) }); ev.push({ t: 'X', sl: 100, cy: 20, clk: (clk += 5) }); };
+  for (const f of frames) {
+    const sm = f.sm ?? 0, r1 = f.r1 ?? 2;
+    clk += 29000;
+    ev.push({ t: 'N', clk, sl: 241, cy: 5, ipc: 0x9000, lock: 0, sm, st: 1, vr: 0, vl: 0, r1: 2 });
+    // the NMI handler first (arm, then the IRQ at the program's line), then the main loop's switch_prg_bank calls: the order the recorder prints them in
+    ev.push({ t: 'S', sl: 245, cy: 10 }, { t: 'U', sl: 245, cy: 12 });
+    const latch = sm === 1 ? LCTX.boxL : sm === 2 ? LCTX.battleL : null;
+    w(0x8000, 1, 0x2010, 245); w(0x8001, r1, 0x2012, 245);
+    if (latch !== null) { w(0xc000, latch, 0x2014, 245); w(0xc001, latch, 0x2016, 245); w(0xe001, 0, 0x2018, 245); } else w(0xe000, 0, 0x2014, 245);
+    if (latch !== null && !f.noirq) {
+      ev.push({ t: 'I', clk: (clk += 24000), sl: latch, cy: 30, ipc: 0x9000 });
+      w(0xe000, 0, 0x2110, latch); w(0x8000, 1, 0x2112, latch); w(0x8001, LCTX.fontR1, 0x2114, latch);
+    }
+    // a landing: the frame's own record ends (its Z) and the NMI that arrives inside the call opens the next record, locked (split_lock is up inside a call)
+    const land = () => { ev.push({ t: 'Z', f: 1, st: 1, vl: 0, gs: f.gs ?? 0, sm }); ev.push({ t: 'N', clk: (clk += 9), sl: 100, cy: 20, ipc: 0x1013, lock: 1, sm, st: 1, vr: 0, vl: 0, r1: 2 }); };
+    if (open !== null && !f.cont) { finish(open); open = null; }
+    (f.cont ? [] : f.banks ?? []).forEach((bank, i, all) => {
+      ev.push({ t: 'P', a: bank, sl: 100, cy: 0, clk: (clk += 5) });
+      if (f.span && i === all.length - 1) { open = bank; return; }
+      ev.push({ t: 'K', v: 1, clk: (clk += 5) });
+      w(0x8000, 6, 0x1010);
+      if (f.land === 1 && i === all.length - 1) land(); // after 1 of the 4 writes: between R6's select and its value
+      w(0x8001, bank * 2, 0x1012); w(0x8000, 7, 0x1014);
+      if (f.land === 3 && i === all.length - 1) land(); // after 3: between R7's select and its value
+      w(0x8001, bank * 2 + 1, 0x1016);
+      ev.push({ t: 'K', v: 0, clk: (clk += 5) });
+      ev.push({ t: 'X', sl: 100, cy: 20, clk: (clk += 5) });
+    });
+    if (open === null) ev.push({ t: 'M', gs: f.gs ?? 0, r1: f.chr ?? 2, lock: f.lock ?? 0, sm, col: f.col ?? 55, row: f.row ?? 0 });
+    for (const kind of open === null ? f.marks ?? [] : []) ev.push({ t: 'L', kind, f: 1, r1: f.chr ?? 2, lock: f.lock ?? 0, gs: f.gs ?? 0, col: f.col ?? 55, row: f.row ?? 0, sm, px: 120, py: 120 });
+    ev.push({ t: 'Z', f: 1, st: 1, vl: 0, gs: f.gs ?? 0, sm });
+  }
+  return { events: ev, frames: frames.length, error, done, sram, trials: { planned: 0, consumed: 0, skipped: 0, done: 0 } };
+}
+const battleFrames = (n = 70) => Array.from({ length: n }, (_, i) => ({ sm: 2, gs: 5, banks: [0, FIELD], r1: 2, land: i === 3 ? 1 : i === 4 ? 3 : undefined, marks: i === 1 ? ['battle-in'] : i === 2 ? ['battle-mid'] : i === n - 1 ? ['battle-late'] : [] }));
+/** The whole session: part A = field, a battle, the return, a warp, a Save; part B = Continue. `mut({ A, B })` edits the frame specs. */
+function lcSession(mut = () => {}) {
+  const A = [
+    { banks: [FIELD], marks: ['field'] },
+    ...battleFrames(),
+    { banks: [FIELD], marks: ['battle-ret'] }, { marks: ['battle-out'] },
+    { banks: [OTHER], col: 56, marks: ['warp-out'] }, { col: 56, marks: ['save'] }
+  ];
+  const B = [{ banks: [OTHER], col: 56, marks: ['cont-out'] }];
+  const spec = { A, B, sram: 128 };
+  mut(spec);
+  return [lcStream(spec.A, { sram: spec.sram }), lcStream(spec.B, {})];
+}
+const lcItems = (mut) => { const [a, b] = lcSession(mut); const r = judgeLifecycle(a, b, LCTX); return Object.fromEntries(r.items.map((i) => [i.id, i])); };
+const lcMark = (spec, kind) => spec.A.find((f) => f.marks?.includes(kind)) ?? spec.B.find((f) => f.marks?.includes(kind));
+test('judgeLifecycle: the contract-obeying session passes r8:lc-return and r8:lc-coverage', () => {
+  const it = lcItems();
+  assert.equal(it['r8:lc-return'].status, 'PASS', it['r8:lc-return'].detail);
+  assert.equal(it['r8:lc-coverage'].status, 'PASS', it['r8:lc-coverage'].detail);
+});
+test('judgeLifecycle r8:lc-return: a battle whose restore is lost (the window left on the battle bank at a battle frame\'s end) fails it', () => {
+  const it = lcItems((s) => { for (const f of s.A) if (f.sm === 2) f.banks = [0]; });
+  assert.equal(it['r8:lc-return'].status, 'FAIL');
+  assert.match(it['r8:lc-return'].detail, /battle-mid.*not the field's/);
+});
+test('judgeLifecycle r8:lc-return: the pair after the fight, after the warp, and after Continue each fail it when wrong', () => {
+  assert.match(lcItems((s) => { lcMark(s, 'battle-out').banks = [0]; })['r8:lc-return'].detail, /battle-out: the PRG pair 0,1 is not the field's 2,3/);
+  assert.match(lcItems((s) => { lcMark(s, 'warp-out').banks = [0]; })['r8:lc-return'].detail, /warp-out: the window still holds the battle bank/);
+  assert.match(lcItems((s) => { lcMark(s, 'cont-out').banks = [FIELD]; })['r8:lc-return'].detail, /cont-out: the PRG pair 2,3 is not the one the saved session ended with 4,5/);
+  assert.equal(lcItems((s) => { lcMark(s, 'cont-out').banks = [FIELD]; })['r8:lc-return'].status, 'FAIL');
+});
+// ---- the return boundary (review 1 of C3): the restore is judged where call_battle has returned, never at an arbitrary frame end
+const lcFails = (mut, re, why) => { const it = lcItems(mut)['r8:lc-return']; assert.equal(it.status, 'FAIL', why); assert.match(it.detail, re, why); };
+test('judgeLifecycle r8:lc-return: a wrong IMMEDIATE return that battle-out later repairs fails (the review\'s repro 2: the field pair is restored only 60 frames on)', () => {
+  const mut = (s) => { lcMark(s, 'battle-ret').banks = [0]; lcMark(s, 'battle-out').banks = [FIELD]; };
+  lcFails(mut, /battle return \(the first main-loop pass after the fight\): the PRG pair 0,1 is not the field's 2,3/, 'the first boundary after the fight');
+  lcFails(mut, /battle-ret: the PRG pair 0,1 is not the field's 2,3/, 'the battle-ret mark');
+  assert.equal(lcItems(mut)['r8:lc-coverage'].status, 'PASS', 'the session itself did everything: only the verdict differs');
+  // the same hole with NO mark on that frame: the boundary alone catches it
+  lcFails((s) => { const r = lcMark(s, 'battle-ret'); r.marks = r.marks.filter((k) => k !== 'battle-ret'); r.banks = [0]; s.A.find((x) => x.marks?.includes('battle-out')).banks = [FIELD]; }, /battle return \(the first main-loop pass after the fight\): the PRG pair 0,1/, 'an unmarked immediate return');
+});
+test('judgeLifecycle r8:lc-return: the immediate return carries its CHR obligations too (chr_r1, R1 on the tileset page, the tileset registers, the screen)', () => {
+  lcFails((s) => { lcMark(s, 'battle-ret').chr = 3; lcMark(s, 'battle-ret').r1 = 3; }, /battle return \(the first main-loop pass after the fight\): chr_r1 3 is not the field's 2/, 'chr_r1');
+  lcFails((s) => { lcMark(s, 'battle-ret').r1 = LCTX.fontR1; s.A.find((f) => f.marks?.includes('battle-out')).r1 = 2; }, /battle return \(the first main-loop pass after the fight\): R1 10 is not chr_r1 2/, 'R1 stuck on the font page with the split program off');
+  lcFails((s) => { lcMark(s, 'battle-ret').col = 54; }, /battle return \(the first main-loop pass after the fight\): back on screen 54,0/, 'the screen');
+  const [a, b] = lcSession();
+  const i = a.events.findIndex((e) => e.t === 'M' && e.gs === 0 && a.events.slice(0, a.events.indexOf(e)).some((x) => x.t === 'M' && x.gs === LCTX.ST_BATTLE)); // the first boundary after the fight
+  a.events.splice(i, 0, { t: 'W', addr: 0x8000, val: 3, pc: 0x3000, sl: 100, cy: 10, clk: 1e9 }, { t: 'W', addr: 0x8001, val: 9, pc: 0x3002, sl: 100, cy: 10, clk: 1e9 + 1 });
+  const r = judgeLifecycle(a, b, LCTX).items[0];
+  assert.equal(r.status, 'FAIL'); assert.match(r.detail, /battle return \(the first main-loop pass after the fight\): the tileset registers/);
+});
+test('judgeLifecycle r8:lc-return: one isolated battle boundary that lacks the field restore fails although every later boundary is restored (the review\'s repro 3)', () => {
+  lcFails((s) => { const f = s.A.filter((x, i) => x.sm === 2 && !x.marks?.length && i > 20)[0]; f.banks = [0]; }, /battle boundary \d+\/\d+: the switchable window holds R6\/R7 = 0\/1 after call_battle returned, not the field's 2,3/, 'one unmarked battle frame');
+  // and the first and the last battle boundary, which sit next to a mark
+  lcFails((s) => { s.A.filter((x) => x.sm === 2)[0].banks = [0]; }, /battle boundary 1\/\d+/, 'the first boundary');
+  lcFails((s) => { const b = s.A.filter((x) => x.sm === 2); b[b.length - 1].banks = [0]; }, /battle boundary \d+\/\d+/, 'the last boundary');
+});
+test('judgeLifecycle r8:lc-return: every boundary from the first return to battle-out is judged, not only the marked ones', () => {
+  lcFails((s) => { s.A.splice(s.A.findIndex((f) => f.marks?.includes('battle-out')), 0, { banks: [0], r1: 2 }); s.A.splice(s.A.findIndex((f) => f.marks?.includes('battle-out')), 0, { banks: [FIELD] }); }, /battle return boundary 2\/\d+: the PRG pair 0,1 is not the field's/, 'a wrong boundary between battle-ret and battle-out that is repaired before the mark');
+});
+test('judgeLifecycle r8:lc-return: a frame that ENDS inside a delayed switch_prg_bank is legitimate and passes (parts of the retained positives: frame ends with the old pair, split_lock still 0)', () => {
+  // the review\'s evidence: part A frames 217/220/223/226 of s1c-r8-MMC3-H-rpg-banked end with R6/R7 = 0/1 while the switch to the field bank is open and has written nothing; the next frame completes it
+  const mut = (s) => {
+    const bat = s.A.filter((f) => f.sm === 2 && !f.marks?.length);
+    for (const i of [10, 20, 30]) bat[i].span = true; // ends inside the call, completed by the next frame
+    bat[40].span = true; bat[41].cont = true; bat[42].cont = true; // a call that stays open over three frame ends
+  };
+  const it = lcItems(mut);
+  assert.equal(it['r8:lc-return'].status, 'PASS', it['r8:lc-return'].detail);
+  assert.equal(it['r8:lc-coverage'].status, 'PASS', it['r8:lc-coverage'].detail);
+  // and the stream really holds such frame ends: Z records taken while R6/R7 is the battle pair and a call is open
+  const [a] = lcSession(mut);
+  const an = analyze(a, LCTX);
+  assert.ok(an.recs.filter((r) => r.z && r.z.R[6] === 0 && r.z.R[7] === 1 && r.z.gs === LCTX.ST_BATTLE).length >= 5, 'frame ends with the battle pair still in the window');
+  // an in-flight frame end that is NOT followed by the restore (the call is never completed) still fails at the next boundary
+  lcFails((s) => { const bat = s.A.filter((f) => f.sm === 2 && !f.marks?.length); bat[10].banks = [0]; bat[10].span = false; bat[11].banks = [0]; }, /battle boundary/, 'a lost restore is still a lost restore');
+});
+// ---- fix 1b: every check of judgeLifecycle has a unit that fails it ALONE (handoff-next/s5-c3/judge-sweep-fix1b.mjs deletes each ok(...) / need.push(...) in turn and requires a failing test).
+// (an armed battle frame's split IRQ writes the font page to R1 at the end of the frame: a stray R1 is injected with noirq.) A mutation is shaped so that the check under test is among the first three messages (the item's detail lists three).
+const wr = (reg, val) => [{ t: 'W', addr: 0x8000, val: reg, pc: 0x3000, sl: 100, cy: 10, clk: 1e9 }, { t: 'W', addr: 0x8001, val, pc: 0x3002, sl: 100, cy: 10, clk: 1e9 + 1 }];
+/** writes spliced into a stream just before its first event satisfying `pred` */
+const injectBefore = (stream, pred, writes) => { stream.events.splice(stream.events.findIndex(pred), 0, ...writes); };
+const isMark = (kind) => (e) => e.t === 'L' && e.kind === kind;
+const firstAfterFight = (stream) => { let seenBattle = false; return stream.events.findIndex((e) => { if (e.t === 'M' && e.gs === LCTX.ST_BATTLE) seenBattle = true; return seenBattle && e.t === 'M' && e.gs !== LCTX.ST_BATTLE; }); };
+const lcFailsStream = (mut, re, why) => { const [a, b] = lcSession(); mut(a, b); const it = judgeLifecycle(a, b, LCTX).items[0]; assert.equal(it.status, 'FAIL', why); assert.match(it.detail, re, why); };
+const battleFrame = (s, n) => s.A.filter((f) => f.sm === 2 && !f.marks?.length)[n];
+test('fix 1b, marks: an incoherent pair, R1 off the tileset page, game_state or split_mode wrong at the field / warp / Save / Continue marks each fail alone', () => {
+  lcFailsStream((a) => injectBefore(a, isMark('save'), wr(7, 9)), /save: PRG pair incoherent/, 'common: coherent pair at a mark');
+  lcFails((s) => { lcMark(s, 'save').r1 = LCTX.fontR1; }, /save: R1 10 is not chr_r1 2/, 'common: R1 at a mark');
+  lcFails((s) => { lcMark(s, 'field').gs = 1; }, /field: game_state 1/, 'field game_state');
+  lcFails((s) => { lcMark(s, 'field').sm = 1; }, /field: split_mode 1 on an idle field/, 'field split_mode');
+  lcFails((s) => { Object.assign(lcMark(s, 'warp-out'), { gs: 1 }); }, /warp-out: game_state 1, split_mode 0/, 'warp-out game_state');
+  lcFails((s) => { lcMark(s, 'warp-out').chr = 3; }, /warp-out: chr_r1 3 is not the field's 2/, 'warp-out chr_r1');
+  lcFails((s) => { lcMark(s, 'save').gs = 1; }, /save: game_state 1/, 'save game_state');
+  lcFails((s) => { lcMark(s, 'save').chr = 3; }, /save: tileset registers .* chr_r1 3 are not the field's/, 'save chr_r1');
+  lcFailsStream((a) => injectBefore(a, isMark('save'), wr(2, 8)), /save: tileset registers/, 'save tileset registers');
+  lcFails((s) => { lcMark(s, 'cont-out').gs = 1; }, /cont-out: game_state 1, split_mode 0/, 'cont-out game_state');
+  lcFails((s) => { lcMark(s, 'cont-out').sm = 1; }, /cont-out: game_state 0, split_mode 1/, 'cont-out split_mode');
+  lcFails((s) => { lcMark(s, 'cont-out').chr = 3; }, /cont-out: tileset registers .* chr_r1 3 are not the field's/, 'cont-out chr_r1');
+  lcFailsStream((a, b) => injectBefore(b, isMark('cont-out'), wr(4, 9)), /cont-out: tileset registers/, 'cont-out tileset registers');
+});
+test('fix 1b, the battle marks: game_state, split_mode, split_lock and R1 at battle-mid each fail alone', () => {
+  lcFails((s) => { lcMark(s, 'battle-mid').gs = 0; }, /battle-mid: game_state 0, not ST_BATTLE/, 'game_state');
+  lcFails((s) => { lcMark(s, 'battle-mid').sm = 1; }, /battle-mid: split_mode 1, the engine did not select SPL_BATTLE/, 'split_mode');
+  lcFails((s) => { lcMark(s, 'battle-mid').lock = 1; }, /battle-mid: split_lock 1/, 'split_lock');
+  lcFails((s) => { Object.assign(lcMark(s, 'battle-mid'), { r1: 7, noirq: true }); }, /battle-mid: R1 7 is neither chr_r1 2 nor the font 10/, 'R1');
+});
+test('fix 1b, every battle boundary: a split_lock left up or R1 on a stray page at one unmarked boundary fails alone (the orchestrator\'s two survivors)', () => {
+  lcFails((s) => { battleFrame(s, 5).lock = 1; }, /battle boundary \d+\/\d+: split_lock 1/, 'lock at one boundary');
+  lcFails((s) => { Object.assign(battleFrame(s, 5), { r1: 7, noirq: true }); }, /battle boundary \d+\/\d+: R1 7 is neither chr_r1 2 nor the font 10/, 'R1 at one boundary');
+  // the font page at a battle boundary is legitimate (a split IRQ that fired before the main thread got here)
+  const ok1 = lcItems((s) => { battleFrame(s, 5).r1 = LCTX.fontR1; });
+  assert.equal(ok1['r8:lc-return'].status, 'PASS', ok1['r8:lc-return'].detail);
+});
+test('fix 1b, the return after the fight: split_lock, an incoherent pair, game_state and the split program each fail alone', () => {
+  const first = /battle return \(the first main-loop pass after the fight\): /;
+  lcFails((s) => { lcMark(s, 'battle-ret').lock = 1; }, new RegExp(first.source + 'split_lock 1'), 'restored: lock');
+  lcFailsStream((a) => a.events.splice(firstAfterFight(a), 0, ...wr(7, 5)), new RegExp(first.source + 'PRG pair incoherent'), 'restored: coherent');
+  lcFails((s) => { lcMark(s, 'battle-ret').gs = 1; }, new RegExp(first.source + 'game_state 1'), 'restored: game_state');
+  lcFails((s) => { lcMark(s, 'battle-out').sm = 1; }, /battle-out: split_mode 1/, 'battle-out split_mode');
+  lcFails((s) => { lcMark(s, 'battle-ret').sm = 1; }, /battle-ret: split_mode 1/, 'battle-ret split_mode');
+});
+test('fix 1b, coverage: too few battle boundaries, no boundary after the fight, too few split IRQs, too few switch_prg_bank calls each fail alone', () => {
+  const cov = (mut, re) => { const c = lcItems(mut)['r8:lc-coverage']; assert.equal(c.status, 'FAIL'); assert.match(c.detail, re); };
+  cov((s) => { s.A.filter((f) => f.sm === 2 && !f.marks?.length).slice(10, 30).forEach((f) => { f.gs = 0; }); }, /main-loop return boundaries in the battle 50 < 60/);
+  cov((s) => { s.A.length = s.A.map((f) => f.sm).lastIndexOf(2) + 1; }, /no main-loop return boundary after the fight/);
+  cov((s) => { s.A.filter((f) => f.sm === 2).forEach((f) => { f.noirq = true; }); }, /split IRQs in battle frames 0 < 40/);
+  cov((s) => { s.A.filter((f) => f.sm === 2 && !f.marks?.length).slice(10).forEach((f) => { f.banks = []; }); }, /switch_prg_bank calls during the battle 26 < 40/);
+});
+test('judgeLifecycle r8:lc-return: warp/Save/Continue on one coherent non-battle pair is not the judge\'s to refute (it does not know a screen\'s bank; r8:prg-window holds the pair to the latest switch\'s argument)', () => {
+  const it = lcItems((s) => { lcMark(s, 'warp-out').banks = [3]; s.B[0].banks = [3]; });
+  assert.equal(it['r8:lc-return'].status, 'PASS');
+});
+test('judgeLifecycle r8:lc-return: R1 left on the font (r1-stuck-font), a split_lock left up, or an odd/incoherent pair at a mark fails it', () => {
+  const stuck = lcItems((s) => { lcMark(s, 'battle-out').r1 = LCTX.fontR1; });
+  assert.equal(stuck['r8:lc-return'].status, 'FAIL'); assert.match(stuck['r8:lc-return'].detail, /battle-out: R1 10 is not chr_r1 2/);
+  const locked = lcItems((s) => { lcMark(s, 'warp-out').lock = 1; });
+  assert.equal(locked['r8:lc-return'].status, 'FAIL'); assert.match(locked['r8:lc-return'].detail, /warp-out: split_lock 1/);
+  const odd = lcItems((s) => { lcMark(s, 'save').banks = [FIELD]; }); // a call whose pair is not [R6 even, R7 = R6 + 1] cannot be built by banks; corrupt R7 below
+  void odd;
+});
+test('judgeLifecycle r8:lc-return: a tileset register changed across the warp, or a wrong landing screen, fails it', () => {
+  const [a, b] = lcSession();
+  // an R2 rewrite (a stray tileset register) before the warp mark: inject a write into the warp frame's record
+  const idx = a.events.findIndex((e) => e.t === 'L' && e.kind === 'warp-out');
+  a.events.splice(idx, 0, { t: 'W', addr: 0x8000, val: 2, pc: 0x3000, sl: 100, cy: 10, clk: 1e9 }, { t: 'W', addr: 0x8001, val: 8, pc: 0x3002, sl: 100, cy: 10, clk: 1e9 + 1 });
+  const r = judgeLifecycle(a, b, LCTX).items[0];
+  assert.equal(r.status, 'FAIL'); assert.match(r.detail, /warp-out: the tileset registers/);
+  assert.match(lcItems((s) => { lcMark(s, 'warp-out').col = 3; })['r8:lc-return'].detail, /warp-out: landed on screen 3, the doorway warps to 56/);
+  assert.match(lcItems((s) => { lcMark(s, 'cont-out').col = 55; })['r8:lc-return'].detail, /cont-out: Continue landed on screen 55,0, the Save was made on 56,0/);
+});
+test('judgeLifecycle r8:lc-return: a session with no mark at all is UNMEASURED, never a pass', () => {
+  const a = lcStream([{ banks: [FIELD] }]), b = lcStream([{ banks: [FIELD] }]);
+  const it = judgeLifecycle(a, b, LCTX).items;
+  assert.equal(it[0].status, 'UNMEASURED');
+  assert.equal(it[1].status, 'FAIL');
+});
+test('judgeLifecycle r8:lc-coverage: each thing the session must have done is a failure when it did not happen (the non-vacuity of the session)', () => {
+  const cov = (mut, opts) => lcItems(mut)['r8:lc-coverage'];
+  const bad = (mut, re) => { const c = cov(mut); assert.equal(c.status, 'FAIL'); assert.match(c.detail, re); };
+  bad((s) => { s.A = s.A.filter((f) => !f.marks?.includes('warp-out')); }, /no warp-out mark/);
+  bad((s) => { s.sram = 0; }, /the Save wrote 0 battery RAM bytes/);
+  bad((s) => { s.B = []; s.B.push({ banks: [OTHER] }); }, /no cont-out mark/);
+  bad((s) => { s.A = s.A.filter((f) => f.sm !== 2 || f.marks?.length); }, /SPL_BATTLE armed frames in battle \d+ < 60/);
+  bad((s) => { for (const f of s.A) if (f.sm === 2) f.banks = [FIELD]; }, /switch_prg_bank\(BATTLE_BANK = 0\) calls during the battle 0 < 20/);
+  bad((s) => { for (const f of s.A) delete f.land; }, /NMI landings between the select and the value of R6 inside a battle call 0 < 1/);
+  bad((s) => { for (const f of s.A) if (f.land === 3) delete f.land; }, /NMI landings between the select and the value of R7 inside a battle call 0 < 1/);
+  assert.equal(cov(() => {}).status, 'PASS');
+  const [a, b] = lcSession();
+  assert.match(judgeLifecycle({ ...a, done: false }, b, LCTX).items[1].detail, /part A did not finish/);
+  assert.match(judgeLifecycle(a, { ...b, error: 'never reached ST_GAMEPLAY' }, LCTX).items[1].detail, /part B did not finish: never reached ST_GAMEPLAY/);
+});
+test('judgeLifecycle: a session stream folds into judgeSplit with the title and forced-blank frames excluded, and its own coverage skipped', () => {
+  const [a] = lcSession();
+  const items = judgeSplit(a, LCTX, { lifecycle: true });
+  assert.ok(!items.some((i) => i.id === 'r8:coverage'), 'a session stream\'s coverage is r8:lc-coverage');
+  assert.deepEqual(items.filter((i) => i.status !== 'PASS').map((i) => `${i.id}=${i.status}`), []);
+  // a split_mode program that is neither SPL_BOX, SPL_BATTLE nor excluded fails the arm grammar
+  const bad = lcStream([{ sm: 1, banks: [FIELD] }, { sm: 2 }]);
+  bad.events.find((e) => e.t === 'N' && e.sm === 2).sm = 7;
+  assert.equal(judgeSplit(bad, LCTX, { lifecycle: true }).find((i) => i.id === 'r8:arm-grammar').status, 'FAIL');
+  // the title program (SPL_TITLE) and a frame with the picture off are not judged against the box/battle grammar
+  const t = lcStream([{ sm: 1, banks: [FIELD] }, { sm: 3 }, { sm: 0 }]);
+  const tn = t.events.filter((e) => e.t === 'N')[1];
+  tn.sm = 3;
+  const kept = judgeSplit(t, LCTX, { lifecycle: true }).find((i) => i.id === 'r8:irq-count');
+  assert.notEqual(kept.status, 'FAIL', kept.detail);
+  assert.equal(judgeSplit(t, LCTX).find((i) => i.id === 'r8:arm-grammar').status, 'FAIL', 'the same stream judged as a plain one rejects the title program');
+});
+test('foldLifecycle: a failing session fails the shared item, an unmeasured one never weakens a pass, an unsound session fails the run items', () => {
+  const plain = [{ id: 'run:exit', status: 'PASS', detail: 'p' }, { id: 'r8:lock', status: 'PASS', detail: 'p' }, { id: 'r8:prg-group', status: 'PASS', detail: 'p' }, { id: 'r8:coverage', status: 'PASS', detail: 'cov' }];
+  const sess = (o) => ({ A: [{ id: 'run:exit', status: 'PASS', detail: 'a' }, { id: 'r8:lock', status: 'PASS', detail: 'a' }, { id: 'r8:prg-group', status: 'PASS', detail: 'a' }, { id: 'r8:coverage', status: 'FAIL', detail: 'x' }], B: [{ id: 'run:exit', status: 'PASS', detail: 'b' }, { id: 'r8:lock', status: 'UNMEASURED', detail: 'b' }, { id: 'r8:prg-group', status: 'UNMEASURED', detail: 'b' }], ...o });
+  const st = (items) => Object.fromEntries(items.map((i) => [i.id, i.status]));
+  assert.deepEqual(st(foldLifecycle(plain, sess())), { 'run:exit': 'PASS', 'r8:lock': 'PASS', 'r8:prg-group': 'PASS', 'r8:coverage': 'PASS' });
+  assert.equal(st(foldLifecycle(plain, sess({ A: [{ id: 'r8:prg-group', status: 'FAIL', detail: 'a' }] })))['r8:prg-group'], 'FAIL');
+  assert.equal(st(foldLifecycle(plain, sess({ B: [{ id: 'run:exit', status: 'FAIL', detail: 'b' }] })))['run:exit'], 'FAIL');
+  assert.equal(st(foldLifecycle(plain, sess({ B: [{ id: 'run:exit', status: 'UNMEASURED', detail: 'b' }] })))['run:exit'], 'FAIL', 'a run item a session stream did not PASS is a failure');
+  assert.equal(st(foldLifecycle([{ ...plain[1], status: 'FAIL' }], sess()))['r8:lock'], 'FAIL', 'the plain stream\'s own failure stays');
+  assert.match(foldLifecycle(plain, sess())[1].detail, /session A: PASS/);
+});
+test('row 8 on an RPG build holds 15 items, on an action build 13: the two lifecycle items are required exactly on RPG', () => {
+  assert.equal(requiredItems(8, 'action').length, 13);
+  assert.equal(requiredItems(8, 'rpg').length, 15);
+  assert.deepEqual(requiredItems(8, 'rpg').slice(13), ['r8:lc-return', 'r8:lc-coverage']);
+  for (const row of [5, 6]) assert.deepEqual(requiredItems(row, 'rpg'), REQUIRED_ITEMS[row]);
+  // the audit holds an RPG row-8 result to the 15, and an action one to the 13
+  const rpg = s1cPair({ row: 8, cell: 'MMC3-H', gt: 'rpg', pl: 'banked' });
+  assert.deepEqual(problems(rpg), []);
+  const lacking = s1cPair({ row: 8, cell: 'MMC3-H', gt: 'rpg', pl: 'banked', items: itemsOf(8, undefined, 'action') });
+  assert.ok(problems(lacking).some((p) => /required item\(s\) absent: r8:lc-return, r8:lc-coverage/.test(p)), problems(lacking).join('; '));
+  const extra = s1cPair({ row: 8, cell: 'MMC3-H', gt: 'action', pl: 'resident', items: itemsOf(8, undefined, 'rpg') });
+  assert.ok(problems(extra).some((p) => /outside row 8's declared set: r8:lc-return, r8:lc-coverage/.test(p)), problems(extra).join('; '));
+});
+test('the session controls: declared on the MMC3 cells\' RPG builds only (resident and banked), each failing exactly the item its sabotage names, the plain stream built unsabotaged', () => {
+  for (const id of ['split-bank-restore-lost', 'split-lc-skip-warp']) {
+    assert.deepEqual(controlBuilds(id), [['rpg', 'resident'], ['rpg', 'banked']], id);
+    assert.equal(SPLIT_SABOTAGES[CONTROLS[id].arg].lifecycleOnly, true, id);
+    for (const ring of [1, 2]) assert.equal(declaredFor(id, ring).outcome, 'caught', id);
+    assert.equal(decodeLabel(controlLabel(id, 'MMC3-H', 'action', 'resident')), null, 'an action build has no session');
+    assert.ok(decodeLabel(controlLabel(id, 'MMC3-V', 'rpg', 'resident')));
+    assert.equal(decodeLabel(controlLabel(id, 'MMC1-H', 'rpg', 'banked')), null, 'row 8 is MMC3-only');
+  }
+  assert.deepEqual(SPLIT_SABOTAGES['bank-restore-lost'].declared, ['r8:lc-return']);
+  assert.deepEqual(SPLIT_SABOTAGES['lc-skip-warp'].declared, ['r8:lc-coverage']);
+  // the engine edit still applies to the stock source exactly once
+  const src = fs.readFileSync(path.join(ROOT, 'engine/screens.asm'), 'utf8');
+  const edited = SPLIT_SABOTAGES['bank-restore-lost'].edit(src);
+  assert.notEqual(edited, src);
+  assert.equal(src.length - edited.length, '  jsr sw_locate_current\n'.length);
+});
+
+test('S5 C3: a row-8 RPG stamp retains the three-invocation session (plain run, lifecycle part A, part B) and names its lifecycle ROM; every other run retains exactly its one invocation and no lifecycle', () => {
+  const rpg = s1cPair({ row: 8, cell: 'MMC3-H', gt: 'rpg', pl: 'banked' }), act = s1cPair({ row: 8, cell: 'MMC3-H' }), r5 = s1cPair({ row: 5, cell: 'MMC3-H', gt: 'rpg' });
+  const audit = (pairs, edit) => {
+    const c = certDir(pairs);
+    try {
+      if (edit) for (const [f, fn] of Object.entries(edit)) { const file = path.join(c.prov, `${f}.json`); const st = JSON.parse(fs.readFileSync(file, 'utf8')); fn(st); fs.writeFileSync(file, JSON.stringify(st)); }
+      return auditProvenance(c.prov, c.logs, { construct: true }).problems;
+    } finally { c.done(); }
+  };
+  assert.deepEqual(audit([rpg, act, r5]), [], 'a session, an action row-8 run and an RPG row-5 run each audit clean');
+  assert.ok(audit([rpg], { [rpg.label]: (st) => { st.mesenChain = st.mesenChain.slice(0, 1); } }).some((m) => /exactly its 3 Mesen invocation/.test(m)), 'a session with only its plain invocation');
+  assert.ok(audit([rpg], { [rpg.label]: (st) => { st.mesenChain.reverse(); } }).some((m) => /exactly its 3 Mesen invocation/.test(m)), 'out of order');
+  assert.ok(audit([rpg], { [rpg.label]: (st) => { delete st.plan.lifecycle; st.plan.sha256 = sha256(JSON.stringify((({ sha256: _s, ...q }) => q)(st.plan))); } }).some((m) => /does not name its lifecycle ROM/.test(m)), 'no lifecycle ROM named');
+  assert.ok(audit([rpg], { [rpg.label]: (st) => { st.plan.lifecycle.romSha256 = st.romSha256; st.plan.sha256 = sha256(JSON.stringify((({ sha256: _s, ...q }) => q)(st.plan))); } }).some((m) => /does not name its lifecycle ROM/.test(m)), 'the lifecycle ROM is the plain ROM');
+  assert.ok(audit([act], { [act.label]: (st) => { st.plan.lifecycle = { romSha256: H64b, luaSha256: H64, purposes: [] }; st.plan.sha256 = sha256(JSON.stringify((({ sha256: _s, ...q }) => q)(st.plan))); } }).some((m) => /only a row-8 RPG session carries a lifecycle/.test(m)), 'a lifecycle on an action stamp');
+  assert.ok(audit([r5], { [r5.label]: (st) => { st.mesenChain.push({ ...st.mesenChain[0], n: 2, purpose: 'row8-split-lc-a', spec: 'row8-split-lc-a' }); } }).some((m) => /exactly its 1 Mesen invocation/.test(m)), 'a second invocation on a row-5 run');
+});
