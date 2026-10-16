@@ -864,6 +864,38 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       'resize map (shrink) audit-UI wiring',
       'confirmation showed the real reference count (3, not the discarded screen count 1), and Cancel committed nothing'
     );
+
+    // The dialog is not modal to Undo (Ctrl+Z reaches the store from the focused button): undo the doors while the
+    // confirmation is open, then click Resize. The stale answer must commit nothing (review round 3, P2).
+    const staleDepth = () => mapStore.undoStack.length;
+    const depthBeforeStale = staleDepth();
+    const staleInputs = () => [...document.querySelectorAll('#mapSettingsPanel input[type=number]')];
+    staleInputs()[0].value = '1';
+    staleInputs()[0].dispatchEvent(new Event('change', { bubbles: true }));
+    await until('the stale-resize confirmation', () => document.querySelector('#modalHost p') && !document.querySelector('#modalHost').hidden);
+    mapStore.undo(); // removes the three doors the dialog was counting
+    await wait(200);
+    if (mapStore.project.sprites.actors.length !== 0) throw new Error('the stale-resize setup did not undo the doors');
+    const staleAfterUndo = JSON.stringify(mapStore.project);
+    const depthAfterUndo = staleDepth();
+    const staleResizeButton = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Resize');
+    if (!staleResizeButton) throw new Error('the stale-resize confirmation has no Resize button');
+    staleResizeButton.click();
+    await until('the stale-resize confirmation to close', () => document.querySelector('#modalHost').hidden);
+    await wait(200);
+    if (JSON.stringify(mapStore.project) !== staleAfterUndo) throw new Error('a stale Resize changed the project');
+    if (staleDepth() !== depthAfterUndo) throw new Error('a stale Resize left an undo entry');
+    if (mapStore.project.maps[shrinkerIndex].gridW !== 2) throw new Error('a stale Resize shrank the map');
+    if (!/project changed/.test((document.querySelector('#mapSettingsPanel') || {}).textContent || '')) {
+      throw new Error('a stale Resize left no note in the settings panel');
+    }
+    mapStore.redo(); // the doors come back, so the cleanup below undoes exactly what it expects
+    await wait(200);
+    if (staleDepth() !== depthBeforeStale) throw new Error('redo did not restore the undo stack after the stale Resize (a commit cleared it)');
+    step(
+      'resize map stale confirmation',
+      'undo while the confirmation was open, then Resize: nothing committed, the project and undo depth unchanged, a note in the settings panel, redo intact'
+    );
   }
 
   store.undo();
@@ -1037,6 +1069,241 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     if (mapStore.project.maps.length !== 1 || mapStore.project.maps[0].screens.length !== 1) {
       throw new Error('the all-full smoke setup did not fully undo, leaving stray state for the rest of this section');
     }
+  }
+
+  // --- Map Forge: streamed maps (ROADMAP item 15 phase 4 C1: the Streamed checkbox, the size fields, Duplicate
+  // screen; docs/design-streamed-worlds-phase4.md). Driven from the same 1-map, 1x1 baseline the duplicate-screen
+  // matrix just restored, on MMC3 + horizontal mirroring + camera (a board that streams as a single column), and
+  // undone back to that baseline at the end. Note this scenario is a template string: no backticks, no dollar-brace.
+  {
+    const s = window.__app.store;
+    const depth = () => s.undoStack.length;
+    const baseDepth = depth();
+    const baselineJson = JSON.stringify(s.project);
+    const toggleBox = () => document.querySelector('#mapSettingsPanel [data-streamed-toggle]');
+    const sizeBoxes = () => [...document.querySelectorAll('#mapSettingsPanel input[type=number]')];
+    const refusalText = () => (document.querySelector('#mapSettingsPanel .map-streamed-refusal') || {}).textContent || '';
+    // Every wait below is on the state the step expects, never on a guessed delay: goTo is awaited (it returns the
+    // Forge selection's own promise) and the Forge's controls are then waited for.
+    const act = async (what, fire, condition) => {
+      fire();
+      await until('streamed: ' + what, condition);
+    };
+    const setSize = (input, value) => {
+      input.value = String(value);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const typeInto = (input, value, what, condition) => act(what, () => setSize(input, value), condition);
+    const clickToggle = (what, condition) => act(what, () => toggleBox().click(), condition);
+    const showMap = async () => {
+      await window.__app.goTo('map');
+      await until('streamed: the Map Forge settings', () => toggleBox());
+    };
+    const showBuild = async () => {
+      await window.__app.goTo('build');
+      await until('streamed: the Build panel', () => [...document.querySelectorAll('#stage select')].length > 1);
+    };
+    const undoTo = async (target, what) => {
+      while (depth() > target) s.undo();
+      await until('streamed: ' + what, () => toggleBox());
+    };
+    // A refusal must leave the project, the undo stack and the dirty flag alone: the flag is cleared first (a commit
+    // would set it) and put back after.
+    const expectRefusal = async (what, fire, text) => {
+      const before = JSON.stringify(s.project);
+      const depthBefore = depth();
+      const wasDirty = s.dirty;
+      s.dirty = false;
+      await act(what, fire, () => refusalText().includes(text));
+      if (JSON.stringify(s.project) !== before) throw new Error('streamed: ' + what + ' changed the project');
+      if (depth() !== depthBefore) throw new Error('streamed: ' + what + ' left an undo entry (phantom edit)');
+      if (s.dirty !== false) throw new Error('streamed: ' + what + ' marked the project dirty');
+      s.dirty = wasDirty;
+    };
+    const blankScreen = () => ({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+    const ordinaryMapLiteral = (name, w, h) => ({
+      id: s.project.maps.length,
+      name,
+      gridW: w,
+      gridH: h,
+      screens: Array.from({ length: w * h }, blankScreen),
+      songId: null,
+      tilesetId: 0,
+      battleSkyTile: 0,
+      battleGroundTile: 0,
+      encounters: { rate: 0, actorIds: [] }
+    });
+    const cancelModal = async (what) => {
+      const cancel = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Cancel');
+      if (!cancel) throw new Error(what + ': the modal has no Cancel button');
+      cancel.click();
+      await until(what + ': the modal to close', () => document.querySelector('#modalHost').hidden);
+    };
+
+    s.commit('smoke streamed: MMC3, horizontal mirroring, camera on', (project) => {
+      project.cartridge.mapper = 4;
+      project.cartridge.mirroring = 'horizontal';
+      project.cartridge.camera = true;
+    });
+    await showMap();
+
+    // 1. The checkbox exists, is unchecked on an ordinary 1x1, and one click is exactly one commit that undo reverses.
+    if (!toggleBox()) throw new Error('streamed: the Map Forge has no Streamed checkbox');
+    if (toggleBox().checked || toggleBox().disabled) throw new Error('streamed: an ordinary map on MMC3 horizontal should show Streamed unchecked and enabled');
+    const depthBeforeOn = depth();
+    await clickToggle('the first tick', () => s.project.maps[0].streamed === true && toggleBox().checked);
+    if (depth() !== depthBeforeOn + 1) throw new Error('streamed: turning Streamed on must be exactly one undo entry, saw ' + (depth() - depthBeforeOn));
+    s.undo();
+    await until('streamed: undo to unstream the box', () => !('streamed' in s.project.maps[0]) && !toggleBox().checked);
+    await clickToggle('the second tick', () => s.project.maps[0].streamed === true && toggleBox().checked);
+    // ...and a turn-on the validator refuses (2x2 on a board whose dead axis is the width; the camera off) shows its
+    // reason inline and changes nothing: not the project, not the undo stack, not the dirty flag.
+    s.undo();
+    await until('streamed: undo to the ordinary 1x1', () => !('streamed' in s.project.maps[0]) && !toggleBox().checked);
+    const depthBeforeRefusedOn = depth();
+    s.commit('smoke streamed: a 2x2 ordinary map', (project) => {
+      project.maps[0].gridW = 2;
+      project.maps[0].gridH = 2;
+      project.maps[0].screens = Array.from({ length: 4 }, blankScreen);
+    });
+    await showMap();
+    await expectRefusal('a refused turn-on of a 2x2', () => toggleBox().click(), '2 screens wide');
+    if (s.project.maps[0].streamed === true || toggleBox().checked) throw new Error('streamed: the refused turn-on left the box ticked');
+    await undoTo(depthBeforeRefusedOn, 'undo to the ordinary 1x1');
+    s.commit('smoke streamed: camera off', (project) => {
+      project.cartridge.camera = false;
+    });
+    await showMap();
+    await expectRefusal('a refused turn-on with the camera off', () => toggleBox().click(), 'camera');
+    if (s.project.maps[0].streamed === true) throw new Error('streamed: the camera-off turn-on went through');
+    await undoTo(depthBeforeRefusedOn, 'undo to the ordinary 1x1 with the camera on');
+    await clickToggle('the third tick', () => s.project.maps[0].streamed === true && toggleBox().checked);
+    step('streamed 1: the Streamed checkbox', 'one click is one undo entry; undo removes the key and unticks the box; a 2x2 on MMC3 and a camera-off turn-on are refused inline with the project, the undo depth and the dirty flag unchanged');
+
+    // 2. The dead axis is locked; the live axis takes 30 and then 100 (the old clamp was 4).
+    if (sizeBoxes().length !== 2) throw new Error('streamed: expected 2 size inputs, saw ' + sizeBoxes().length);
+    if (!sizeBoxes()[0].disabled) throw new Error('streamed: on a one-column board the width field must be locked');
+    if (sizeBoxes()[1].disabled || Number(sizeBoxes()[1].max) !== 255) throw new Error('streamed: the height field must be live up to 255');
+    if (!document.querySelector('#mapSettingsPanel .map-dead-axis')) throw new Error('streamed: the locked axis shows no one-line reason');
+    await typeInto(sizeBoxes()[1], 30, 'the height going to 30', () => s.project.maps[0].gridH === 30 && Number(sizeBoxes()[1].value) === 30);
+    if (s.project.maps[0].gridW !== 1) throw new Error('streamed: typing 30 into the height gave ' + s.project.maps[0].gridW + ' x ' + s.project.maps[0].gridH);
+    await typeInto(sizeBoxes()[1], 100, 'the height going to 100', () => s.project.maps[0].gridH === 100 && Number(sizeBoxes()[1].value) === 100);
+    if (s.project.maps[0].screens.length !== 100) throw new Error('streamed: typing 100 into a 1 x 30 column should give 1 x 100, saw ' + s.project.maps[0].screens.length + ' screens');
+    step('streamed 2: size fields', 'width locked on the dead axis; the height field went 1 x 30 and then 1 x 100');
+
+    // 3. A resize the project-wide total refuses shows its reason and leaves no undo entry; a total the project already
+    // fails is the same rule, so growing within it is allowed (the accepted policy: the gate is "no NEW error").
+    const depthBeforeBeside = depth();
+    s.commit('smoke streamed: an ordinary 4x4 map beside it', (project) => {
+      project.maps.push(ordinaryMapLiteral('Beside', 4, 4));
+    });
+    await showMap();
+    await expectRefusal('the aggregate refusal of 1 x 255', () => setSize(sizeBoxes()[1], 255), 'across all maps');
+    if (s.project.maps[0].gridH !== 100) throw new Error('streamed: the aggregate refusal changed the map to ' + s.project.maps[0].gridH);
+    if (Number(sizeBoxes()[1].value) !== 100) throw new Error('streamed: the height field was not put back to 100');
+    // already over the total (a project edited by hand, or by a path this slice does not gate): 240 + 16 = 256 screens
+    const depthBeforeOver = depth();
+    s.commit('smoke streamed: 1 x 240 beside a 4x4 map (already over the total)', (project) => {
+      const world = project.maps[0];
+      while (world.screens.length < 240) world.screens.push(blankScreen());
+      world.gridH = 240;
+    });
+    await showMap();
+    if (Number(sizeBoxes()[1].value) !== 240) throw new Error('streamed: the over-total setup is not 1 x 240');
+    await typeInto(sizeBoxes()[1], 241, 'growing past a total already over 255', () => s.project.maps[0].gridH === 241);
+    if (s.project.maps[0].screens.length !== 241) throw new Error('streamed: 256 -> 257 screens is the same existing rule and must be allowed');
+    await typeInto(sizeBoxes()[1], 100, 'repairing the total', () => s.project.maps[0].gridH === 100);
+    await undoTo(depthBeforeBeside, 'undo to the 1 x 100 map alone');
+    if (s.project.maps.length !== 1 || s.project.maps[0].gridH !== 100) throw new Error('streamed: step 3 did not unwind to the 1 x 100 map');
+    step('streamed 3: refused resize', 'the project total refused 1 x 255 beside a 4 x 4 map with the reason shown and no undo entry, project change or dirty flag; a total already over 255 let 240 -> 241 and then the repair to 100 through');
+
+    // 4. Turning off: refused above the ordinary limit (per axis), allowed once it fits, keys deleted.
+    const depthBeforeOff = depth();
+    await expectRefusal('turning Streamed off on a 1 x 100 map', () => toggleBox().click(), '1 × 100');
+    if (s.project.maps[0].streamed !== true || depth() !== depthBeforeOff) throw new Error('streamed: turning Streamed off on a 1 x 100 map must be refused with nothing committed');
+    if (!toggleBox().checked) throw new Error('streamed: the refused box was not put back to checked');
+    await typeInto(sizeBoxes()[1], 4, 'shrinking to 1 x 4', () => s.project.maps[0].gridH === 4);
+    const depthBeforeAllowedOff = depth();
+    await clickToggle('the allowed turn-off', () => !('streamed' in s.project.maps[0]));
+    if ('fillMetatileId' in s.project.maps[0]) throw new Error('streamed: turning Streamed off must delete both keys');
+    if (depth() !== depthBeforeAllowedOff + 1) throw new Error('streamed: an allowed turn-off must be exactly one undo entry');
+    step('streamed 4: turn off', 'refused on 1 x 100 with the size named and no undo entry; allowed at 1 x 4, deleting streamed and fillMetatileId');
+
+    // 5. Duplicate screen: a streamed source says so (never 4x4); an ordinary full map keeps the old wording; and the real
+    // picker offers a map with room but never another streamed map.
+    await clickToggle('streaming again', () => s.project.maps[0].streamed === true && toggleBox().checked); // 1 x 4 streamed again
+    const depthBeforeTargets = depth();
+    s.commit('smoke streamed: an ordinary 1x1 map with room, and another streamed map', (project) => {
+      project.maps.push(ordinaryMapLiteral('Roomy', 1, 1));
+      const other = ordinaryMapLiteral('Streamy', 1, 1);
+      other.streamed = true;
+      other.fillMetatileId = 0;
+      project.maps.push(other);
+    });
+    await showMap();
+    const duplicateButton = () => [...document.querySelectorAll('#mapSettingsPanel button')].find((node) => node.title === 'Duplicate screen');
+    const depthBeforeDuplicate = depth();
+    duplicateButton().click();
+    await until('streamed: the Duplicate screen picker', () => document.querySelector('#modalHost p'));
+    const streamedModal = document.querySelector('#modalHost p').textContent;
+    if (!streamedModal.includes('streamed map') || !streamedModal.includes('size fields')) throw new Error('streamed: the Duplicate wording for a streamed source is wrong: ' + streamedModal);
+    if (streamedModal.includes('4×4')) throw new Error('streamed: the Duplicate wording for a streamed source still says 4×4');
+    const offered = [...document.querySelectorAll('#modalHost button')].map((b) => b.textContent.trim());
+    if (!offered.includes('Roomy')) throw new Error('streamed: the ordinary map with room is not offered: ' + offered.join(' | '));
+    if (offered.some((label) => label.includes('Streamy'))) throw new Error('streamed: the picker offers another streamed map: ' + offered.join(' | '));
+    await cancelModal('streamed: the streamed Duplicate picker');
+    if (depth() !== depthBeforeDuplicate || s.project.maps[0].gridH !== 4) throw new Error('streamed: Duplicate screen must not grow or commit on a streamed map');
+    // an ordinary full 4x4 map: the old wording, word for word
+    s.commit('smoke streamed: map 0 becomes an ordinary full 4x4', (project) => {
+      const world = project.maps[0];
+      delete world.streamed;
+      delete world.fillMetatileId;
+      world.gridW = 4;
+      world.gridH = 4;
+      world.screens = Array.from({ length: 16 }, blankScreen);
+    });
+    await showMap();
+    duplicateButton().click();
+    await until('streamed: the ordinary Duplicate screen picker', () => document.querySelector('#modalHost p'));
+    const ordinaryModal = document.querySelector('#modalHost p').textContent;
+    if (ordinaryModal !== '"' + s.project.maps[0].name + '" is already full (4×4 screens). Pick another map with room:') throw new Error('streamed: the ordinary Duplicate wording changed: ' + ordinaryModal);
+    await cancelModal('streamed: the ordinary Duplicate picker');
+    await undoTo(depthBeforeTargets, 'undo to the streamed 1 x 4 map');
+    step('streamed 5: Duplicate screen', 'a streamed source says it is sized with the size fields and offers the map with room but not the other streamed map; an ordinary full map keeps the 4×4 wording');
+
+    // 6. The Build panel moves the board under a streamed map: the box stays visible, checked and clearable; the summary goes red.
+    if (s.project.maps[0].streamed !== true || s.project.maps[0].gridH !== 4) throw new Error('streamed: step 6 setup is not a streamed 1 x 4');
+    await showBuild();
+    const mirrorSelect = [...document.querySelectorAll('#stage select')].find((sel) => [...sel.options].some((o) => o.textContent === 'Vertical') && [...sel.options].some((o) => o.textContent === 'Horizontal'));
+    if (!mirrorSelect) throw new Error('streamed: no mirroring select in the Build panel');
+    mirrorSelect.value = 'vertical';
+    mirrorSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('streamed: the Build summary shows the dead-axis message', () => document.querySelector('#stage').textContent.includes('screens tall'));
+    await showMap();
+    if (!toggleBox() || !toggleBox().checked || toggleBox().disabled) throw new Error('streamed: under a board change the Streamed box must stay visible, checked and clearable');
+    if (s.project.maps[0].streamed !== true || s.project.maps[0].gridH !== 4) throw new Error('streamed: a Build-panel board change must leave the map as it is');
+    // ...and onto a board that cannot stream at all (NROM): still visible, checked and clearable, with the board's reason beside it.
+    await showBuild();
+    const mapperSelect = [...document.querySelectorAll('#stage select')].find((sel) => [...sel.options].some((o) => o.value === '0') && [...sel.options].some((o) => o.value === '30'));
+    if (!mapperSelect) throw new Error('streamed: no mapper select in the Build panel');
+    mapperSelect.value = '0';
+    mapperSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('streamed: the Build panel switching to NROM', () => s.project.cartridge.mapper === 0 && document.querySelector('#stage').textContent.includes('cannot stream a world'));
+    await showMap();
+    if (!toggleBox() || !toggleBox().checked || toggleBox().disabled) throw new Error('streamed: on a board that cannot stream, a streamed map must still show a checked, clearable Streamed box');
+    if (!document.querySelector('#mapSettingsPanel .map-streamed-note')) throw new Error('streamed: the Map Forge shows no note for a streamed map on a board that cannot stream');
+    if (s.project.maps[0].streamed !== true) throw new Error('streamed: a Build-panel mapper change must leave the map as it is');
+    // clearing it works there (the map is within 4x4), as one undo entry, and undo puts the streamed map back
+    const depthBeforeNromClear = depth();
+    await clickToggle('clearing Streamed on NROM', () => !('streamed' in s.project.maps[0]) && !toggleBox().checked);
+    if (depth() !== depthBeforeNromClear + 1) throw new Error('streamed: clearing Streamed on NROM must be exactly one undo entry');
+    if (!toggleBox().disabled) throw new Error('streamed: an ordinary map on NROM must show the Streamed box disabled');
+    s.undo();
+    await until('streamed: undo of the NROM clear', () => s.project.maps[0].streamed === true && toggleBox().checked && !toggleBox().disabled);
+    step('streamed 6: board change under a streamed map', 'the Streamed box stayed visible, checked and enabled under a mirroring change (dead-axis message in the Build summary) and under NROM (capability message, a note beside the box); clearing it on NROM was one undo entry that undo restored; the map was untouched by the board changes');
+
+    await undoTo(baseDepth, 'undo to the baseline');
+    if (JSON.stringify(s.project) !== baselineJson) throw new Error('streamed: the smoke block did not undo back to its baseline');
   }
 
   // --- Map Forge: Region copy/paste, through the real canvas (ROADMAP item

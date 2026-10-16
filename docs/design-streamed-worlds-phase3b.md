@@ -1061,6 +1061,8 @@ The Map Forge has no streamed awareness. Each of its "Screens across / down" fie
 
 The README's Streamed worlds row says the short version (pinned by `docclaims.test.js`, which also pins that the code is still like that and that the demonstrated cases behave as stated, so the Map Forge tooling phase must delete the clause and the pin together).
 
+*2026-10-15, fixed in phase 4 C1: see `docs/design-streamed-worlds-phase4.md`.*
+
 ### Known follow-ups
 
 Deferred by Chris, 2026-10-15. Both are in files the ring certificate fingerprints, so fixing either is a certificate renewal, not an S6 edit.

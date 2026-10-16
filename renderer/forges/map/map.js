@@ -54,6 +54,21 @@ import {
   editCommonEvents
 } from './events.js';
 import { openEventList } from './eventlist.js';
+import {
+  streamToggleState,
+  planStreamOn,
+  planStreamOff,
+  applyStreamOn,
+  applyStreamOff,
+  sizePlan,
+  clampAxis,
+  planResize,
+  hasDuplicateRoom,
+  commitIfAllowed,
+  commitAfterConfirm,
+  STALE_RESIZE_NOTE,
+  duplicateFullMessage
+} from './streamedui.js';
 import { templatesFor, firstFreeSwitch } from './templates.js';
 import {
   MetatileRenderer,
@@ -161,6 +176,10 @@ const TOOLS = [
 
 export function mount(container, app) {
   const renderer = new MetatileRenderer();
+  // A refusal the settings panel shows once, on its next render (a refused toggle or resize reaches no
+  // commit, so nothing else would redraw the field back to the real value or say why).
+  let settingsNote = null;
+
   const state = {
     mapIndex: 0,
     screenIndex: 0,
@@ -778,7 +797,20 @@ export function mount(container, app) {
   async function resizeMap(newWidth, newHeight) {
     const index = state.mapIndex;
     const map = store.project.maps[index];
+    // Decided before any commit: a refused resize must leave no undo entry (store.commit records one
+    // even when its mutator does nothing), and an unchanged size has nothing to commit.
+    const plan = planResize(store.project, index, newWidth, newHeight);
+    if (!plan.ok) {
+      settingsNote = plan.message;
+      renderMapSettings();
+      return;
+    }
+    if (plan.noop) {
+      renderMapSettings();
+      return;
+    }
     const shrinking = newWidth * newHeight < map.gridW * map.gridH;
+    let confirm = null;
     if (shrinking) {
       const oldScreens = map.screens;
       const newScreens = [];
@@ -796,12 +828,24 @@ export function mount(container, app) {
         const message = `Shrinking this map will drop ${wouldDrop} door${
           wouldDrop === 1 ? '' : 's'
         }/warp${wouldDrop === 1 ? '' : 's'} that point at a screen being removed. Continue?`;
-        if (!(await confirmModal('Resize map', message, 'Resize'))) return;
+        confirm = () => confirmModal('Resize map', message, 'Resize');
       }
     }
-    store.commit('Resize map', (project) => {
-      growOrShrinkMap(project, index, newWidth, newHeight);
-    });
+    const outcome = await commitAfterConfirm(
+      store,
+      plan,
+      'Resize map',
+      (project) => {
+        growOrShrinkMap(project, index, newWidth, newHeight);
+      },
+      confirm
+    );
+    if (outcome === 'cancelled') return;
+    if (outcome === 'stale') {
+      settingsNote = STALE_RESIZE_NOTE;
+      renderAll();
+      return;
+    }
     if (state.screenIndex >= currentMap().screens.length) state.screenIndex = 0;
     renderAll();
   }
@@ -841,7 +885,7 @@ export function mount(container, app) {
     const sourceIndex = state.mapIndex;
     const sourceMap = store.project.maps[sourceIndex];
     const sourceScreen = currentScreen();
-    const hasRoom = (map) => map.gridW * map.gridH < LIMITS.mapGrid ** 2;
+    const hasRoom = hasDuplicateRoom;
 
     if (hasRoom(sourceMap)) {
       const { cloneScreen, warning } = duplicateScreenViaGrowth(sourceIndex, sourceScreen);
@@ -865,7 +909,7 @@ export function mount(container, app) {
             el(
               'p.hint',
               { style: { marginBottom: '10px' } },
-              `"${sourceMap.name}" is already full (4×4 screens). Pick another map with room:`
+              duplicateFullMessage(sourceMap)
             )
           ),
         actions: candidates.map(({ map, index }) => ({ label: map.name, onClick: () => index })).concat([
@@ -1897,9 +1941,28 @@ export function mount(container, app) {
     );
   }
 
+  /** The Streamed checkbox's own handler: decided before commit, one commit per allowed toggle. */
+  function toggleStreamed(wantStreamed) {
+    const index = state.mapIndex;
+    const plan = wantStreamed ? planStreamOn(store.project, index) : planStreamOff(store.project, index);
+    if (!plan.ok) {
+      settingsNote = plan.message;
+      renderMapSettings(); // redraws the box back to the real state
+      return;
+    }
+    commitIfAllowed(store, plan, wantStreamed ? 'Stream map' : 'Stop streaming map', (project) => {
+      (wantStreamed ? applyStreamOn : applyStreamOff)(project, index);
+    });
+    renderAll();
+  }
+
   function renderMapSettings() {
     const map = currentMap();
     const { startMap, startScreen, startX, startY } = store.project.project;
+    const toggle = streamToggleState(store.project, state.mapIndex);
+    const sizes = sizePlan(store.project, state.mapIndex);
+    const note = settingsNote;
+    settingsNote = null;
     fill(mapSettings,
       field(
         'Map',
@@ -2059,20 +2122,47 @@ export function mount(container, app) {
           el('input', {
             type: 'number',
             min: 1,
-            max: LIMITS.mapGrid,
+            max: sizes.width.max,
             value: map.gridW,
-            onchange: (event) => resizeMap(Math.max(1, Math.min(LIMITS.mapGrid, Number(event.target.value))), map.gridH)
+            disabled: sizes.width.locked,
+            title: sizes.width.reason,
+            onchange: (event) => resizeMap(clampAxis(sizes, 'width', event.target.value, map.gridW), map.gridH)
           }),
           el('span', null, '×'),
           el('input', {
             type: 'number',
             min: 1,
-            max: LIMITS.mapGrid,
+            max: sizes.height.max,
             value: map.gridH,
-            onchange: (event) => resizeMap(map.gridW, Math.max(1, Math.min(LIMITS.mapGrid, Number(event.target.value))))
+            disabled: sizes.height.locked,
+            title: sizes.height.reason,
+            onchange: (event) => resizeMap(map.gridW, clampAxis(sizes, 'height', event.target.value, map.gridH))
           })
-        )
+        ),
+        sizes.deadAxis ? el('p.hint.map-dead-axis', null, sizes[sizes.deadAxis].reason) : null
       ),
+      // Always drawn (a streamed map stays clearable on a board that can no longer stream), disabled
+      // with the reason for an ordinary map on such a board. Decisions: streamedui.js.
+      toggle.visible
+        ? field(
+          'Streamed',
+          el(
+            'label.check',
+            { title: toggle.reason },
+            el('input', {
+              type: 'checkbox',
+              dataset: { streamedToggle: '' },
+              checked: toggle.checked,
+              disabled: !toggle.enabled,
+              onchange: (event) => toggleStreamed(event.target.checked)
+            }),
+            'A scrolling world'
+          ),
+          toggle.reason ? el('p.hint.map-streamed-reason', null, toggle.reason) : null,
+          toggle.note ? el('p.hint.map-streamed-note', { style: { color: 'var(--red)' } }, toggle.note) : null,
+          note ? el('p.hint.map-streamed-refusal', { style: { color: 'var(--red)' } }, note) : null
+        )
+        : null,
       field(
         'Music',
         el(

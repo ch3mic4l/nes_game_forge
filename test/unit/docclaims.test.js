@@ -48,6 +48,7 @@ import { ROOT, extractTokens, classify, buildCorpus, pathExists, trackedFiles, n
 import { scanSource } from '../lib/sourcescan.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { withSyntheticBoard } from '../lib/syntheticboard.js';
+import { clampAxis, hasDuplicateRoom, planResize, planStreamOff, planStreamOn, sizePlan } from '../../renderer/forges/map/streamedui.js';
 import {
   createProject,
   createMap,
@@ -482,51 +483,74 @@ test('README streamed-worlds row: the RPG depths are numbers the real refusal dr
   }
 });
 
-test('README streamed-worlds row: the Map Forge clause is present and still true of renderer/forges/map/map.js (the Map Forge tooling phase removes it, and this test, on purpose)', () => {
-  // The clause records ruling Q1 (Chris, 2026-10-15): the size fields and Duplicate screen clamp every map to LIMITS.mapGrid x LIMITS.mapGrid and know nothing of a streamed map. When the item-15
-  // "Map Forge tooling" phase teaches them (LIMITS.streamedGrid, the board's live axis), this fails -- delete the clause from the README and this test together, deliberately.
+test('README streamed-worlds row and the Map Forge: the Map Forge now knows streamed maps, the README says so, and the old Q1 caveats are gone', () => {
+  // Replaces the phase 3b S6 Q1 tripwire (ruling Q1, Chris 2026-10-15), which pinned the size fields and Duplicate screen to LIMITS.mapGrid. Phase 4 C1 taught them (docs/design-streamed-worlds-phase4.md),
+  // so this pins what is PRESENT: the wiring in map.js, the decisions in streamedui.js, and the README sentence -- each README claim is run through the real pure functions below.
   const flat = streamedRow();
-  const side = LIMITS.mapGrid;
-  assert.match(flat, new RegExp(`a streamed map's size is set in its JSON \\(\`gridW\` and \`gridH\`\\), not in the Map Forge, whose "Screens across / down" fields and ⧉ Duplicate screen still treat every map as at most ${side} × ${side}`));
-  assert.match(flat, new RegExp(`each size field caps what you type at ${side} and keeps the other side, so typing a height into a long streamed column such as 1 × 30 shrinks it to at most ${side} screens \\(no prompt unless a door or warp points into a dropped screen; Undo restores it\\)`));
-  assert.match(flat, /resizing across the streaming direction, or duplicating a screen of a short map, can make a shape the build refuses/);
-  assert.match(flat, new RegExp(`Duplicate screen counts a map of ${side * side} screens or more as full, and puts the copy in another map with room or in a new map`));
-  const src = read('renderer/forges/map/map.js');
-  assert.equal((src.match(/Math\.min\(LIMITS\.mapGrid, Number\(event\.target\.value\)\)/g) ?? []).length, 2, 'both size fields clamp to LIMITS.mapGrid');
-  assert.match(src, /map\.gridW \* map\.gridH < LIMITS\.mapGrid \*\* 2/, 'Duplicate screen\'s room check is the 4 x 4 one');
-  assert.doesNotMatch(src, /mapGridLimit\(/, 'no size field asks mapGridLimit(map) yet');
-  assert.doesNotMatch(src, /LIMITS\.streamedGrid/, 'the Map Forge does not know the streamed grid');
-  assert.match(src, /wouldDrop > 0/, 'a shrink asks only when it would drop a reference');
-
-  // The source reading above proves the clamp expressions exist; this proves what the README says they DO, through the real pure functions with the handlers' own clamp (map.js :2064 / :2072).
-  const clamp = (v) => Math.max(1, Math.min(LIMITS.mapGrid, Number(v)));
-  const errorsOnly = (p) => validateProject(p).filter((x) => x.severity === 'error');
-  const shape = (p) => `${p.maps[0].gridW} x ${p.maps[0].gridH} (${p.maps[0].screens.length})`;
-  const column = () => createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 30 });
-  assert.deepEqual(errorsOnly(column()), [], 'a 1 x 30 column under MMC3 horizontal is legal');
-  for (const [typed, want] of [[3, '1 x 3 (3)'], [4, '1 x 4 (4)'], [31, '1 x 4 (4)'], [100, '1 x 4 (4)']]) {
-    const p = column();
-    assert.ok(growOrShrinkMap(p, 0, p.maps[0].gridW, clamp(typed)), `a height of ${typed} is applied`);
-    assert.equal(shape(p), want, `typing ${typed} into the height of a 1 x 30 column`);
+  for (const gone of [/no Map Forge toggle/, /not in the Map Forge/, /still treat every map as at most/, /each size field caps what you type at/, /Duplicate screen counts a map of \d+ screens or more as full/, /this stays so until the Map Forge learns streamed maps/]) {
+    assert.doesNotMatch(flat, gone, `the README no longer carries ${gone}`);
   }
-  // the clamp is per dimension, so the 4-screen total belongs to a side-1 map only
-  const row = createStreamedProject({ mapper: 4, mirroring: 'vertical', gridW: 30, gridH: 1 });
-  growOrShrinkMap(row, 0, row.maps[0].gridW, clamp(2));
-  assert.equal(shape(row), '30 x 2 (60)', 'a 30 x 1 row typed 2 in the height field keeps its width');
-  const wide = createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 30 });
-  growOrShrinkMap(wide, 0, clamp(2), wide.maps[0].gridH);
-  assert.equal(shape(wide), '2 x 30 (60)', 'typing 2 across the column keeps its height');
-  assert.match(errorsOnly(wide).map((x) => x.message).join('\n'), /can only stream up and down/, 'and the build refuses that shape');
-  // Duplicate screen: 16 screens or more is "full"; a map with room grows, and the grown shape is sometimes legal, sometimes refused
-  assert.ok(column().maps[0].screens.length >= side * side, 'the 1 x 30 column (16 screens or more) counts as full');
-  const short = createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 3 });
-  assert.ok(duplicateScreenViaGrowthCore(short, 0, short.maps[0].screens[0]));
-  assert.equal(shape(short), '2 x 3 (6)');
-  assert.match(errorsOnly(short).map((x) => x.message).join('\n'), /can only stream up and down/, 'duplicating in a short ring map can be refused');
-  const one = createStreamedProject({ mapper: 4, mirroring: 'vertical', gridW: 1, gridH: 1 });
-  assert.ok(duplicateScreenViaGrowthCore(one, 0, one.maps[0].screens[0]));
-  assert.equal(shape(one), '2 x 1 (2)');
-  assert.deepEqual(errorsOnly(one), [], 'and a 1 x 1 under vertical mirroring duplicates into a legal 2 x 1');
+  assert.match(flat, /tick \*\*Streamed\*\* on a map in the Map Forge \(or set `"streamed": true` in the project's JSON\)/);
+  const side = LIMITS.mapGrid;
+  // The gate is "no NEW validation error", not "a valid project" (review round 1, finding 2): turn-on and resize compare rules, turn-off is the per-axis ordinary-size guard.
+  assert.ok(flat.includes(`take a streamed map up to ${LIMITS.streamedGrid} screens a side (a single row or column holds its other side at 1); turning Streamed on is refused, with the reason and no undo entry, when it would add a validation error the project did not already have, and so is resizing any map in a project that has a streamed map (an error it already had is left alone, so a shrink can repair it, and the board's byte capacity is checked only at Build); a project with no streamed map resizes as it always did; `), 'the README describes turn-on, and a resize in a project that has a streamed map, as refusing a NEW validation error -- and an ordinary-only resize as ungated');
+  assert.ok(flat.includes(`turning Streamed off is refused, with the reason, unless the map is ${side} × ${side} screens or fewer a side; and ⧉ Duplicate screen copies a streamed map's screen into another map or a new one rather than growing it`), 'and turn-off separately, as the per-axis ordinary-size guard');
+  assert.doesNotMatch(flat, /failing validation|any toggle or resize|turning Streamed on, or resizing, is refused/, 'the README does not promise an absolute validation gate');
+
+  const src = read('renderer/forges/map/map.js');
+  assert.match(src, /from '\.\/streamedui\.js'/, 'map.js takes its streamed decisions from streamedui.js');
+  for (const used of [
+    /streamToggleState\(store\.project, state\.mapIndex\)/,
+    /sizePlan\(store\.project, state\.mapIndex\)/,
+    /clampAxis\(sizes, 'width', event\.target\.value, map\.gridW\)/,
+    /clampAxis\(sizes, 'height', event\.target\.value, map\.gridH\)/,
+    /planResize\(store\.project, index, newWidth, newHeight\)/,
+    /planStreamOn\(store\.project, index\)/,
+    /planStreamOff\(store\.project, index\)/,
+    /commitAfterConfirm\(\s*store,\s*plan,\s*'Resize map'/,
+    /commitIfAllowed\(store, plan, wantStreamed \? 'Stream map' : 'Stop streaming map'/,
+    /const hasRoom = hasDuplicateRoom;/,
+    /duplicateFullMessage\(sourceMap\)/,
+    /\.filter\(\(\{ map, index \}\) => index !== sourceIndex && hasRoom\(map\)\)/,
+    /streamedToggle: ''/,
+    /toggle\.visible\n\s*\? field\(/,
+    /wouldDrop > 0/
+  ]) assert.match(src, used, `map.js still has ${used}`);
+  assert.doesNotMatch(src, /LIMITS\.mapGrid|LIMITS\.streamedGrid/, 'the size clamp is mapGridLimit(map), reached through sizePlan -- never a literal limit in map.js');
+  assert.doesNotMatch(src, /store\.commit\('(Resize map|Stream map|Stop streaming map)'/, 'a resize or toggle reaches store.commit only through commitIfAllowed (a refusal must leave no undo entry)');
+  assert.doesNotMatch(src, /\*\* 2;\s*$/m, 'Duplicate screen no longer carries its own w*h < 16 room check');
+
+  const ui = read('renderer/forges/map/streamedui.js');
+  for (const used of [/mapGridLimit\(/, /streamRingMode\(/, /validateProject\(/, /growOrShrinkMap\(/, /streamedGridProblems\(/, /streamedBoardProblems\(/, /streamCapable\(/]) {
+    assert.match(ui, used, `streamedui.js asks shared/ through ${used}`);
+  }
+  assert.doesNotMatch(ui, /LIMITS\./, 'streamedui.js restates no limit');
+  assert.doesNotMatch(ui, /\b(document|window|localStorage)\b/, 'streamedui.js is DOM-free');
+  const imports = [...ui.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
+  assert.ok(imports.length >= 2 && imports.every((i) => i.startsWith('../../../shared/')), 'streamedui.js imports shared/ only');
+
+  // What the README sentence says, through the real functions (the column, the dead axis, turn-off, Duplicate):
+  const column = createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 30 }); // MMC3, horizontal
+  const plan = sizePlan(column, 0);
+  assert.equal(plan.height.max, LIMITS.streamedGrid, `a streamed column's height goes to ${LIMITS.streamedGrid}`);
+  assert.equal(clampAxis(plan, 'height', 100, 30), 100, 'typing 100 into a 1 x 30 column makes it 1 x 100, not 1 x 4');
+  assert.equal(planResize(column, 0, 1, 100).ok, true);
+  assert.equal(plan.deadAxis, 'width');
+  assert.equal(plan.width.max, 1, 'a single column holds its other side at 1');
+  assert.equal(planResize(column, 0, 2, 30).ok, false, 'a refused resize says why and commits nothing');
+  const wide = createStreamedProject({ mapper: 4, mirroring: 'horizontal', gridW: 1, gridH: 1 });
+  delete wide.maps[0].streamed;
+  wide.maps[0].gridW = 2;
+  wide.maps[0].screens.push(structuredClone(wide.maps[0].screens[0]));
+  assert.equal(planStreamOn(wide, 0).ok, false, 'turning Streamed on is refused when it adds a validation error');
+  const repair = createStreamedProject({ gridW: 2, gridH: 1 });
+  repair.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  for (const screen of repair.maps[0].screens) screen.entities.push({ actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: null }] }] } } });
+  assert.equal(planResize(repair, 0, 1, 1).ok, true, 'an error the project already had is left alone, so a shrink can repair it');
+  assert.equal(planStreamOff(column, 0).ok, false, `a 1 x 30 map cannot stop streaming until it is ${side} screens or fewer a side`);
+  assert.equal(planStreamOff(createStreamedProject({ gridW: side, gridH: side }), 0).ok, true);
+  assert.equal(hasDuplicateRoom(column.maps[0]), false, 'Duplicate screen does not grow a streamed map');
+  assert.equal(hasDuplicateRoom(createStreamedProject({ gridW: 1, gridH: 1 }).maps[0]), false, 'not even a 1 x 1 one');
 });
 
 test('README streamed-worlds row: the kernel lookup-table clause is the rpg starter\'s real refusal on MMC3 and UNROM 512 (and not on MMC1)', () => {
