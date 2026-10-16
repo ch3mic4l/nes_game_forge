@@ -1732,9 +1732,9 @@ subject to, not a separate claim; and item 5's scope list is where both Forges' 
 
 ---
 
-## 15. Large streamed worlds — **phases 1-3b done; Map Forge tooling: C1 done, world overview (C2) open**
+## 15. Large streamed worlds — **done** (phases 1-3b, and phase 4, the Map Forge tooling)
 
-**Status (phase 3b closed at S6, 2026-10-15).** Streamed worlds ship: a map with `"streamed": true` becomes one scrolling world on UNROM 512 four-screen and, as a single row (vertical mirroring) or column (horizontal), on UNROM 512, MMC1 and MMC3, for action games and turn-based RPGs, with the limits in the README's Streamed worlds row. Authoring: phase 4 commit C1 (2026-10-15) gave the Map Forge a Streamed checkbox, size fields on the map's own limit and the board's live axis, and a streamed-aware Duplicate screen; what remains is the world overview (C2: the navigator at 1 x 255 / 255 x 1). Design record: `docs/design-streamed-worlds.md`, `-phase3a.md`, `-phase3b.md` (section 20 is the S6 release check), `-phase4.md`.
+**Status (closed with phase 4 commit C2, 2026-10-16).** Streamed worlds ship: a map with `"streamed": true` becomes one scrolling world on UNROM 512 four-screen and, as a single row (vertical mirroring) or column (horizontal), on UNROM 512, MMC1 and MMC3, for action games and turn-based RPGs, with the limits in the README's Streamed worlds row. Authoring: phase 4 (renderer-only, no fingerprint change) gave the Map Forge a Streamed checkbox, size fields on the map's own limit and the board's live axis, and a streamed-aware Duplicate screen (C1, 2026-10-15), and a world overview (C2, 2026-10-16): a streamed map's screens in a scroll box of their own, one click to open one, the current screen kept in view, and an edit redrawing only the screens it touched. Design record: `docs/design-streamed-worlds.md`, `-phase3a.md`, `-phase3b.md` (section 20 is the S6 release check), `-phase4.md`.
 
 Known follow-ups (deferred by Chris, 2026-10-15; both sit in fingerprinted files, so fixing either renews the ring certificate):
 - `main/build/generate.js:3126`, `streamedCapacityProblems`: the capacity message ends "or choose a board with more program space in the Build panel". That works on MMC1 and MMC3 (UNROM 512 has more) and **cannot work on UNROM 512, the largest board**. The text is in a fingerprinted file, so S6 left it (deferred to a wording pass, "C5").
@@ -1968,7 +1968,7 @@ later, on its own, and costs zero engine bytes (`sample/` builds to an identical
 after) — pure editor and data-model work with nothing to weigh against the kernel-lo budget the rest
 of this section is about.
 
-Item 15 (large streamed worlds) has shipped through phase 3b and the Map Forge toggle, size fields and Duplicate screen (phase 4 C1; see its status block); only the world overview (C2) remains.
+Item 15 (large streamed worlds) is done: it shipped through phase 3b, and phase 4 gave the Map Forge a Streamed checkbox, size fields, a streamed-aware Duplicate screen and a world overview (see its status block).
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming

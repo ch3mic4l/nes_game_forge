@@ -14,6 +14,10 @@ export const SCREEN_PX_H = LIMITS.screenRows * METATILE_PX; // 240
 export class MetatileRenderer {
   constructor() {
     this.cache = [];
+    // Bumps only when what `rebuild` would draw changed (a metatile, a palette or a tile), not on every call, so
+    // anything holding pictures made from this cache (the world overview) knows when they are stale.
+    this.version = 0;
+    this.artKey = null;
   }
 
   /**
@@ -22,8 +26,14 @@ export class MetatileRenderer {
    * draws differently depending on which CHR bank is banked in.
    */
   rebuild(project, tilesetId = 0) {
-    const tiles = tilesetAt(project, tilesetId).background.tiles.map(tileFromString);
+    const tileStrings = tilesetAt(project, tilesetId).background.tiles;
+    const tiles = tileStrings.map(tileFromString);
     const palettes = project.palettes.bg;
+    const artKey = JSON.stringify([project.metatiles.map((metatile) => [metatile.tiles, metatile.palette]), palettes, tileStrings]);
+    if (artKey !== this.artKey) {
+      this.artKey = artKey;
+      this.version++;
+    }
     this.cache = project.metatiles.map((metatile) => {
       const canvas = document.createElement('canvas');
       canvas.width = METATILE_PX;

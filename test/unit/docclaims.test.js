@@ -49,6 +49,7 @@ import { scanSource } from '../lib/sourcescan.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { withSyntheticBoard } from '../lib/syntheticboard.js';
 import { clampAxis, hasDuplicateRoom, planResize, planStreamOff, planStreamOn, sizePlan } from '../../renderer/forges/map/streamedui.js';
+import { usesOverview } from '../../renderer/forges/map/overview.js';
 import {
   createProject,
   createMap,
@@ -551,6 +552,60 @@ test('README streamed-worlds row and the Map Forge: the Map Forge now knows stre
   assert.equal(planStreamOff(createStreamedProject({ gridW: side, gridH: side }), 0).ok, true);
   assert.equal(hasDuplicateRoom(column.maps[0]), false, 'Duplicate screen does not grow a streamed map');
   assert.equal(hasDuplicateRoom(createStreamedProject({ gridW: 1, gridH: 1 }).maps[0]), false, 'not even a 1 x 1 one');
+});
+
+test('README streamed-worlds row and the Map Forge: a streamed map is shown as a scrolling overview, wired the way the design record says', () => {
+  // Phase 4 C2 (docs/design-streamed-worlds-phase4.md): the world overview. Pins what is PRESENT in map.js, overview.js and render.js, and the README clause, through the real predicate.
+  assert.match(streamedRow(), /a streamed map's screens appear as a scrolling overview under the screen, one click to open one \|?$/);
+  const side = LIMITS.mapGrid;
+  assert.equal(usesOverview(createStreamedProject({ gridW: 1, gridH: 30 }).maps[0]), true, 'a streamed map gets the overview');
+  assert.equal(usesOverview({ ...createMap('Map'), gridW: side, gridH: side }), false, `an ordinary ${side} x ${side} map keeps the legacy thumbnails`);
+
+  const src = read('renderer/forges/map/map.js');
+  for (const used of [
+    /from '\.\/overview\.js'/,
+    /usesOverview\(map\) !== overview\.active/,
+    /mapOverview: ''/,
+    /mapOverviewBox: ''/,
+    /overflow: 'auto'/,
+    /overviewBox\(stageInner\(\), \{ screenHeight: SCREEN_PX_H \* 2, gap: NAV_GAP \}\)/,
+    /layoutOverview\(map\.gridW, map\.gridH, box\)/,
+    /changedCells\(overview\.drawn, map\.screens, startIndex, state\.screenIndex\)/,
+    /renderer\.version !== overview\.version/,
+    /scrollTarget\(layout, state\.screenIndex,/,
+    /cellAt\(\s*overview\.layout,/,
+    /if \(index !== null\) selectScreen\(index\);/,
+    /onclick: \(\) => selectScreen\(index\)/,
+    /const reserve = \(overview\.active \? overviewScroller : navigator\)\.offsetHeight \+ NAV_GAP;/,
+    /if \(overview\.active\) renderOverview\(\);/,
+    // fix round 1: the scroll box does not give way when screen + overview outgrow a short stage, the stage then overflows
+    // forwards only, and a resize that takes the current screen's room scrolls it back (a screen the author left stays left)
+    /flexShrink: '0'/,
+    /mapStage\.style\.justifyContent = overview\.active \? 'safe center' : '';/,
+    /mapStage\.style\.alignItems = overview\.active \? 'safe center' : '';/,
+    /inView\(layout, state\.screenIndex,/,
+    /\(shown !== overview\.shown \|\| keepInView\)/,
+    /mapStage\.dataset\.laidOut = /
+  ]) assert.match(src, used, `map.js still has ${used}`);
+  assert.doesNotMatch(src, /LIMITS\.mapGrid|LIMITS\.streamedGrid/, 'map.js restates no grid limit');
+
+  const ov = read('renderer/forges/map/overview.js');
+  for (const used of [/mapGridLimit\(\{\}\)/, /LIMITS\.screenCols/, /LIMITS\.screenRows/]) assert.match(ov, used, `overview.js reads the screen size and the ordinary limit through ${used}`);
+  assert.doesNotMatch(ov, /LIMITS\.(mapGrid|streamedGrid)/, 'overview.js restates no grid limit: the predicate is mapGridLimit({})');
+  assert.doesNotMatch(ov, /\b(document|window|localStorage)\b/, 'overview.js is DOM-free');
+  const imports = [...ov.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
+  assert.ok(imports.length >= 1 && imports.every((i) => i.startsWith('../../../shared/')), 'overview.js imports shared/ only');
+
+  // the record says the overview's smoke steps wait on a state and never on a delay: the stage-resize waits are on the size the
+  // Forge says it laid out for, and the block holds no fixed `await wait(150)` of the kind that used to follow them
+  const smoke = read('main/smoke.js');
+  const block = smoke.slice(smoke.indexOf('// 7. The world overview'), smoke.indexOf('// 8. an ordinary 4 x 4 map keeps'));
+  assert.ok(block.length > 1000, 'found the overview steps in main/smoke.js');
+  assert.match(block, /dataset\.laidOut === stageNode\(\)\.offsetWidth \+ 'x' \+ stageNode\(\)\.offsetHeight/, 'smoke waits on data-laid-out');
+  assert.doesNotMatch(block, /await wait\(150\)/, 'and not on a 150 ms delay');
+
+  const render = read('renderer/forges/map/render.js');
+  assert.match(render, /if \(artKey !== this\.artKey\) \{\s*this\.artKey = artKey;\s*this\.version\+\+;/, 'the metatile cache version moves only when the art does');
 });
 
 test('README streamed-worlds row: the kernel lookup-table clause is the rpg starter\'s real refusal on MMC3 and UNROM 512 (and not on MMC1)', () => {

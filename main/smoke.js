@@ -1302,6 +1302,344 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     await until('streamed: undo of the NROM clear', () => s.project.maps[0].streamed === true && toggleBox().checked && !toggleBox().disabled);
     step('streamed 6: board change under a streamed map', 'the Streamed box stayed visible, checked and enabled under a mirroring change (dead-axis message in the Build summary) and under NROM (capability message, a note beside the box); clearing it on NROM was one undo entry that undo restored; the map was untouched by the board changes');
 
+    // 7. The world overview: a streamed map gets its own bounded scroll box with one canvas, the first cell is inside
+    // the visible stage (the centred flex stage clips what spills to its left or top where no scrollbar reaches), a
+    // click selects row * gridW + col, the current screen is kept in view, and an edit redraws what it touched.
+    const stageNode = () => document.querySelector('#stage .canvas-stage');
+    const ovCanvas = () => document.querySelector('#stage [data-map-overview]');
+    const ovBox = () => document.querySelector('#stage [data-map-overview-box]');
+    const thumbs64 = () => [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60);
+    const screenLabel = () => [...document.querySelectorAll('#mapSettingsPanel .field-label')].map((n) => n.textContent).find((t) => /^Screen [0-9]+ name$/.test(t));
+    const within = (inner, outer, slack = 1) => inner.left >= outer.left - slack && inner.top >= outer.top - slack && inner.right <= outer.right + slack && inner.bottom <= outer.bottom + slack;
+    const cellClientRect = (col, row) => {
+      const d = ovCanvas().dataset;
+      const r = ovCanvas().getBoundingClientRect();
+      const x = r.left + Number(d.pad) + col * (Number(d.cellW) + Number(d.gap));
+      const y = r.top + Number(d.pad) + row * (Number(d.cellH) + Number(d.gap));
+      return { left: x, top: y, right: x + Number(d.cellW), bottom: y + Number(d.cellH) };
+    };
+    const clickOverviewCell = (col, row) => {
+      const c = cellClientRect(col, row);
+      ovCanvas().dispatchEvent(new MouseEvent('click', { clientX: (c.left + c.right) / 2, clientY: (c.top + c.bottom) / 2, bubbles: true }));
+    };
+    const drawnTotal = () => Number(ovCanvas().dataset.drawnTotal);
+    const screenCanvasNode = () => document.querySelector('[data-map-overlay]').previousElementSibling;
+    const strokeOnScreen = (col, row) => {
+      const c = screenCanvasNode();
+      const r = c.getBoundingClientRect();
+      const point = { clientX: r.left + ((col + 0.5) * r.width) / 16, clientY: r.top + ((row + 0.5) * r.height) / 15, button: 0, bubbles: true, pointerId: 1, isPrimary: true };
+      c.dispatchEvent(new PointerEvent('pointerdown', point));
+      c.dispatchEvent(new PointerEvent('pointerup', point));
+    };
+    const noOverflow = (what) => {
+      const stage = stageNode();
+      if (stage.scrollWidth > stage.clientWidth || stage.scrollHeight > stage.clientHeight) throw new Error('overview: ' + what + ': the stage overflows (' + stage.scrollWidth + 'x' + stage.scrollHeight + ' in ' + stage.clientWidth + 'x' + stage.clientHeight + ')');
+      // the centred stage clips what overflows to its top and left, which scrollHeight does not count: so also ask that
+      // the screen and the overview box lie inside it
+      const inside = stage.getBoundingClientRect();
+      for (const [name, node] of [['screen', screenCanvasNode()], ['scroll box', ovBox()]]) {
+        const r = node.getBoundingClientRect();
+        if (r.top < inside.top - 1 || r.bottom > inside.bottom + 1 || r.left < inside.left - 1 || r.right > inside.right + 1) throw new Error('overview: ' + what + ': the ' + name + ' is not inside the stage');
+      }
+    };
+    const showOverview = async (what, condition) => {
+      await showMap();
+      await until('overview: ' + what, condition || (() => ovCanvas()));
+    };
+    // the Forge has laid itself out for the stage's present size (renderer/forges/map/map.js sets data-laid-out from its
+    // size observer after every pass): what to wait on after changing the stage, instead of a delay
+    const stageSettled = (what) => until('overview: ' + what + ' laid out', () => stageNode().dataset.laidOut === stageNode().offsetWidth + 'x' + stageNode().offsetHeight);
+    // make the stage dw px narrower and dh px shorter, as a smaller window would, and wait for the Forge to follow;
+    // returns what to put back
+    const shrinkStage = async (what, dw, dh) => {
+      const stage = stageNode();
+      const saved = stage.style.cssText;
+      const width = stage.offsetWidth - dw;
+      const height = stage.offsetHeight - dh;
+      if (dw) stage.style.width = width + 'px';
+      if (dh) {
+        stage.style.flex = 'none';
+        stage.style.height = height + 'px';
+      }
+      await until('overview: ' + what, () => stage.offsetWidth === width && stage.offsetHeight === height);
+      await stageSettled(what);
+      return async () => {
+        stage.style.cssText = saved;
+        await stageSettled(what + ' put back');
+      };
+    };
+    // the cell's centre is what a pointer reaches: the box shows it and nothing is over it
+    const reachable = (col, row) => {
+      const c = cellClientRect(col, row);
+      return document.elementFromPoint((c.left + c.right) / 2, (c.top + c.bottom) / 2) === ovCanvas();
+    };
+    // The supported minimum window (main/main.js minWidth 1080, minHeight 680): the screen at its smallest zoom and the
+    // overview together are taller than the stage, so the stage scrolls -- and the overview keeps a usable height at the
+    // end of that scroll, with its first cell and a far one reachable and selectable. (A scroll box that may shrink is
+    // squeezed to nothing here, and a centred stage puts the excess on a side no scrollbar reaches.) sideways: whether the
+    // stage may also overflow sideways -- at 1080 wide it always did, the screen at zoom 2 (512 px) being wider than the
+    // stage that leaves.
+    const minimumWindowPaths = [];
+    const atMinimumWindow = async (windowWidth, sideways) => {
+      const naturalWidth = outerWidth;
+      const naturalHeight = outerHeight;
+      const savedStage = stageNode().style.cssText;
+      let pinned = false;
+      window.resizeTo(windowWidth, 680);
+      for (let waited = 0; waited < 3000 && (innerHeight > 680 || innerWidth > windowWidth); waited += 50) await wait(50);
+      if (innerHeight > 680 || innerWidth > windowWidth) {
+        // the window manager refused the resize: an approximate constrained-stage regression, not the real window. It narrows
+        // the stage only, so it does not reproduce the reflow a real narrow window causes (the toolbar wraps and takes another
+        // 28 px at 1080 x 680); only a resize that succeeds covers that. minimumWindowPaths says, in the smoke log, which ran.
+        pinned = true;
+        const stage = stageNode();
+        const width = stage.offsetWidth - Math.max(0, innerWidth - windowWidth);
+        const height = stage.offsetHeight - Math.max(0, innerHeight - 680);
+        stage.style.flex = 'none';
+        stage.style.width = width + 'px';
+        stage.style.height = height + 'px';
+        await until('overview: the stage at the minimum window', () => stage.offsetWidth === width && stage.offsetHeight === height);
+      }
+      minimumWindowPaths.push(windowWidth + ' x 680: ' + (pinned ? 'FALLBACK, stage pinned (approximate)' : 'real window resize'));
+      await until('overview: the stage follows the minimum window', () => stageNode().offsetHeight < 600 && (!sideways || stageNode().offsetWidth < 700));
+      await stageSettled('the minimum window');
+      const stage = stageNode();
+      if (stage.scrollHeight <= stage.clientHeight) throw new Error('overview: setup: at the minimum window the screen and the overview should not fit the stage (' + stage.clientHeight + ' px)');
+      // as high as its picture, or the 96 px minus its border, whichever is less (a one-row world is 19 px high whole)
+      if (ovBox().clientHeight < Math.min(90, ovCanvas().height)) throw new Error('overview: at the minimum window the overview box is ' + ovBox().clientHeight + ' px high (the scroll box shrank)');
+      if (!sideways && stage.scrollWidth > stage.clientWidth) throw new Error('overview: at the minimum window the stage overflows sideways (' + stage.scrollWidth + ' in ' + stage.clientWidth + ')');
+      stage.scrollLeft = 0;
+      const lastCol = Number(ovCanvas().dataset.gridW) - 1;
+      const lastRow = Number(ovCanvas().dataset.gridH) - 1;
+      const lastIndex = lastRow * (lastCol + 1) + lastCol;
+      // the top of the stage: the screen is not cut off by a side no scrollbar reaches
+      stage.scrollTop = 0;
+      if (screenCanvasNode().getBoundingClientRect().top < stage.getBoundingClientRect().top - 1) throw new Error('overview: at the minimum window the top of the screen is above the stage and unreachable');
+      // the end of the stage: the whole overview box
+      stage.scrollTop = stage.scrollHeight;
+      if (!within(ovBox().getBoundingClientRect(), stage.getBoundingClientRect())) throw new Error('overview: at the minimum window the scroll box cannot be scrolled fully into the stage');
+      ovBox().scrollTop = 0;
+      ovBox().scrollLeft = 0;
+      if (!reachable(0, 0)) throw new Error('overview: at the minimum window the first cell is not reachable');
+      ovBox().scrollTop = ovBox().scrollHeight;
+      ovBox().scrollLeft = ovBox().scrollWidth;
+      stage.scrollTop = stage.scrollHeight; // the box is still whole in the stage; scrolling it must not have moved that
+      await until('overview: the last cell reachable after scrolling the box', () => reachable(lastCol, lastRow));
+      const last = cellClientRect(lastCol, lastRow);
+      ovCanvas().dispatchEvent(new MouseEvent('click', { clientX: (last.left + last.right) / 2, clientY: (last.top + last.bottom) / 2, bubbles: true }));
+      await until('overview: a click on the last cell (' + lastIndex + ') at the minimum window', () => ovCanvas().dataset.current === String(lastIndex) && screenLabel() === 'Screen ' + lastIndex + ' name');
+      if (pinned) stage.style.cssText = savedStage;
+      else window.resizeTo(naturalWidth, naturalHeight);
+      await until('overview: the stage back to its size after the minimum window', () => stageNode().offsetHeight > 600 && stageNode().offsetWidth > 700);
+      await stageSettled('the stage back to its size');
+      stageNode().scrollTop = 0;
+    };
+    const worldOf = (w, h, name) => {
+      const world = ordinaryMapLiteral(name, w, h);
+      world.streamed = true;
+      world.fillMetatileId = 0;
+      return world;
+    };
+
+    // 7a. a streamed 1 x 30 column on MMC3 horizontal
+    const depthBeforeOverview = depth();
+    s.commit('smoke overview: a streamed 1 x 30 column', (project) => {
+      project.cartridge.mapper = 4;
+      project.cartridge.mirroring = 'horizontal';
+      project.cartridge.camera = true;
+      project.maps[0] = Object.assign(worldOf(1, 30, project.maps[0].name), { id: project.maps[0].id });
+      project.project.startMap = 0;
+      project.project.startScreen = 0;
+    });
+    await showOverview('the 1 x 30 overview');
+    if (thumbs64().length !== 0) throw new Error('overview: a streamed map still shows the legacy 64 x 60 thumbnails');
+    if (sizeBoxes().length !== 2) throw new Error('overview: expected 2 size inputs, saw ' + sizeBoxes().length);
+    if (ovCanvas().dataset.gridW !== '1' || ovCanvas().dataset.gridH !== '30') throw new Error('overview: the 1 x 30 overview is laid out as ' + ovCanvas().dataset.gridW + ' x ' + ovCanvas().dataset.gridH);
+    if (!within(cellClientRect(0, 0), stageNode().getBoundingClientRect())) throw new Error('overview: the first cell of a 1 x 30 map is outside the visible stage');
+    if (!within(ovBox().getBoundingClientRect(), stageNode().getBoundingClientRect())) throw new Error('overview: the scroll box is outside the stage');
+    if (!within(cellClientRect(0, 0), ovBox().getBoundingClientRect())) throw new Error('overview: the first cell is outside its own scroll box');
+    if (getComputedStyle(ovBox()).overflowY !== 'auto' && getComputedStyle(ovBox()).overflowY !== 'scroll') throw new Error('overview: the box does not scroll');
+    noOverflow('1 x 30');
+    if (ovBox().scrollHeight <= ovBox().clientHeight) throw new Error('overview: a 1 x 30 column should scroll down its own box');
+    if (screenCanvasNode().width < 512) throw new Error('overview: the 1 x 30 map shrank the screen below zoom 2: ' + screenCanvasNode().width);
+    // the screen is not charged for the overview's length: in a 1100 px stage the screen grows to zoom 3 beside a 30-screen
+    // column (a reserve that grew with the map, 512 px of it, would hold it at zoom 2), and the stage follows through its
+    // size observer
+    const stageStyle = stageNode().style.cssText;
+    stageNode().style.flex = 'none';
+    // 900 px is too short for zoom 3 and the overview together (720 + 264): the screen stays at zoom 2, and nothing is cut off
+    // (a screen that reserved nothing for the overview takes zoom 3 here and pushes the box out of the stage)
+    stageNode().style.height = '900px';
+    await until('overview: the stage at 900 px', () => stageNode().clientHeight === 900);
+    await stageSettled('the 900 px stage');
+    if (screenCanvasNode().width !== 512) throw new Error('overview: at 900 px the screen should stay at zoom 2, width ' + screenCanvasNode().width);
+    noOverflow('1 x 30 in a 900 px stage');
+    stageNode().style.height = '1100px';
+    await until('overview: a tall stage lets the screen grow to zoom 3', () => screenCanvasNode().width >= 768);
+    if (ovBox().getBoundingClientRect().height > 270) throw new Error('overview: the box grew with the stage: ' + ovBox().getBoundingClientRect().height);
+    noOverflow('1 x 30 in a tall stage');
+    stageNode().style.cssText = stageStyle;
+    await until('overview: the stage back to its size', () => screenCanvasNode().width < 768);
+    // a click: row 5 of a column is screen 5, and the panel's own label follows
+    const before = drawnTotal();
+    clickOverviewCell(0, 5);
+    await until('overview: a click on row 5', () => ovCanvas().dataset.current === '5' && screenLabel() === 'Screen 5 name');
+    if (drawnTotal() - before !== 2) throw new Error('overview: selecting another screen should redraw the two cells whose frame changed, redrew ' + (drawnTotal() - before));
+    // the last row is reachable by scrolling, and its click answers the last screen
+    ovBox().scrollTop = ovBox().scrollHeight;
+    clickOverviewCell(0, 29);
+    await until('overview: a click on the last row', () => ovCanvas().dataset.current === '29' && screenLabel() === 'Screen 29 name');
+    if (!within(cellClientRect(0, 29), ovBox().getBoundingClientRect())) throw new Error('overview: the last row is not in the box after scrolling to it');
+    // a stroke on the current screen redraws exactly that cell
+    const beforeStroke = drawnTotal();
+    strokeOnScreen(8, 7);
+    await until('overview: the stroke', () => s.project.maps[0].screens[29].metatiles[7 * 16 + 8] !== 0);
+    if (drawnTotal() - beforeStroke !== 1) throw new Error('overview: one stroke on one screen of a 30-screen map redrew ' + (drawnTotal() - beforeStroke) + ' cells');
+    // metatile art changed: every picture is stale (the cache version moved), a screen rename changes none
+    const beforeRename = drawnTotal();
+    s.commit('smoke overview: rename a screen', (project) => {
+      project.maps[0].screens[3].name = 'Named';
+    });
+    await until('overview: the rename', () => screenLabel() !== undefined);
+    if (drawnTotal() !== beforeRename) throw new Error('overview: renaming a screen redrew ' + (drawnTotal() - beforeRename) + ' cells');
+    const beforeArt = drawnTotal();
+    s.commit('smoke overview: change metatile 0', (project) => {
+      project.metatiles[0].palette = (project.metatiles[0].palette + 1) % 4;
+    });
+    await until('overview: the metatile art change', () => drawnTotal() - beforeArt === 30);
+    // the current screen scrolls into view when the selection changes without a click: shrinking the map to 1 x 20
+    // sends screen 29 (scrolled to the bottom) back to screen 0, which is above the scrolled box
+    if (ovBox().scrollTop < 10) throw new Error('overview: setup: the box should be scrolled down, scrollTop ' + ovBox().scrollTop);
+    await typeInto(sizeBoxes()[1], 20, 'shrinking to 1 x 20', () => s.project.maps[0].gridH === 20 && ovCanvas().dataset.current === '0');
+    await until('overview: screen 0 scrolled into view', () => within(cellClientRect(0, 0), ovBox().getBoundingClientRect()));
+    // a far click (a cell far below the box's view, as a keyboard or a search would select) keeps the current cell in view
+    clickOverviewCell(0, 18);
+    await until('overview: a far click', () => ovCanvas().dataset.current === '18' && within(cellClientRect(0, 18), ovBox().getBoundingClientRect()));
+    // a click on a cell the box shows only part of brings the whole cell into view: scroll row 10 until its bottom third is
+    // below the box (the click lands on its centre, still shown), and only the scroll-into-view can bring the rest back
+    {
+      const d = ovCanvas().dataset;
+      const top10 = Number(d.pad) + 10 * (Number(d.cellH) + Number(d.gap));
+      const cut = Math.floor(Number(d.cellH) / 3);
+      ovBox().scrollTop = top10 + Number(d.cellH) - cut - ovBox().clientHeight;
+      await until('overview: row 10 shown in part', () => !within(cellClientRect(0, 10), ovBox().getBoundingClientRect(), 0) && cellClientRect(0, 10).top + Number(d.cellH) / 2 < ovBox().getBoundingClientRect().bottom - 1);
+      clickOverviewCell(0, 10);
+      await until('overview: a click on a cell shown in part', () => ovCanvas().dataset.current === '10' && within(cellClientRect(0, 10), ovBox().getBoundingClientRect()));
+    }
+    // 7c. at the minimum window, narrow and wide
+    for (const [windowWidth, sideways] of [[1500, false], [1080, true]]) await atMinimumWindow(windowWidth, sideways);
+    if (Number(ovCanvas().dataset.gridH) < 10) throw new Error('overview: setup: the column should still be tall enough to scroll');
+    step('streamed 7: the overview on a 1 x 30 column', 'no legacy thumbnails; the first cell and the scroll box are inside the stage, which does not overflow; a click on row 5 and on the last row selects screen 5 and 29 and the Screen N name label follows; a selection redraws two cells, a stroke one, a rename none, a metatile art change all thirty; the current screen is scrolled into view after a shrink and after a far click; at the 1080 x 680 minimum window the overview box keeps a positive height, the stage scrolls to the whole box, the screen is not cut off above, and the first cell and a far one are reachable and selectable; minimum-window path(s) run: ' + minimumWindowPaths.join('; '));
+
+    // 7b. a 255-screen four-screen map: 17 x 15 on UNROM 512, and the hit-test is row * gridW + col, not col * gridH + row
+    s.commit('smoke overview: a streamed 17 x 15 four-screen map', (project) => {
+      project.cartridge.mapper = 30;
+      project.cartridge.mirroring = 'fourscreen';
+      project.cartridge.camera = true;
+      project.maps[0] = Object.assign(worldOf(17, 15, project.maps[0].name), { id: project.maps[0].id });
+    });
+    await showOverview('the 17 x 15 overview', () => ovCanvas() && ovCanvas().dataset.gridW === '17');
+    if (thumbs64().length !== 0) throw new Error('overview: a 255-screen map still shows the legacy thumbnails');
+    if (!within(cellClientRect(0, 0), stageNode().getBoundingClientRect())) throw new Error('overview: the first cell of a 17 x 15 map is outside the visible stage');
+    if (!within(cellClientRect(0, 0), ovBox().getBoundingClientRect())) throw new Error('overview: the first cell of a 17 x 15 map is outside its scroll box');
+    noOverflow('17 x 15');
+    if (ovBox().scrollHeight <= ovBox().clientHeight) throw new Error('overview: setup: in the usual stage a 17 x 15 map should need to scroll');
+    // a taller stage gives the overview room to show the whole world at once (the size observer relays it out)
+    const stageStyle17 = stageNode().style.cssText;
+    stageNode().style.flex = 'none';
+    stageNode().style.height = '1100px';
+    await until('overview: a tall stage shows all of a 17 x 15 map', () => ovBox().scrollHeight <= ovBox().clientHeight && ovBox().scrollWidth <= ovBox().clientWidth);
+    stageNode().style.cssText = stageStyle17;
+    await until('overview: the stage back to its size (17 x 15)', () => ovBox().scrollHeight > ovBox().clientHeight);
+    clickOverviewCell(3, 2);
+    await until('overview: a click at column 3, row 2', () => ovCanvas().dataset.current === '37' && screenLabel() === 'Screen 37 name');
+    clickOverviewCell(16, 14);
+    await until('overview: a click on the last column of the last row', () => ovCanvas().dataset.current === '254' && screenLabel() === 'Screen 254 name');
+    if (!within(cellClientRect(16, 14), ovBox().getBoundingClientRect())) throw new Error('overview: the last screen is not in view after selecting it');
+    // a shorter stage at the same scale (a window dragged shorter) must not leave the current screen below the box's end
+    {
+      const boxBefore = ovBox().clientHeight;
+      const scaleBefore = ovCanvas().dataset.scale;
+      const putBack = await shrinkStage('a shorter stage under screen 254', 0, 70);
+      if (ovBox().clientHeight >= boxBefore || ovCanvas().dataset.scale !== scaleBefore) throw new Error('overview: setup: the shorter stage should shrink the box (' + boxBefore + ' -> ' + ovBox().clientHeight + ') and keep the scale');
+      if (!within(cellClientRect(16, 14), ovBox().getBoundingClientRect())) throw new Error('overview: after the stage shrank in height the current screen is out of its box');
+      // ...but an author who scrolled away from the current screen keeps the place they chose, across a repaint and a resize
+      ovBox().scrollTop = 0;
+      strokeOnScreen(3, 3);
+      await until('overview: a stroke on screen 254', () => s.project.maps[0].screens[254].metatiles[3 * 16 + 3] !== 0);
+      if (ovBox().scrollTop !== 0) throw new Error('overview: a repaint after a stroke scrolled the box to ' + ovBox().scrollTop + ' from where the author left it');
+      await putBack();
+      ovBox().scrollTop = 0;
+      const putBackAgain = await shrinkStage('a shorter stage while scrolled away', 0, 30);
+      if (ovBox().scrollTop !== 0) throw new Error('overview: a resize snatched the box back to the current screen (scrollTop ' + ovBox().scrollTop + ')');
+      await putBackAgain();
+      if (ovBox().scrollTop !== 0) throw new Error('overview: undoing the resize snatched the box back to the current screen (scrollTop ' + ovBox().scrollTop + ')');
+      // choosing a different screen brings it into view, from where the author had scrolled to
+      clickOverviewCell(16, 13);
+      await until('overview: screen 237 chosen from a scrolled-away box', () => ovCanvas().dataset.current === '237' && within(cellClientRect(16, 13), ovBox().getBoundingClientRect()));
+    }
+    clickOverviewCell(16, 0);
+    await until('overview: a click on the last column of the first row', () => ovCanvas().dataset.current === '16');
+    clickOverviewCell(0, 14);
+    await until('overview: a click on the first column of the last row', () => ovCanvas().dataset.current === '238');
+    // a click in the gap between two cells selects nothing
+    const gapRect = cellClientRect(1, 1);
+    const gapNow = ovCanvas().dataset.current;
+    ovCanvas().dispatchEvent(new MouseEvent('click', { clientX: gapRect.left - 1, clientY: gapRect.top + 4, bubbles: true }));
+    if (ovCanvas().dataset.current !== gapNow) throw new Error('overview: a click in the gap between two cells changed the selection');
+    const beforeBig = drawnTotal();
+    clickOverviewCell(3, 2);
+    await until('overview: back to 37', () => ovCanvas().dataset.current === '37');
+    strokeOnScreen(3, 3);
+    await until('overview: the stroke on a 255-screen map', () => s.project.maps[0].screens[37].metatiles[3 * 16 + 3] !== 0);
+    if (drawnTotal() - beforeBig !== 3) throw new Error('overview: a selection (2 cells) and one stroke (1 cell) on a 255-screen map redrew ' + (drawnTotal() - beforeBig) + ' cells');
+    // a 255 x 1 row on MMC3 vertical: it scrolls sideways inside its own box, and its first cell is still reachable
+    s.commit('smoke overview: a streamed 255 x 1 row', (project) => {
+      project.cartridge.mapper = 4;
+      project.cartridge.mirroring = 'vertical';
+      project.cartridge.camera = true;
+      project.maps[0] = Object.assign(worldOf(255, 1, project.maps[0].name), { id: project.maps[0].id });
+    });
+    await showOverview('the 255 x 1 overview', () => ovCanvas() && ovCanvas().dataset.gridW === '255');
+    if (!within(cellClientRect(0, 0), stageNode().getBoundingClientRect())) throw new Error('overview: the first cell of a 255 x 1 map is outside the visible stage (negative-side clipping)');
+    if (ovBox().scrollWidth <= ovBox().clientWidth) throw new Error('overview: a 255 x 1 row should scroll along its own box');
+    noOverflow('255 x 1');
+    ovBox().scrollLeft = ovBox().scrollWidth;
+    clickOverviewCell(254, 0);
+    await until('overview: the last column of a 255 x 1 row', () => ovCanvas().dataset.current === '254' && screenLabel() === 'Screen 254 name');
+    // a narrower stage at the same scale (a window dragged narrower) must not leave the last screen beyond the box's end
+    {
+      const boxBefore = ovBox().clientWidth;
+      if (!within(cellClientRect(254, 0), ovBox().getBoundingClientRect())) throw new Error('overview: setup: screen 254 of a 255 x 1 row should be in its box');
+      const putBack = await shrinkStage('a narrower stage under screen 254', 150, 0);
+      if (ovBox().clientWidth >= boxBefore) throw new Error('overview: setup: the narrower stage should shrink the box (' + boxBefore + ' -> ' + ovBox().clientWidth + ')');
+      if (!within(cellClientRect(254, 0), ovBox().getBoundingClientRect())) throw new Error('overview: after the stage shrank in width the current screen is out of its box');
+      await putBack();
+      // ...and, as for height, an author who scrolled away from screen 254 keeps the place they chose when the width shrinks
+      ovBox().scrollLeft = 0;
+      if (within(cellClientRect(254, 0), ovBox().getBoundingClientRect())) throw new Error('overview: setup: scrolled to the start, screen 254 should be out of the box');
+      const putBackWide = await shrinkStage('a narrower stage while scrolled away', 150, 0);
+      if (ovBox().scrollLeft !== 0) throw new Error('overview: a width change snatched the box back to the current screen (scrollLeft ' + ovBox().scrollLeft + ')');
+      await putBackWide();
+      if (ovBox().scrollLeft !== 0) throw new Error('overview: undoing the width change snatched the box back to the current screen (scrollLeft ' + ovBox().scrollLeft + ')');
+    }
+    // and at the minimum window a row as wide as the stage must not push the stage sideways when its scrollbar appears
+    await atMinimumWindow(1500, false);
+    step('streamed 7b: the overview on a 255-screen map', 'a streamed 17 x 15 four-screen map and a 255 x 1 row: the first cell is inside the stage and its box, the stage does not overflow, a click at (3, 2) selects screen 37 (row * gridW + col, not col * gridH + row), the last column and last row and the last screen answer their own index, a click in a gap selects nothing, a selection redraws two cells and a stroke one; a shorter (17 x 15) and a narrower (255 x 1) stage keep the current last screen in its box, a stroke and a resize (of height, and of width) leave a box the author scrolled away alone; the 255 x 1 row is reachable at the 1500 x 680 minimum window without pushing the stage sideways; minimum-window path(s) run so far: ' + minimumWindowPaths.join('; '));
+
+    // 8. an ordinary 4 x 4 map keeps the legacy 64 x 60 thumbnails, and no overview is in the page
+    s.commit('smoke overview: an ordinary 4 x 4 map', (project) => {
+      project.maps[0] = Object.assign(ordinaryMapLiteral(project.maps[0].name, 4, 4), { id: project.maps[0].id });
+    });
+    await showMap();
+    await until('overview: sixteen legacy thumbnails', () => thumbs64().length === 16);
+    if (ovCanvas() || ovBox()) throw new Error('overview: an ordinary 4 x 4 map has an overview in the page');
+    if (sizeBoxes().length !== 2) throw new Error('overview: expected 2 size inputs on an ordinary map, saw ' + sizeBoxes().length);
+    thumbs64()[5].click();
+    await until('overview: a legacy thumbnail click', () => screenLabel() === 'Screen 5 name');
+    step('streamed 8: an ordinary 4 x 4 map keeps the legacy thumbnails', '16 canvases of 64 x 60, no overview in the page, still 2 number inputs; a thumbnail click selects its screen and the Screen N name label follows');
+    await undoTo(depthBeforeOverview, 'undo to before the overview');
+
     await undoTo(baseDepth, 'undo to the baseline');
     if (JSON.stringify(s.project) !== baselineJson) throw new Error('streamed: the smoke block did not undo back to its baseline');
   }

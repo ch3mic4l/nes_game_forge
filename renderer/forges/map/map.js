@@ -69,6 +69,18 @@ import {
   STALE_RESIZE_NOTE,
   duplicateFullMessage
 } from './streamedui.js';
+import {
+  usesOverview,
+  inView,
+  overviewBox,
+  layoutOverview,
+  cellRect,
+  cellAt,
+  scrollTarget,
+  cellLabel,
+  cellState,
+  changedCells
+} from './overview.js';
 import { templatesFor, firstFreeSwitch } from './templates.js';
 import {
   MetatileRenderer,
@@ -221,6 +233,40 @@ export function mount(container, app) {
     style: { position: 'absolute', inset: '0', pointerEvents: 'none' }
   });
   const navigator = el('div', { style: { display: 'grid', gap: '4px', justifyContent: 'start' } });
+  // The world overview (overview.js): a streamed map, or a grid larger than an ordinary map's 4 x 4. It is ONE canvas
+  // in a scroll box of its own -- not a child that overflows the centred flex stage, which clips whatever spills to
+  // its left or top where no scrollbar can reach it -- and it takes the legacy navigator's place in the stage only
+  // while such a map is open (`renderNavigator`). One canvas, because a map of 255 screens as 255 canvases rebuilt on
+  // every edit cost 115-131 ms a time; here an edit redraws only the cells it touched (`renderOverview`).
+  const overview = { layout: null, key: '', drawn: [], version: -1, shown: '', view: { width: 0, height: 0 }, active: false, drawnTotal: 0 };
+  const overviewCanvas = el('canvas', {
+    dataset: { mapOverview: '' },
+    style: { display: 'block', imageRendering: 'pixelated', cursor: 'pointer' },
+    onclick: (event) => {
+      const index = overviewCellAt(event);
+      if (index !== null) selectScreen(index);
+    },
+    onpointermove: (event) => {
+      const index = overviewCellAt(event);
+      overviewCanvas.title = index === null ? '' : cellLabel(currentMap().gridW, index, currentMap().screens[index].name);
+    }
+  });
+  const overviewScroller = el(
+    'div',
+    {
+      dataset: { mapOverviewBox: '' },
+      style: {
+        overflow: 'auto',
+        // the stage is a column flex box: without this the box is the one child that gives way when screen + overview
+        // do not fit, and a window at its minimum height squeezes it to nothing
+        flexShrink: '0',
+        border: '1px solid var(--line)',
+        borderRadius: '3px',
+        background: 'var(--bg-1)'
+      }
+    },
+    overviewCanvas
+  );
   const entityList = el('div');
   const mapSettings = el('div');
   const cursorInfo = el('span.status-meta');
@@ -296,7 +342,9 @@ export function mount(container, app) {
   // room the screen can grow into.
   function screenZoom() {
     if (state.zoom !== 'fit') return state.zoom;
-    const reserve = navigator.offsetHeight + NAV_GAP;
+    // The overview is bounded by construction (its own box, `overviewBox`), so a 255-screen map does not take the
+    // screen's room the way 255 legacy thumbnails would have.
+    const reserve = (overview.active ? overviewScroller : navigator).offsetHeight + NAV_GAP;
     // Never below 2: in a narrow window scrolling a readable screen beats
     // shrinking it to something you cannot draw on.
     return fitZoom(mapStage, SCREEN_PX_W, SCREEN_PX_H, { min: 2, max: 8, reserve });
@@ -378,8 +426,157 @@ export function mount(container, app) {
     }
   }
 
+  /** The one path a navigator click takes, legacy thumbnail or overview cell alike. */
+  function selectScreen(index) {
+    state.screenIndex = index;
+    state.regionSelection = null; // a selection made on one screen means nothing on another
+    renderScreen();
+    renderNavigator();
+    // the panel's "Screen N name" field and the actor list are about the current screen (renderMapSettings ends in
+    // renderEntities); without this the field kept naming the screen the author had just left
+    renderMapSettings();
+  }
+
+  /** The room the stage leaves, less the scroll box's own 1 px border. */
+  function stageInner() {
+    const style = getComputedStyle(mapStage);
+    return {
+      width: mapStage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2,
+      height: mapStage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 2
+    };
+  }
+
+  /** The screen under a pointer event on the overview canvas, or null. */
+  function overviewCellAt(event) {
+    if (!overview.layout) return null;
+    const rect = overviewCanvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return cellAt(
+      overview.layout,
+      ((event.clientX - rect.left) * overviewCanvas.width) / rect.width,
+      ((event.clientY - rect.top) * overviewCanvas.height) / rect.height
+    );
+  }
+
+  function drawOverviewCell(context, layout, index, screen, isStart) {
+    const rect = cellRect(layout, index);
+    context.clearRect(rect.x - layout.gap, rect.y - layout.gap, rect.w + 2 * layout.gap, rect.h + 2 * layout.gap);
+    for (let row = 0; row < LIMITS.screenRows; row++) {
+      for (let col = 0; col < LIMITS.screenCols; col++) {
+        renderer.draw(
+          context,
+          screen.metatiles[row * LIMITS.screenCols + col],
+          rect.x + col * layout.scale,
+          rect.y + row * layout.scale,
+          layout.scale
+        );
+      }
+    }
+    if (isStart) {
+      const mark = Math.min(6, 3 + layout.scale);
+      context.fillStyle = '#ff9d3c';
+      context.fillRect(rect.x, rect.y, mark, mark);
+    }
+  }
+
+  /**
+   * Lay the overview out in the room the stage has now, redraw exactly the cells whose picture is stale (an edit to
+   * one screen is one cell; selecting another is two; a resize, a different map shape or new metatile art is all of
+   * them), and scroll the current screen into view when it, the map or the layout changed -- never because a stroke
+   * merely repainted, which would snatch the box away from where the author scrolled it.
+   */
+  function renderOverview() {
+    const map = currentMap();
+    const box = overviewBox(stageInner(), { screenHeight: SCREEN_PX_H * 2, gap: NAV_GAP });
+    const layout = layoutOverview(map.gridW, map.gridH, box);
+    overviewScroller.style.maxWidth = `${box.width}px`;
+    overviewScroller.style.maxHeight = `${box.height}px`;
+    const key = [layout.gridW, layout.gridH, layout.scale, layout.width, layout.height].join('x');
+    if (key !== overview.key || renderer.version !== overview.version) {
+      overviewCanvas.width = layout.width;
+      overviewCanvas.height = layout.height;
+      overviewCanvas.style.width = `${layout.width}px`;
+      overviewCanvas.style.height = `${layout.height}px`;
+      overview.key = key;
+      overview.version = renderer.version;
+      overview.drawn = [];
+    }
+    overview.layout = layout;
+    const context = overviewCanvas.getContext('2d');
+    // a screen at one pixel per metatile is an average, not a sample
+    context.imageSmoothingEnabled = layout.scale === 1;
+    context.imageSmoothingQuality = 'high';
+    const { startMap, startScreen } = store.project.project;
+    const startIndex = startMap === state.mapIndex ? startScreen : -1;
+    const stale = changedCells(overview.drawn, map.screens, startIndex, state.screenIndex);
+    for (const index of stale) {
+      const screen = map.screens[index];
+      drawOverviewCell(context, layout, index, screen, index === startIndex);
+      overview.drawn[index] = cellState(screen, index === startIndex, index === state.screenIndex);
+    }
+    // the current screen's frame lives in the gap, which a neighbour's redraw may have cleared: stroke it every time
+    const current = cellRect(layout, state.screenIndex);
+    if (current) {
+      context.strokeStyle = getComputedStyle(overviewScroller).getPropertyValue('--accent').trim() || '#ff9d3c';
+      context.lineWidth = 2;
+      context.strokeRect(current.x - 1, current.y - 1, current.w + 2, current.h + 2);
+    }
+    // The screen was in view and a resize took the room it was in: keep it in view. A screen the author had scrolled
+    // away from stays where it is -- a resize is not a reason to snatch the box back -- and so does a plain repaint.
+    const view = { width: overviewScroller.clientWidth, height: overviewScroller.clientHeight };
+    const resized = view.width !== overview.view.width || view.height !== overview.view.height;
+    const keepInView =
+      resized &&
+      overview.view.width > 0 &&
+      inView(layout, state.screenIndex, {
+        left: overviewScroller.scrollLeft,
+        top: overviewScroller.scrollTop,
+        width: overview.view.width,
+        height: overview.view.height
+      });
+    overview.view = view;
+    const shown = `${state.mapIndex}:${state.screenIndex}:${key}`;
+    if ((shown !== overview.shown || keepInView) && overviewScroller.clientWidth > 0) {
+      overview.shown = shown;
+      const target = scrollTarget(layout, state.screenIndex, {
+        left: overviewScroller.scrollLeft,
+        top: overviewScroller.scrollTop,
+        width: overviewScroller.clientWidth,
+        height: overviewScroller.clientHeight
+      });
+      overviewScroller.scrollLeft = target.left;
+      overviewScroller.scrollTop = target.top;
+    }
+    const data = overviewCanvas.dataset;
+    data.gridW = String(layout.gridW);
+    data.gridH = String(layout.gridH);
+    data.cellW = String(layout.cellW);
+    data.cellH = String(layout.cellH);
+    data.gap = String(layout.gap);
+    data.pad = String(layout.pad);
+    data.scale = String(layout.scale);
+    data.current = String(state.screenIndex);
+    overview.drawnTotal += stale.length;
+    data.redrawn = String(stale.length); // how many cells the last pass drew, and how many in all: a full rebuild per edit shows here
+    data.drawnTotal = String(overview.drawnTotal);
+  }
+
   function renderNavigator() {
     const map = currentMap();
+    if (usesOverview(map) !== overview.active) {
+      overview.active = !overview.active;
+      (overview.active ? navigator : overviewScroller).remove();
+      mapStage.append(overview.active ? overviewScroller : navigator);
+      // Centred, but never beyond the top or left edge: the stage scrolls only forwards, so where the screen and the
+      // overview together are taller than the window (the 680 px minimum) the excess has to run off the bottom.
+      // Ordinary maps keep the stage's own centring untouched.
+      mapStage.style.justifyContent = overview.active ? 'safe center' : '';
+      mapStage.style.alignItems = overview.active ? 'safe center' : '';
+    }
+    if (overview.active) {
+      renderOverview();
+      return;
+    }
     clear(navigator);
     navigator.style.gridTemplateColumns = `repeat(${map.gridW}, auto)`;
     map.screens.forEach((screen, index) => {
@@ -395,13 +592,7 @@ export function mount(container, app) {
           cursor: 'pointer'
         },
         title: screen.name?.trim() ? `Screen ${index} — ${screen.name}` : `Screen ${index}`,
-        onclick: () => {
-          state.screenIndex = index;
-          state.regionSelection = null; // a selection made on one screen means nothing on another
-          renderScreen();
-          renderNavigator();
-          renderEntities();
-        }
+        onclick: () => selectScreen(index)
       });
       const context = thumb.getContext('2d');
       context.imageSmoothingEnabled = false;
@@ -2349,7 +2540,12 @@ export function mount(container, app) {
 
   container.append(root);
   renderAll();
-  const stopWatchingStage = observeSize(mapStage, renderScreen);
+  const stopWatchingStage = observeSize(mapStage, () => {
+    if (overview.active) renderOverview(); // the room it may take follows the stage; before the screen, which fits to what is left
+    renderScreen();
+    // the size this pass laid the Forge out for: what a test waits on instead of a delay
+    mapStage.dataset.laidOut = `${mapStage.offsetWidth}x${mapStage.offsetHeight}`;
+  });
   app.setMeta('Map Forge');
 
   return {

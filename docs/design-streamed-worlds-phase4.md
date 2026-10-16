@@ -1,6 +1,7 @@
 # Large streamed worlds, phase 4: the Map Forge learns a streamed map (ROADMAP item 15)
 
-Design record, written 2026-10-15 at commit C1 (the Streamed toggle, the size fields, Duplicate screen). Phases 1-3b
+Design record, written 2026-10-15 at commit C1 (the Streamed toggle, the size fields, Duplicate screen) and closed 2026-10-16 at
+commit C2 (the world overview). Phases 1-3b
 (`docs/design-streamed-worlds.md`, `-phase3a.md`, `-phase3b.md`) made a streamed map build and run; until this phase a
 streamed map could be authored only by hand in the project JSON. The long-form historical design is
 `docs/design-streamed-worlds-history.md` ("Phase 4 - Map Forge tooling"); this file is the as-built record.
@@ -15,8 +16,9 @@ still be edited), the board's byte capacity (`checkCapacity`) appears only at Bu
 paths (Add map, Duplicate map, promoting a screen to a new map) are unchanged. Phase 4 is **renderer-only**: nothing under `shared/`, `main/build/` or
 `engine/` changes, so the identity fingerprint does not move and no ring certificate is renewed.
 
-- **C1 (this record):** the Streamed checkbox, the size fields, Duplicate screen.
-- **C2 (next):** the world overview (the navigator at 1 x 255 / 255 x 1 and at a full project-sized map).
+- **C1:** the Streamed checkbox, the size fields, Duplicate screen.
+- **C2:** the world overview (the navigator at 1 x 255 / 255 x 1 and at a full project-sized map). **Phase 4 is closed with C2,
+  and so is ROADMAP item 15.**
 
 ## Rulings
 
@@ -156,11 +158,149 @@ ran it for every project and refused such a resize), and a repair shrink of an e
 
 The scenario keeps its assertion of exactly two number inputs.
 
-## Next: C2, the world overview
+## C2: the world overview
 
-`renderNavigator` draws one 64 x 60 canvas per screen in the centred `.canvas-stage`, which clips negative overflow: at
-1 x 30 the first thumbnails are unreachable, at 255 x 1 about 129 are, and every edit rebuilds them all (about 120 ms at
-240 screens). C2 gives a streamed (or larger than 4 x 4) map its own bounded scroll box with scaled cells, keeps the
-current screen in view, keeps the legacy 64 x 60 thumbnails for ordinary maps of 4 x 4 or fewer (thirteen smoke selectors
-find them), and stops `screenZoom` reserving the navigator's height. Pure layout and hit-test in `overview.js`, a unit test,
-two smoke steps and a screenshot. ROADMAP item 15 closes at C2.
+`renderNavigator` drew one 64 x 60 canvas per screen in the centred `.canvas-stage`, which clips negative overflow: at
+1 x 30 the first thumbnails were unreachable, at 255 x 1 about 129 were, and every edit rebuilt them all. C2 gives a
+streamed map, and any ordinary map over 4 per axis, its own scroll box with scaled cells; an ordinary map of 4 x 4 or
+fewer keeps the legacy thumbnails untouched (thirteen smoke selectors find them). Still **renderer-only**: the identity
+fingerprint is byte-equal before and after.
+
+### Decisions
+
+- **One pure module, `renderer/forges/map/overview.js`** (DOM-free; imports only `LIMITS` and `mapGridLimit` from
+  `shared/project.js`, so the "ordinary map" threshold is the limit itself, not a literal 4). `usesOverview(map)` (`:30`) is the
+  single predicate for which navigator a map gets: `streamed === true`, or either axis over `mapGridLimit({})`. `overviewBox`
+  (`:40`) bounds the room (width = the stage's, height clamped to 96..264 px, whatever the map). `layoutOverview` (`:59`) picks the
+  **largest integer scale 1..4 at which the whole grid fits, else scale 1 and the box scrolls**, and reports the extent
+  (`2*pad + n*cell*scale + (n-1)*gap`). `cellRect` (`:89`) and `cellAt` (`:105`) are exact inverses: the flat index is
+  `row*gridW + col`, a point in the margin, a gap, past the last column/row, or not a number answers `null`. `scrollTarget`
+  (`:138`) leaves a cell whose whole box (plus a gap) is already in view alone and otherwise centres it, clamped to the extent;
+  `inView` (`:124`) asks the same question without moving anything. `changedCells` (`:178`) compares a per-cell snapshot (`cellState`, `:159`; a `Uint16Array` copy, because metatile ids exceed 255)
+  with what is on screen, so a redraw touches only what changed.
+- **Scale 1 when it does not fit, not 2 (a departure from the first sketch).** A scrolling box shows the most of the world at
+  the smallest scale; a 1 x 30 column at scale 1 is 16 x 15 px per screen, about ten screens visible at the usual window height.
+  The cost is small thumbnails; the cure (a larger box) is bounded by what the screen leaves, deliberately.
+- **One canvas plus hit-testing, not a canvas per cell** (`map.js:242`, `overviewCellAt` `:450`). A 255-screen map as 255 DOM
+  nodes was the cost being removed; with one canvas an edit, an undo or a redo redraws exactly the cells whose snapshot differs
+  (`renderOverview`, `:488`), and the current screen's 2 px frame lives in the gap, so it is stroked on every pass. The box is
+  `overflow:auto` with its own `max-width`/`max-height` (`:254` and `renderOverview`) and `flex-shrink: 0` (`:262`), a sibling of
+  the screen in the stage, never a child that overflows the centred flex (headline 5 of the audit); while it is in the stage the
+  stage centres `safe` (`renderNavigator`, `:573`), so what does not fit runs off the end a scrollbar reaches (Fix round 1, below).
+- **Which navigator is in the stage** is swapped by `renderNavigator` (`:564`) when `usesOverview(map)` changes; the legacy path
+  is the code that was there, untouched. The metatile renderer carries a `version` that moves only when the art changes
+  (`renderer/forges/map/render.js:19-35`). New art, or a change in the drawing layout (grid shape, scale or extent: the `key`
+  in `renderOverview`), clears `overview.drawn` (`map.js:495-502`) and so redraws every cell; nothing else does.
+- **Selection** goes through one `selectScreen` (`:430`), shared by the legacy thumbnail and the overview: set the screen,
+  clear the region selection, `renderScreen`, `renderNavigator`, **`renderMapSettings`**. The last is a departure that fixes a
+  legacy bug: a thumbnail click left the panel's "Screen N name" label and field on the screen just left. It is the one change
+  to ordinary maps' behaviour; smoke step 8 pins that the label now follows.
+- **The current screen scrolls into view** (`renderOverview`, via `scrollTarget`) when the map, the screen or the layout changed,
+  and when a resize of the box took the room a screen that **was** whole in view had (`keepInView`, via `inView`,
+  `map.js:527-538`; Fix round 1). Never because a stroke merely repainted, and never for a screen the author had scrolled away
+  from -- either would snatch the box from where they put it. Selection, a Build-panel change and a shrinking map go through it.
+- **`screenZoom` reserve** (`:347`) is the overview box's (bounded) height plus the gap, not the height of a navigator that grew
+  with the map; `observeSize(mapStage)` (`:2543`) relays the overview out before the screen, which fits to what is left.
+- **Streamed always uses the overview, even at 1 x 1.** The alternative, legacy thumbnails for a small streamed map, was
+  considered: C1's smoke steps do not rely on legacy thumbnails for a streamed map, and one predicate is simpler than two;
+  the cost is small: a streamed 1 x 1 is drawn at the largest scale that fits, which in the normal window is 4 (a 64 x 60 cell,
+  the legacy thumbnail's size); only a world too big to fit even at scale 1 draws 16 x 15 cells and scrolls.
+- **Out of scope (Chris, Q2 = A):** warp/door overlays, zoomed thumbnails, pan/zoom.
+
+### Tests, and what each catches
+
+`test/unit/mapoverview.test.js` (20 tests), over 1 x 30, 30 x 1, 255 x 1, 1 x 255, 16 x 15, 17 x 15 and 4 x 4, including the
+last column and row, and a range of box sizes:
+
+- **U9** geometry and hit-test: the first three catch a transposed index (`col*gridH + row`), an off-by-one at the last column or
+  row (or one past it), a gap or the margin answering a screen, and a column-major `cellRect`; the brute-force pixel map of a
+  small overview proves the inverse for every pixel, not only cell centres.
+- **U10** layout and predicate: the extent fits or the box scrolls on the axis it exceeds, never where it cannot (catches a
+  scroll flag that lies); the largest scale that fits (catches fixed 64 px cells and "always the smallest"); the bounded box
+  (catches a box that takes whatever the stage has left); the predicate per axis (catches "overview for every map", "streamed
+  only", and a test by area).
+- **U12** `scrollTarget`: whole cell in view, an in-view cell leaves the box alone (catches centring on every click), far cells
+  centre and clamp to the extent (catches no clamp, no scrolling). `inView` (Fix round 1): agrees with `scrollTarget` (a screen
+  is in view exactly when the target leaves the box where it is), counts the gap round the cell to the pixel, and answers
+  "hidden" once a view shrinks under a screen that was whole in it (catches an always-yes `inView`, one that ignores an axis
+  or the gap).
+- **U13** `changedCells`: nothing drawn means all stale and drawn means none; one edit is one cell however many screens exist
+  (catches a full rebuild per edit); selecting redraws the two frame cells; a start-marker move redraws two; an id above 255 is
+  compared, not truncated; a reshaped grid is stale only where it has no drawn cell.
+- `cellLabel`, the flat index and the column and row in the tooltip.
+
+`test/unit/docclaims.test.js` has a new test pinning what this record claims: the README's streamed-worlds row says a streamed
+map's screens appear as a scrolling overview; `map.js` has the predicate, the swap, the shared `selectScreen`, the box's
+own overflow and bounds, and the version check; `overview.js` is DOM-free, imports only `shared/project.js` and states no
+literal limit; `render.js` bumps `version` only when the art key changes.
+
+`main/smoke.js`, three more steps after "streamed 6", in the real window. Every wait is on a state: after a stage resize, on the size the Forge reports having laid out for
+(`data-laid-out` on the stage, set by the size observer after each pass, `map.js:2547`; the earlier fixed `wait(150)` there is gone),
+and the one polled wait is `window.resizeTo` taking effect, bounded at three seconds:
+
+7. **streamed 7, a 1 x 30 column on MMC3 horizontal:** no legacy thumbnails, two size inputs, the first cell and the scroll box
+   inside the stage (which, in the usual window, has no overflow, and whose children lie inside it, because the centred stage hides top/left overflow
+   from `scrollHeight`); in a 900 px stage the screen stays at zoom 2 and nothing is cut off, in a 1100 px stage it grows to zoom
+   3 beside the same box (catches a reserve that is zero, or one that grows with the map); a click on row 5 selects screen 5 and
+   the "Screen 5 name" label follows; the last row, once scrolled to, selects screen 29; one stroke redraws exactly one cell, a
+   rename none, a metatile-art change all thirty; shrinking to 1 x 20 scrolls screen 0 into view (a selection change with no
+   click); a click on a cell shown only in part brings the whole cell into view (catches no scroll-into-view). At the minimum
+   window (`atMinimumWindow`, 1500 x 680 and 1080 x 680, by a real `window.resizeTo`; if the window manager refuses, a fallback pins
+   the stage to approximately the remaining size calculated from the window-size deltas -- an approximate constrained-stage regression, not the real window: it narrows the
+   stage only, so it does not reproduce the reflow a real narrow window causes (the toolbar wraps and takes another 28 px at
+   1080 x 680), which only a resize that succeeds covers; the step's log line names which path ran): the box keeps its height, the stage
+   scrolls to the whole box, the top of the screen is not above the stage, and the first cell and the last are reachable
+   (`elementFromPoint` finds the canvas at their centres) and selectable. (1080 wide is narrower than the screen at zoom 2, 512 px,
+   so the stage has always scrolled sideways there; that width is not asked to avoid it.)
+7b. **streamed 7b, a 17 x 15 four-screen map and a 255 x 1 row:** a click at (3, 2) selects screen 37, at (16, 14) screen 254,
+   at (16, 0) screen 16, at (0, 14) screen 238 (a transposed index lands elsewhere; the last column and row work); a click in a
+   gap selects nothing; selecting then stroking redraws three cells; a taller stage shows all of 17 x 15 at once, and in the
+   usual stage it scrolls; the 255 x 1 row's first cell is in the stage and its box, and a click at (254, 0) after scrolling
+   selects screen 254. A stage made 70 px shorter (17 x 15) or 150 px narrower (255 x 1) under the selected last screen at the
+   same scale leaves that screen in its box; scrolled away from it, a stroke and a further shrink leave the box where the author
+   put it, whether the stage shrinks in height (17 x 15) or in width (255 x 1: the box scrolled to the start stays at the start
+   through a 150 px narrower stage and back); the 255 x 1 row is then also checked at the minimum window.
+8. **streamed 8, an ordinary 4 x 4 map:** sixteen 64 x 60 canvases, no overview in the page, two number inputs, and a thumbnail
+   click moves the "Screen N name" label (catches the overview used for small maps, and the `selectScreen` fix dropped).
+
+Screenshots (`FORGE_SHOT_FORGE=map`, `FORGE_SHOT_SETUP`): `handoff-next/mapforge/c2/overview-1x30.png` and `overview-16x15.png`. Fix round 1 adds `handoff-next/mapforge/c2-fix1/overview-1x30-min-window.png`, the 1 x 30 map at the 1500 x 680 minimum window (the stage scrolled to its end: the lower part of the screen, then the overview box with the current screen framed).
+
+### Measured: the cost of a stroke
+
+A real pointer stroke on the screen canvas, in the built Electron window, on a 255-screen map (17 x 15, four-screen), median
+of seven strokes, the old code (a `git archive HEAD` copy) and the new one interleaved three rounds on a machine at load ~21
+(`handoff-next/mapforge/c2/ab-*.log`, `probe.mjs`): **1007 / 1141 / 553 ms before; 56 / 62 / 32 ms after** (rounds 1 / 2 / 3). At 255 x 1: **848 / 612 / 634 ms
+before, 127 / 49 / 29 ms after**, in the same round order (the 127 is the first round, the noisiest). A stroke did two full
+navigator rebuilds (the change event's `renderAll` and the pointer-up's own `renderNavigator`); both are now a diff that scans
+the snapshots: the first after a stroke draws the one changed cell, the second draws none. The probe times the whole synchronous
+handler, so it does not say where the ~30 ms that remain goes. A full rebuild per edit is caught by U13 and by smoke step 7's
+redrawn-cell count, not only by this measurement.
+
+### Fix round 1 (the review of C2)
+
+Two P2 findings and the record, all renderer-only.
+
+- **The overview collapsed at the supported minimum window height** (`main/main.js` `minHeight: 680`). The stage is a column flex
+  box; when the screen (at its smallest zoom, 480 px), the gap and the box outgrew it, the one child allowed to give way was the
+  scroll box, which was squeezed to `clientHeight` 0, and the centred stage put the excess above the screen where no scrollbar
+  reaches. Now the box has `flex-shrink: 0` (`map.js:262`) and, while the overview is in the stage, the stage is `safe center`
+  on both axes (`renderNavigator`, `map.js:573-574`; cleared again when the legacy navigator returns, so ordinary maps keep the
+  stage's own centring). The excess runs off the bottom (and right), where the stage's scrollbar reaches it. Caught by smoke
+  `atMinimumWindow` (above): a box free to shrink fails on its height, the old centring on the screen's top edge being above the
+  stage.
+- **A viewport resize could hide the current screen.** The "shown" key (map, screen, layout) ignored the box's client size, so
+  shrinking the window at an unchanged scale skipped `scrollTarget`. Adding the size to the key would have fixed that and made
+  every resize snatch a box the author had scrolled elsewhere, so `renderOverview` remembers the box's client size
+  (`overview.view`) and, when it changed, asks `inView` whether the current screen was whole in the **old** view at the present
+  scroll offsets; only then does it scroll (`keepInView`). Caught by smoke 7b: a shorter stage (17 x 15) and a narrower one
+  (255 x 1) under the last screen; and by the same block's "scrolled away" half, which fails an implementation that scrolls on
+  every repaint or on every resize.
+- **Tests' limits, closed.** U10 cannot see the DOM collapse and U12 cannot see its caller skipping `scrollTarget`; the smoke
+  steps above are the tests that can, and each was shown red against the wrong implementation
+  (`handoff-next/mapforge/c2-fix1/sabotage-*.log`).
+- **The record:** the corrections to the redraw, 1 x 1, wait, measurement and attribution statements above.
+
+### Closed
+
+Phase 4 ships in two renderer-only commits (C1, C2); the identity fingerprint did not move, no ring certificate was renewed,
+and the two deferred wording nits in fingerprinted files stay deferred. ROADMAP item 15 is done.
