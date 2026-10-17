@@ -19,10 +19,10 @@ import {
   flatScreens,
   canTalk,
   BEHAVIORS,
-  RPG_LIMITS,
-  DOOR_LANDING_DEFAULT
+  RPG_LIMITS
 } from '../../../shared/project.js';
 import { describeCommand, describeCondition } from './events.js';
+import { doorTarget } from './worldmarkers.js';
 
 /**
  * One row per placed actor, plus one row per common event — where it is, what
@@ -66,15 +66,16 @@ export function buildEventIndex(project, context) {
     });
   });
 
-  screens.forEach(({ mapIndex, screenIndex, screen }) => {
+  screens.forEach(({ mapIndex, screenIndex, screen }, flat) => {
     screen.entities.forEach((entity, entityIndex) => {
       const actor = project.sprites.actors[entity.actorId];
       const props = entity.props ?? {};
       const detail = [];
 
       if (actor?.behavior === 'door') {
-        const target = screens[props.toScreen ?? 0];
-        detail.push(`→ ${target?.label ?? `screen ${props.toScreen ?? 0}`} at ${props.toX ?? DOOR_LANDING_DEFAULT},${props.toY ?? DOOR_LANDING_DEFAULT}`);
+        // the World view reads a door through the same function, so the list and the map can never disagree about where it leads
+        const door = doorTarget(project, flat, entity);
+        detail.push(`→ ${door.label} at ${door.rawX},${door.rawY}`);
       }
       if (props.event) {
         props.event.pages.forEach((page, position) => {

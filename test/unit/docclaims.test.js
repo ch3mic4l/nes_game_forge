@@ -687,7 +687,7 @@ test('T-close: the current-state docs give the worst-case vram_buf frame as 88 (
 test('World view (item 7, C1): the renderer-only, read-only, synchronous boundary the design record states is what the code has', () => {
   // docs/design-world-overview.md sections 4 and 6: the pure modules and world.js hold no project state and nothing in them waits; map.js reaches the view through
   // openFromWorld, a plain function; and the editing stage the C2 overview pins above are unchanged (they run in the test before this one).
-  const files = ['world.js', 'worldlayout.js', 'worldmarkers.js'];
+  const files = ['world.js', 'worldlayout.js', 'worldmarkers.js', 'worldlinks.js'];
   for (const f of files) {
     const text = read(`renderer/forges/map/${f}`);
     assert.doesNotMatch(text, /commit\(|beginStroke|touch\(|\bstore\b/, `${f} mentions no way to write the project`);
@@ -695,10 +695,10 @@ test('World view (item 7, C1): the renderer-only, read-only, synchronous boundar
   }
   // the pure modules say "window" in their prose (the rectangle of the world a canvas holds), so the DOM-global check reads code only
   const codeOnly = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  for (const f of ['worldlayout.js', 'worldmarkers.js']) assert.doesNotMatch(codeOnly(read(`renderer/forges/map/${f}`)), /\b(document|window|localStorage)\b/, `${f} is DOM-free`);
+  for (const f of ['worldlayout.js', 'worldmarkers.js', 'worldlinks.js']) assert.doesNotMatch(codeOnly(read(`renderer/forges/map/${f}`)), /\b(document|window|localStorage)\b/, `${f} is DOM-free`);
   const world = read('renderer/forges/map/world.js');
   assert.match(world, /import \{[^}]*\bworldHit\b[^}]*\bworldCellRect\b[^}]*\} from '\.\/worldlayout\.js'|import \{[^}]*\bworldCellRect\b[^}]*\bworldHit\b[^}]*\} from '\.\/worldlayout\.js'/s, 'world.js imports the pure hit-test and cell rectangle, not a private copy');
-  assert.match(world, /import \{ buildWorldMarkers \} from '\.\/worldmarkers\.js'/);
+  assert.match(world, /import \{ buildWorldMarkers, describeLink \} from '\.\/worldmarkers\.js'/); // C2 added describeLink for the link tooltip
   assert.doesNotMatch(world, /function (worldHit|worldCellRect|buildWorldMarkers)\b/, 'and defines none of them itself');
   assert.equal([...world.matchAll(/function flushWorld\b/g)].length, 1, 'one flush');
   assert.equal([...world.matchAll(/picture\.width = overlay\.width = win\.w;/g)].length, 1, 'the canvases are sized in one place, to the window');
@@ -706,7 +706,7 @@ test('World view (item 7, C1): the renderer-only, read-only, synchronous boundar
 
   const src = read('renderer/forges/map/map.js');
   assert.match(src, /import \{ createWorldView \} from '\.\/world\.js'/);
-  const fn = /function openFromWorld\(\{ mapIndex, screenIndex \}\) \{([\s\S]*?)\n  \}\n/.exec(src);
+  const fn = /function openFromWorld\(\{ mapIndex, screenIndex, entityIndex \}\) \{([\s\S]*?)\n  \}\n/.exec(src);
   assert.ok(fn, 'openFromWorld is a plain function declaration');
   assert.doesNotMatch(src, /async function openFromWorld/);
   assert.doesNotMatch(fn[1], /\bawait\b|\bimport\(|goTo|selectionToken/, 'it waits for nothing and is not a navigation');
@@ -723,4 +723,29 @@ test('World view (item 7, C1): the renderer-only, read-only, synchronous boundar
   const doc = read('docs/reference-electron-layout.md');
   assert.match(doc, /The World view \(ROADMAP item 7/);
   assert.match(doc, /no `await` and no `import\(`/);
+});
+
+test('World view (item 7, C2): links and markers are read by one pure module that eventlist.js shares, and the click path is the same synchronous openFromWorld', () => {
+  // docs/design-world-overview.md sections 1, 3 and 4: worldmarkers.js may not import the modules that import ui.js (it must load under node:test), eventlist.js
+  // takes a door's line from doorTarget (one reading of a door), world.js reads links through worldlinks.js and never keeps a private hit-test, and a link or marker click
+  // goes through openFromWorld with no await.
+  const markers = read('renderer/forges/map/worldmarkers.js');
+  assert.doesNotMatch(markers, /from '\.\/(eventlist|events|map|world)\.js'|from '\.\.\/\.\.\/ui\.js'|from '\.\.\/\.\.\/store\.js'/, 'worldmarkers.js imports no DOM-side module');
+  assert.match(markers, /export function doorTarget\(/);
+  assert.match(markers, /export function referenceInventory\(/);
+  assert.match(markers, /allCommands/, 'the inventory reads warps through allCommands, as the remapper does');
+  const list = read('renderer/forges/map/eventlist.js');
+  assert.match(list, /import \{ doorTarget \} from '\.\/worldmarkers\.js'/);
+  assert.match(list, /doorTarget\(project, flat, entity\)/);
+  const world = read('renderer/forges/map/world.js');
+  assert.match(world, /import \{[^}]*\blinkAt\b[^}]*\} from '\.\/worldlinks\.js'/s, 'world.js hit-tests links with the pure linkAt');
+  assert.match(world, /import \{[^}]*\blinkPath\b[^}]*\} from '\.\/worldlinks\.js'/s, 'and draws them from the pure linkPath');
+  assert.doesNotMatch(world, /function (linkAt|linkPath|linkFocus|visibleLinks|doorTarget|referenceInventory)\b/, 'and defines none of them itself');
+  const src = read('renderer/forges/map/map.js');
+  assert.match(src, /getOptions: \(\) => worldOptions/);
+  assert.match(src, /const worldOptions = \{ links: 'auto', show: \{ door: true, event: true, talk: false \} \};/, 'R1 and R2: links Auto, talkers off by default');
+  assert.match(src, /dataset: \{ worldLinks: choice \}/);
+  assert.match(src, /dataset: \{ worldFilter: kind \}/);
+  const design = read('docs/design-world-overview.md');
+  assert.match(design, /raw SHA-256 of the whole files `shared\/project\.js` and `shared\/eventrules\.js`/);
 });

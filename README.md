@@ -19,7 +19,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | Area | State |
 |---|---|
 | **Tile Forge** | Done — pixel editor, 1×1/2×2/4×4 regions, palettes, image import with dithering, CHR/PAL import & export |
-| **Map Forge** | Done — metatile editor, screen painting, multi-screen maps, collision overlay, actor placement, player start, dialogue and events; reorder and duplicate maps and screens, and organize maps with folder labels once a project outgrows one screenful (see below) |
+| **Map Forge** | Done — metatile editor, screen painting, multi-screen maps, collision overlay, actor placement, player start, dialogue and events; reorder and duplicate maps and screens, and organize maps with folder labels once a project outgrows one screenful, and see every map at once in the **World** view, with the start, doors, warps and events marked and a link drawn from each door and warp to where it lands (see below) |
 | **Sprite Forge** | Done — metasprite assembly, animation timeline with live preview, actors bound to behaviours |
 | **Items Forge** | Done — name, effect (None for a key item, or Heals/Damages with an amount) and, optionally, the linked Pickup actor; also reachable via a scripted Give item command or a monster's drop |
 | **Magic Forge** | Done — name, kind, a min/max damage or heal range, MP cost, element and scope, for turn-based RPG projects only; a party member's own learned spells stay on the Sprite Forge's Party tab |
@@ -266,6 +266,14 @@ Things worth knowing about the Map Forge once a project is more than a screenful
   screen in the copy, and one that pointed elsewhere in the project still
   points at that same original screen — the project's own title and start
   stay on the originals, never on a copy.
+- **World**, beside the zoom in the Map Forge's toolbar, swaps the screen for a map of every map: each as a
+  block of its screens, the start and title marked, doors, events and (off by default) actors that only talk shown
+  as markers, and a curved link from every door, and every warp in an event, to the pixel it lands on. A
+  click on a screen opens it for editing; a click on a marker opens its screen with that actor's row selected; a
+  click on a link opens the screen it leads to. Up to 32 links are all drawn, with the screen under the pointer
+  standing out; above that only that screen's links are, unless **All** is chosen beside **Links**. A switched-off
+  event is grey, a link to a screen the project does not have (the game goes to the last one) is red and dashed, and
+  nothing in this view changes the project.
 - **Folder**, in a map's own settings, groups it under a label of your choosing —
   the map picker then reads `[Dungeons] Cave 1` instead of just `Cave 1`. It's
   a flat label, not a tree, and it's for you: it never reaches the ROM.

@@ -1648,7 +1648,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // view is driven the way an author drives it -- the toggle, clicks and pointer moves on the surface, scrolls of its box --
   // and read back from the DOM it publishes (data-world-*), never from the pure helpers. Run from the 1-map baseline the
   // streamed block restored; undone to that baseline at the end. (This scenario is a template string: no backticks, no
-  // dollar-brace, no backslashes.) The door and link parts of W2/W3/W6/W11 finish with the links, in the next commit.
+  // dollar-brace, no backslashes.) The door and link parts of W2/W3/W6/W11 are the C2 block below (worlds 12-17, 6b and 17b).
   {
     const s = window.__app.store;
     const depth = () => s.undoStack.length;
@@ -1968,7 +1968,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       await until('world: back to the three maps', () => s.project.maps.length === 3 && s.project.maps[1].screens[0].name === 'M1S0');
       await leave('W6');
     }
-    step('world 6: structure', 'in World mode a map deleted from before the others, undo, redo, a reorder and its undo and redo keep the mode on, the block count follows, every visible cell is painted, and after each of the six a click on a block opens that screen by its own name (never by an index); the actor-marker and link clicks finish with the links commit');
+    step('world 6: structure', 'in World mode a map deleted from before the others, undo, redo, a reorder and its undo and redo keep the mode on, the block count follows, every visible cell is painted, and after each of the six a click on a block opens that screen by its own name (never by an index); the actor-marker and link clicks are world 6b');
 
     // W5 draw counts on the three maps
     {
@@ -2703,6 +2703,648 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       unchanged(before, 'hover, scale changes, a scroll, a click and leaving');
     }
     step('world 9: read-only', 'hovering, the five scale buttons, a scroll, a click that opens a screen and leaving leave store.revision, the undo depth, the dirty flag and the project JSON exactly as they were');
+
+    // ---- C2 (ROADMAP item 7, build commit C2): doors, warps and events as markers, and the links between screens. Driven like the
+    // rest of this block -- the toggle, the toolbar buttons, pointer moves and clicks on the surface -- and read back from the DOM
+    // and the overlay's pixels. A marker is found by its flat fill; a link at a pixel of the overlay in the link colour, kept only
+    // where a hover then names that link; the destination of a click is read by the screen's own name, never by an index.
+    {
+      const FILL = { door: [210, 140, 255], interact: [123, 224, 138], off: [138, 144, 160], talk: [207, 211, 220], warning: [255, 90, 74] };
+      const fillIn = (rgb, box) => {
+        const [wx, wy] = winRect();
+        const data = ovl().getContext('2d').getImageData(box.x - wx, box.y - wy, box.w, box.h).data;
+        const flat = (px, py) => {
+          if (px < 0 || py < 0 || px >= box.w || py >= box.h) return false;
+          const i = (py * box.w + px) * 4;
+          return data[i] === rgb[0] && data[i + 1] === rgb[1] && data[i + 2] === rgb[2] && data[i + 3] === 255;
+        };
+        // a marker is a flat fill at least 3 x 3 pixels (a link is a line 1.5 pixels wide and never is); the answer is the centre of
+        // the box round all such pixels, which is the marker's own centre, where a link starts or ends
+        let x0 = Infinity;
+        let y0 = Infinity;
+        let x1 = -1;
+        let y1 = -1;
+        for (let py = 1; py < box.h - 1; py++) {
+          for (let px = 1; px < box.w - 1; px++) {
+            let solid = true;
+            for (let dy = -1; dy <= 1 && solid; dy++) for (let dx = -1; dx <= 1 && solid; dx++) solid = flat(px + dx, py + dy);
+            if (solid) {
+              x0 = Math.min(x0, px);
+              y0 = Math.min(y0, py);
+              x1 = Math.max(x1, px);
+              y1 = Math.max(y1, py);
+            }
+          }
+        }
+        return x1 < 0 ? null : { x: box.x + Math.round((x0 + x1) / 2), y: box.y + Math.round((y0 + y1) / 2) };
+      };
+      // pixels of the overlay near a colour that are not inside any of the boxes (grown by 2)
+      const nearColour = (rgb, skip, minAlpha = 220) => {
+        const [wx, wy, ww, wh] = winRect();
+        const data = ovl().getContext('2d').getImageData(0, 0, ww, wh).data;
+        const hits = [];
+        for (let i = 0; i < data.length; i += 4) {
+          const d = Math.abs(data[i] - rgb[0]) + Math.abs(data[i + 1] - rgb[1]) + Math.abs(data[i + 2] - rgb[2]);
+          if (data[i + 3] >= minAlpha && d < 36) {
+            const k = i / 4;
+            const x = wx + (k % ww);
+            const y = wy + Math.floor(k / ww);
+            if (!skip.some((b) => x >= b.x - 2 && x < b.x + b.w + 2 && y >= b.y - 2 && y < b.y + b.h + 2)) hits.push({ x: x, y: y });
+          }
+        }
+        return hits;
+      };
+      const entityRowIndex = () => {
+        const row = document.activeElement && document.activeElement.closest ? document.activeElement.closest('[data-entity]') : null;
+        return row ? [...document.querySelectorAll('[data-entity]')].indexOf(row) : -1;
+      };
+      const button = (selector) => document.querySelector(selector);
+      const say = (text) => ({ op: 'say', text: text });
+      const event = (commands) => ({ pages: [{ cond: { type: 'none', arg: 0 }, commands: commands }] });
+      let gate = -1;
+      let guide = -1;
+      s.commit('smoke links: a door actor and an npc', (project) => {
+        project.sprites.actors.push({ name: 'Gate', behavior: 'door', speed: 0 });
+        gate = project.sprites.actors.length - 1;
+        project.sprites.actors.push({ name: 'Guide', behavior: 'npc', speed: 0 });
+        guide = project.sprites.actors.length - 1;
+      });
+      const put = (project, map, screen, actorId, x, y, props) => {
+        project.maps[map].screens[screen].entities.push({
+          actorId: actorId,
+          x: x,
+          y: y,
+          props: Object.assign({ toScreen: 0, toX: 112, toY: 112, dialogue: '', event: null, trigger: 'interact', hideSwitch: null }, props)
+        });
+      };
+
+      // ---- a small cross-map world: Hall (2 x 1: screens 0, 1) and Keep (3 x 1: flat 2, 3, 4)
+      setWorld('links: Hall and Keep', [['Hall', 2, 1, false], ['Keep', 3, 1, false]]);
+      s.commit('smoke links: actors on the screens', (project) => {
+        put(project, 0, 0, guide, 200, 60, { event: event([say('Hello')]) }); // entity 0, an interact event
+        put(project, 0, 0, gate, 32, 48, { toScreen: 3, toX: 112, toY: 112 }); // entity 1: Hall 0 -> Keep screen 1 (flat 3)
+        put(project, 0, 1, gate, 200, 100, { toScreen: 99 }); // dangling: the ROM goes to the last screen
+        put(project, 0, 1, guide, 60, 160, { dialogue: 'I only talk.' }); // a talker (off by default)
+        put(project, 1, 0, guide, 60, 60, { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [Object.assign(say('zzz'), { off: true })] }] }, dialogue: 'Sleeping' });
+        put(project, 1, 1, gate, 32, 48, { toScreen: 0 }); // the reverse of the first door: Keep screen 1 -> Hall screen 0
+        put(project, 1, 2, guide, 90, 90, { event: event([{ op: 'warp', screen: 0, x: 64, y: 64 }]) }); // a warp in an event: Keep screen 2 -> flat 0
+      });
+      await showMap();
+      await enter('links: Hall and Keep');
+      covered('links: entered');
+      {
+        const before = snapshot();
+        if (ds().worldLinks !== '4') throw new Error('world: links: expected 4 links (two doors, a dangling door, a warp), saw ' + ds().worldLinks);
+        if (ds().worldLinkMode !== 'all') throw new Error('world: links: 4 links did not start in All: ' + ds().worldLinkMode);
+        if (ds().worldDangling !== '1') throw new Error('world: links: expected one dangling link, saw ' + ds().worldDangling);
+        if (!fillIn(FILL.door, cellBox(0, 0))) throw new Error('world: links: no door marker on the Hall screen 0');
+        if (!fillIn(FILL.interact, cellBox(0, 0))) throw new Error('world: links: no interact event marker on the Hall screen 0');
+        if (!fillIn(FILL.off, cellBox(1, 0))) throw new Error('world: links: a switched-off event on the Keep screen 0 is not drawn grey');
+        if (!fillIn(FILL.warning, cellBox(0, 1))) throw new Error('world: links: the dangling door has no warning on its marker');
+        if (fillIn(FILL.talk, cellBox(0, 1))) throw new Error('world: links: a talker is drawn while talkers are off');
+        const markers0 = Number(ds().worldMarkers);
+        // a hover on a door marker names it and its tooltip says where it goes
+        const gateAt = fillIn(FILL.door, cellBox(0, 0));
+        moveWorld(gateAt.x, gateAt.y);
+        if (ds().worldHover !== 'marker:door') throw new Error('world: links: hovering the door marker names ' + ds().worldHover);
+        if (surf().title.indexOf('Keep') < 0) throw new Error('world: links: the door marker tooltip does not name Keep: ' + surf().title);
+        const danglingAt = fillIn(FILL.door, cellBox(0, 1));
+        moveWorld(danglingAt.x, danglingAt.y);
+        if (surf().title.indexOf('screen 99') < 0 || surf().title.indexOf('the project has 5') < 0) throw new Error('world: links: the dangling door tooltip does not say so: ' + surf().title);
+        surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        // filters: doors off removes the three door markers and their pixels; talkers on adds the one
+        button('[data-world-filter="door"]').click();
+        await two();
+        if (Number(ds().worldMarkers) !== markers0 - 3 || fillIn(FILL.door, cellBox(0, 0))) throw new Error('world: links: the Doors filter off left ' + ds().worldMarkers + ' markers from ' + markers0);
+        const hiddenAt = gateAt;
+        moveWorld(hiddenAt.x, hiddenAt.y);
+        if (ds().worldHover.indexOf('marker:door') === 0) throw new Error('world: links: a hidden door marker is still hit-tested');
+        button('[data-world-filter="door"]').click();
+        await two();
+        if (Number(ds().worldMarkers) !== markers0) throw new Error('world: links: the Doors filter on again left ' + ds().worldMarkers + ' markers, not ' + markers0);
+        button('[data-world-filter="talk"]').click();
+        await two();
+        if (Number(ds().worldMarkers) !== markers0 + 1 || !fillIn(FILL.talk, cellBox(0, 1))) throw new Error('world: links: the Talkers filter on drew ' + ds().worldMarkers + ' markers from ' + markers0);
+        button('[data-world-filter="talk"]').click();
+        await two();
+        if (fillIn(FILL.talk, cellBox(0, 1))) throw new Error('world: links: the Talkers filter off left the talker drawn');
+        unchanged(before, 'hovering markers and the marker filters');
+        button('[data-world-filter="talk"]').click();
+        await two();
+        await shot('w12-links');
+        button('[data-world-filter="talk"]').click();
+        await two();
+      }
+      step('world 12: markers', 'a Hall/Keep world with a door, a dangling door, an interact event, a switched-off event, a warp in an event and a talker: the links are counted (4, one dangling) and start in All; the door, interact-event, grey off-event and warning-dot markers are found as flat fills on the overlay; a hover names a door marker and the tooltips say where it goes / that the target does not exist; the Doors filter removes three markers and their pixels (and the hidden ones are not hit), the Talkers filter adds the one talker (off by default); revision, depth, dirty and JSON are unchanged');
+
+      // a link is clicked where the overlay holds its colour, outside the two cells it joins; the hover names the link there
+      {
+        const skip = [cellBox(0, 0), cellBox(1, 1)];
+        const candidates = nearColour(FILL.door, skip);
+        const found = {};
+        for (let i = 0; i < candidates.length; i += 3) {
+          moveWorld(candidates[i].x, candidates[i].y);
+          const name = ds().worldHover;
+          if (name.indexOf('link:door:') === 0 && !found[name]) found[name] = candidates[i];
+        }
+        surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        if (!found['link:door:0>3'] || !found['link:door:3>0']) throw new Error('world: links: a hover found the links ' + Object.keys(found).join(',') + ', not both directions between Hall 0 and Keep 1 (' + candidates.length + ' candidates)');
+        // the tooltip of a link names both ends and says it can be followed
+        moveWorld(found['link:door:0>3'].x, found['link:door:0>3'].y);
+        if (surf().title.indexOf('Keep') < 0 || surf().title.indexOf('click to go there') < 0) throw new Error('world: links: the link tooltip is ' + surf().title);
+        surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        // follow each by a click at the pixel found; the destination is read by the screen's own name and the map selector
+        const expectations = [['link:door:0>3', 'M1S1', '1'], ['link:door:3>0', 'M0S0', '0']];
+        for (const [name, screenName, mapValue] of expectations) {
+          await enter('links: follow ' + name);
+          clickWorld(found[name].x, found[name].y);
+          if (wbox()) throw new Error('world: links: a click on ' + name + ' left World mode on');
+          if (nameValue() !== screenName || mapSelect().value !== mapValue) throw new Error('world: links: a click on ' + name + ' opened ' + nameValue() + ' in map ' + mapSelect().value + ', not ' + screenName + ' in map ' + mapValue);
+        }
+      }
+      step('world 13: follow a link', 'in the Hall/Keep world a hover at pixels of the link colour outside the two cells names the door link in each direction; the link tooltip names Keep and says click to go there; a click on the Hall-to-Keep link opens the Keep screen M1S1 in map 1 and a click on the reverse link opens the Hall screen M0S0 in map 0 (read by the screen name and the map selector, with the click points taken from the overlay pixels), each ending World mode in the same task');
+
+      // a marker click opens its screen and focuses the actor's row
+      {
+        await enter('links: marker click');
+        const at = fillIn(FILL.door, cellBox(0, 0));
+        moveWorld(at.x, at.y);
+        clickWorld(at.x, at.y);
+        if (wbox() || nameValue() !== 'M0S0' || mapSelect().value !== '0') throw new Error('world: links: the door marker click opened ' + nameValue() + ' in map ' + mapSelect().value);
+        if (entityRowIndex() !== 1) throw new Error('world: links: after the door marker click the focused entity row is ' + entityRowIndex() + ', not 1 (the Gate)');
+        await enter('links: event marker click');
+        const eventAt = fillIn(FILL.interact, cellBox(0, 0));
+        clickWorld(eventAt.x, eventAt.y);
+        if (wbox() || nameValue() !== 'M0S0' || entityRowIndex() !== 0) throw new Error('world: links: the event marker click opened ' + nameValue() + ' and focused row ' + entityRowIndex() + ', not 0 (the Guide)');
+        // a marker on another map: the off-event on the Keep screen 0
+        await enter('links: marker in the other map');
+        const offAt = fillIn(FILL.off, cellBox(1, 0));
+        clickWorld(offAt.x, offAt.y);
+        if (wbox() || nameValue() !== 'M1S0' || mapSelect().value !== '1' || entityRowIndex() !== 0) throw new Error('world: links: the off-event marker click opened ' + nameValue() + ' in map ' + mapSelect().value + ' row ' + entityRowIndex());
+      }
+      step('world 14: follow a marker', 'a click on a door marker opens its screen (M0S0) and focuses the Gate row (entity 1); a click on the interact-event marker focuses the Guide row (entity 0); a click on a switched-off event marker in the other map opens its screen (M1S0, map selector 1) and focuses its row');
+
+      // link modes: Auto -> All here, Focus keeps the links of the current screen, Off none
+      {
+        await enter('links: modes');
+        const current = ds().worldCurrent; // 1:0 after the last click: Keep screen 0, flat 2
+        if (current !== '1:0') throw new Error('world: links: setup: the current screen is ' + current);
+        button('button[data-world-links="focus"]').click();
+        await two();
+        if (ds().worldLinkMode !== 'focus' || ds().worldLinksShown !== '0') throw new Error('world: links: Focus on Keep screen 0 (no links) shows ' + ds().worldLinksShown + ' in mode ' + ds().worldLinkMode);
+        const hallAt = cellBox(0, 0);
+        moveWorld(hallAt.x + 3, hallAt.y + 3);
+        if (ds().worldLinksShown !== '3' || ds().worldFocus !== '0') throw new Error('world: links: Focus with the pointer on Hall screen 0 shows ' + ds().worldLinksShown + ' links, focus ' + ds().worldFocus + ' (expected 3: out to Keep 1, back from Keep 1, the warp)');
+        button('button[data-world-links="off"]').click();
+        await two();
+        if (ds().worldLinkMode !== 'off' || ds().worldLinksShown !== '0') throw new Error('world: links: Off shows ' + ds().worldLinksShown);
+        button('button[data-world-links="all"]').click();
+        await two();
+        if (ds().worldLinkMode !== 'all' || ds().worldLinksShown !== '4') throw new Error('world: links: All shows ' + ds().worldLinksShown);
+        button('button[data-world-links="auto"]').click();
+        await two();
+        if (ds().worldLinkMode !== 'all') throw new Error('world: links: Auto with 4 links is ' + ds().worldLinkMode);
+        surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        // the options are the author's and last only while the Forge is mounted: another Forge and back resets them (R4)
+        button('button[data-world-links="off"]').click();
+        await leave('links: modes');
+        await window.__app.goTo('character');
+        await showMap();
+        await enter('links: reset');
+        if (ds().worldLinkMode !== 'all') throw new Error('world: links: after another Forge and back the link mode is ' + ds().worldLinkMode + ', not the default');
+        await leave('links: reset');
+      }
+      step('world 15: link modes', 'Focus draws the links of the current screen (none on Keep screen 0) and of the screen under the pointer (3 on Hall screen 0), Off draws none, All draws the 4, Auto is All at 4 links; the choice is dropped by leaving the Map Forge and coming back');
+
+      // the Auto boundary: 32 links start in All, 33 in Focus; a forced All shows every one
+      {
+        setWorld('links: a 7 x 5 grid', [['Grid', 7, 5, false]]);
+        s.commit('smoke links: 32 doors', (project) => {
+          for (let i = 0; i < 32; i++) put(project, 0, i, gate, 32, 48, { toScreen: (i + 1) % 35 });
+        });
+        await showMap();
+        await enter('links: 32');
+        if (ds().worldLinks !== '32' || ds().worldLinkMode !== 'all' || ds().worldLinksShown !== '32') throw new Error('world: links: 32 links give mode ' + ds().worldLinkMode + ' showing ' + ds().worldLinksShown);
+        s.commit('smoke links: the 33rd door', (project) => { put(project, 0, 32, gate, 32, 48, { toScreen: 33 }); });
+        await until('world: the 33rd link', () => ds().worldLinks === '33');
+        if (ds().worldLinkMode !== 'focus') throw new Error('world: links: 33 links give mode ' + ds().worldLinkMode + ', not focus');
+        const incident = (flat) => s.project.maps[0].screens.reduce((total, screen, from) => total + screen.entities.filter((e) => e.props.toScreen !== undefined && (from === flat || e.props.toScreen === flat)).length, 0);
+        const [, curScreen] = ds().worldCurrent.split(':').map(Number);
+        if (Number(ds().worldLinksShown) !== incident(curScreen)) throw new Error('world: links: Focus at the current screen ' + curScreen + ' shows ' + ds().worldLinksShown + ', not ' + incident(curScreen));
+        const over = cellBox(0, 10);
+        moveWorld(over.x + 3, over.y + 3);
+        if (ds().worldFocus !== '10' || Number(ds().worldLinksShown) !== incident(10)) throw new Error('world: links: Focus under the pointer on screen 10 shows ' + ds().worldLinksShown + ' (focus ' + ds().worldFocus + '), not ' + incident(10));
+        button('button[data-world-links="all"]').click();
+        await two();
+        if (ds().worldLinksShown !== '33') throw new Error('world: links: All forced shows ' + ds().worldLinksShown);
+        button('button[data-world-links="auto"]').click();
+        await two();
+        s.undo(); // the 33rd door
+        await until('world: back to 32 links', () => ds().worldLinks === '32');
+        if (ds().worldLinkMode !== 'all') throw new Error('world: links: after removing the 33rd link the mode is ' + ds().worldLinkMode);
+        surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        await leave('links: 32');
+        s.undo(); // the 32 doors
+      }
+      step('world 16: the 32/33 boundary', 'a 7 x 5 grid with 32 door links starts in All showing all 32; a 33rd door switches the default to Focus, which shows exactly the links that leave or land on the current screen (counted from the project JSON) and, with the pointer over screen 10, on screen 10; the All button then shows 33 and Auto returns to Focus; undoing the 33rd door returns to All');
+
+      // measurements: links and markers on the 255 x 1 and mixed worlds, and a world with many links in Focus and in All
+      {
+        const hoverCost = async (label, spot) => {
+          const h0 = performance.now();
+          for (let i = 0; i < 100; i++) moveWorld(spot.x + 4 + (i % 8), spot.y + 8);
+          measure(label + ', hover per pointermove (ms)', Math.round(((performance.now() - h0) / 100) * 100) / 100);
+          surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        };
+        const costs = async (label, jump) => {
+          const spot = cellBox(0, visibleCells(0)[0] != null ? visibleCells(0)[0] : 0);
+          await hoverCost(label, spot);
+          const e0 = performance.now();
+          editScreen(0, visibleCells(0)[0] != null ? visibleCells(0)[0] : 0, 5);
+          measure(label + ', one-cell edit, commit to flush returned (ms)', Math.round((performance.now() - e0) * 10) / 10);
+          s.undo();
+          await two();
+          const m0 = performance.now();
+          if (jump === 'x') wbox().scrollLeft = 5000;
+          else wbox().scrollTop = 3000;
+          await frame();
+          measure(label + ', window move after a jump, scroll write to first frame (ms)', Math.round((performance.now() - m0) * 10) / 10);
+          covered(label + ' after the jump');
+          wbox().scrollLeft = 0;
+          wbox().scrollTop = 0;
+          await frame();
+        };
+        const firstPaint = async (label) => {
+          const t0 = performance.now();
+          toggle().click();
+          const painted = performance.now() - t0;
+          await until('world: ' + label + ' view', () => wbox() && surf().dataset.worldWindow);
+          measure(label + ', first paint, click to flush returned (ms)', Math.round(painted * 10) / 10);
+          covered(label + ' entered');
+        };
+        // the 255 x 1 row with 40 doors/events spread over it (a link from each tenth screen to one far away) and a warp
+        setWorld('links: 255 x 1', [['Long', 255, 1, true]]);
+        s.commit('smoke links: 255 x 1 actors', (project) => {
+          for (let i = 0; i < 255; i += 6) put(project, 0, i, i % 12 === 0 ? gate : guide, 40, 40, i % 12 === 0 ? { toScreen: (i * 7 + 3) % 255 } : { event: event([say('hi')]) });
+        });
+        await showMap();
+        await firstPaint('links 255x1 (' + 'default mode)');
+        measure('links 255x1, links / markers / mode', ds().worldLinks + ' / ' + ds().worldMarkers + ' / ' + ds().worldLinkMode);
+        await costs('links 255x1', 'x');
+        await leave('links 255x1');
+        // the mixed world, with links crossing between the row and the column
+        setWorld('links: mixed', [['Row', 127, 1, true], ['Column', 1, 128, true]]);
+        s.commit('smoke links: mixed actors', (project) => {
+          for (let i = 0; i < 127; i += 8) put(project, 0, i, gate, 40, 40, { toScreen: 127 + ((i * 3) % 128) });
+          for (let j = 0; j < 128; j += 10) put(project, 1, j, (j / 10) % 2 === 0 ? gate : guide, 40, 40, (j / 10) % 2 === 0 ? { toScreen: (j * 5) % 127 } : { event: event([say('hi')]) });
+        });
+        await showMap();
+        await firstPaint('links mixed');
+        measure('links mixed, links / markers / mode', ds().worldLinks + ' / ' + ds().worldMarkers + ' / ' + ds().worldLinkMode);
+        await costs('links mixed', 'y');
+        await leave('links mixed');
+        // many links: five doors on every screen of a 255 x 1 row and of a 1 x 128 column (1,915), targets spread over both
+        setWorld('links: many', [['Long', 255, 1, true], ['Column', 1, 128, true]]);
+        s.commit('smoke links: many doors', (project) => {
+          for (let k = 0; k < 5; k++) {
+            for (let i = 0; i < 255; i++) put(project, 0, i, gate, 40 + k * 20, 40, { toScreen: (i * (37 + k) + 11 + k) % 383 });
+            for (let j = 0; j < 128; j++) put(project, 1, j, gate, 40 + k * 20, 40, { toScreen: (j * (53 + k) + 7 + k) % 383 });
+          }
+        });
+        await showMap();
+        await firstPaint('links many, Focus default');
+        if (ds().worldLinks !== '1915' || ds().worldLinkMode !== 'focus') throw new Error('world: links: the many-links world has ' + ds().worldLinks + ' links in mode ' + ds().worldLinkMode);
+        await costs('links many, Focus default', 'x');
+        const a0 = performance.now();
+        button('button[data-world-links="all"]').click();
+        await frame();
+        measure('links many, switch to All forced, click to first frame (ms)', Math.round((performance.now() - a0) * 10) / 10);
+        if (ds().worldLinkMode !== 'all' || ds().worldLinksShown !== '1915') throw new Error('world: links: All forced shows ' + ds().worldLinksShown + ' in mode ' + ds().worldLinkMode);
+        covered('links many, All forced');
+        await shot('w17-many-links');
+        await costs('links many, All forced', 'x');
+        await leave('links many');
+      }
+      step('world 17: links and markers at scale', 'on a 255 x 1 row, the mixed 127 x 1 + 1 x 128 world and a 1,915-link world (Focus by default, All forced) the first paint, a hover, a one-cell edit and a window move are timed and every stop is covered; the many-links world (five doors on each of 383 screens) starts in Focus with all 1,915 links counted and All shows them all (the timings are in the WORLD_MEASURE log lines)');
+
+      // ---- W6 for the actor markers and the links (fix round 1 of C2): a map deleted from before the others, the reorder, and the undo
+      // and redo of each, with actors and cross-map doors that survive. After each, every marker and link is clicked and the screen it
+      // opens is read by its own name and the map selector, the actor row it focuses by its label -- the expectations are authored
+      // names, never indexes, so a stale flat number, entity index or map index in the view is a visible failure. Before every click
+      // after the first the structural edit is undone and redone (or the reverse) with the World view on, so the clicked view has just
+      // been through that edit rather than freshly built.
+      {
+        const GATES = [
+          { at: 'M0S5', label: 'Gate A', to: 'M1S0' },
+          { at: 'M1S0', label: 'Gate B', to: 'M2S0' },
+          { at: 'M2S0', label: 'Gate C', to: 'M1S0' }
+        ];
+        const GUIDES = [{ at: 'M0S5', label: 'Guide A' }, { at: 'M1S0', label: 'Guide B' }];
+        const where = (name) => {
+          let flat = 0;
+          for (let m = 0; m < s.project.maps.length; m++) {
+            const k = s.project.maps[m].screens.findIndex((screen) => screen.name === name);
+            if (k >= 0) return { map: m, screen: k, flat: flat + k };
+            flat += s.project.maps[m].screens.length;
+          }
+          return null;
+        };
+        const actorLabel = () => {
+          const input = document.activeElement;
+          return input && input.tagName === 'INPUT' && input.closest('[data-entity]') ? input.value || input.placeholder : null;
+        };
+        const followAll = async (what, links, reapply) => {
+          await enter('W6 actors ' + what);
+          covered('W6 actors ' + what);
+          if (ds().worldLinks !== String(links) || ds().worldDangling !== '0') throw new Error('world: ' + what + ': expected ' + links + ' links and none dangling, saw ' + ds().worldLinks + ' / ' + ds().worldDangling);
+          // The first item is clicked in the session that went through the real edit. Every later one is clicked in a session built
+          // while the project was in the neighbouring state and then moved to this one by a single undo or redo, so a view that keeps
+          // markers or links from before the edit is the view that is clicked. (A cycle back to the same state would wash that out.)
+          let session = true;
+          const fresh = async (item) => {
+            if (!reapply || (session && wbox())) {
+              session = false;
+              await enter('W6 actors ' + what + ': ' + item);
+            } else {
+              await leave('W6 actors ' + what + ': ' + item);
+              reapply.back();
+              await enter('W6 actors ' + what + ': ' + item + ' (neighbour)');
+              await reapply.ready(false);
+              reapply.forward();
+              await reapply.ready(true);
+            }
+            covered('W6 actors ' + what + ': ' + item);
+          };
+          const before = snapshot();
+          let clicked = 0;
+          const markers = [...GATES.map((g) => ({ ...g, fill: FILL.door, pos: [32, 48] })), ...GUIDES.map((g) => ({ ...g, fill: FILL.interact, pos: [200, 60] }))];
+          for (const m of markers) {
+            const w = where(m.at);
+            if (!w) continue;
+            await fresh(m.label + ' marker');
+            // where the marker is, from the actor's own authored position (a landing arrowhead of a link can share a cell with a marker
+            // and its fill, so the fill's bounding box is not the marker's): the cell's top-left plus (x + 8, y + 8) of 256 x 240
+            const cb = cellBox(w.map, w.screen);
+            const spot = { x: cb.x + Math.round(((m.pos[0] + 8) * cb.w) / 256), y: cb.y + Math.round(((m.pos[1] + 8) * cb.h) / 240) };
+            const [wx, wy] = winRect();
+            const px = ovl().getContext('2d').getImageData(spot.x - wx, spot.y - wy, 1, 1).data;
+            if (Math.abs(px[0] - m.fill[0]) + Math.abs(px[1] - m.fill[1]) + Math.abs(px[2] - m.fill[2]) > 36 || px[3] !== 255) throw new Error('world: ' + what + ': the pixel at the ' + m.label + ' position (' + spot.x + ',' + spot.y + ') is ' + px.join() + ', not the marker fill ' + m.fill);
+            moveWorld(spot.x, spot.y);
+            const hoverSeen = ds().worldHover + ' / ' + surf().title;
+            clickWorld(spot.x, spot.y);
+            if (wbox() || nameValue() !== m.at || mapSelect().value !== String(w.map) || actorLabel() !== m.label) {
+              throw new Error('world: ' + what + ': the ' + m.label + ' marker (hover ' + hoverSeen + ') opened ' + nameValue() + ' in map ' + (mapSelect() && mapSelect().value) + ' with ' + actorLabel() + ' focused (' + (document.activeElement && document.activeElement.tagName) + ', ' + document.querySelectorAll('[data-entity]').length + ' rows), not ' + m.at + ' in map ' + w.map + ' with ' + m.label);
+            }
+            clicked++;
+          }
+          for (const g of GATES) {
+            const from = where(g.at);
+            const to = where(g.to);
+            if (!from || !to) continue;
+            await fresh(g.label + ' link');
+            const key = 'link:door:' + from.flat + '>' + to.flat;
+            const found = {};
+            const candidates = nearColour(FILL.door, [], 60); // links outside the focus are drawn dim (alpha 0.32); a link over a cell is still hit before the cell
+            for (let i = 0; i < candidates.length; i += 2) {
+              moveWorld(candidates[i].x, candidates[i].y);
+              const name = ds().worldHover;
+              if (name.indexOf('link:door:') === 0 && !found[name]) found[name] = candidates[i];
+            }
+            surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+            if (!found[key]) throw new Error('world: ' + what + ': no pixel of ' + g.label + ' (' + key + ') was found; hovers named ' + Object.keys(found).join(',') + ' of ' + candidates.length + ' candidates; mode ' + ds().worldLinkMode + ', shown ' + ds().worldLinksShown + ' of ' + ds().worldLinks + ', current ' + ds().worldCurrent + ', focus ' + ds().worldFocus + ', maps ' + s.project.maps.length);
+            clickWorld(found[key].x, found[key].y);
+            if (wbox() || nameValue() !== g.to || mapSelect().value !== String(to.map)) {
+              throw new Error('world: ' + what + ': the ' + g.label + ' link opened ' + nameValue() + ' in map ' + mapSelect().value + ', not ' + g.to + ' in map ' + to.map);
+            }
+            clicked++;
+          }
+          const after = snapshot();
+          if (after.json !== before.json || after.depth !== before.depth || s.dirty !== before.dirty && !reapply) throw new Error('world: ' + what + ': following markers and links changed the project, its undo depth or its dirty flag');
+          return clicked;
+        };
+        setWorld('W6 actors', [['World', 4, 4, false], ['Cave', 1, 1, false], ['Third', 1, 1, false]]);
+        s.commit('smoke W6 actors: actors and cross-map doors', (project) => {
+          put(project, 0, 5, gate, 32, 48, { name: 'Gate A', toScreen: 16 }); // World screen 5 -> Cave
+          put(project, 0, 5, guide, 200, 60, { name: 'Guide A', event: event([say('A')]) });
+          put(project, 1, 0, gate, 32, 48, { name: 'Gate B', toScreen: 17 }); // Cave -> Third
+          put(project, 1, 0, guide, 200, 60, { name: 'Guide B', event: event([say('B')]) });
+          put(project, 2, 0, gate, 32, 48, { name: 'Gate C', toScreen: 16 }); // Third -> Cave
+        });
+        await showMap();
+        const depthBase = depth();
+        let total = 0;
+        total += await followAll('initially', 3, null);
+        const mapDelete = async () => {
+          mapSelect().value = '0';
+          mapSelect().dispatchEvent(new Event('change', { bubbles: true }));
+          await until('world: W6 actors: the first map selected', () => nameValue() === 'M0S0');
+          [...document.querySelectorAll('#mapSettingsPanel button')].find((n) => n.title === 'Delete this map').click();
+          await until('world: W6 actors: the delete confirmation', () => [...document.querySelectorAll('#modalHost button')].some((n) => n.textContent.trim() === 'Delete'));
+          [...document.querySelectorAll('#modalHost button')].find((n) => n.textContent.trim() === 'Delete').click();
+          await until('world: W6 actors: the map deleted', () => s.project.maps.length === 2);
+        };
+        const mapCount = (n) => until('world: W6 actors: ' + n + ' maps', () => s.project.maps.length === n && blocks().length === n);
+        const cycle = (back, forward, ready) => ({ back, forward, ready });
+        // delete: the Delete button of the real panel, with the World view on
+        await enter('W6 actors delete');
+        await mapDelete();
+        if (!wbox()) throw new Error('world: W6 actors: deleting a map left World mode');
+        await mapCount(2);
+        const deleteCycle = cycle(() => s.undo(), () => s.redo(), (forward) => mapCount(forward ? 2 : 3));
+        total += await followAll('after the deletion', 2, deleteCycle);
+        await enter('W6 actors undo');
+        s.undo();
+        await mapCount(3);
+        const redoCycle = cycle(() => s.redo(), () => s.undo(), (back) => mapCount(back ? 3 : 2));
+        total += await followAll('after the undo of the deletion', 3, redoCycle);
+        await enter('W6 actors redo');
+        s.redo();
+        await mapCount(2);
+        total += await followAll('after the redo of the deletion', 2, deleteCycle);
+        await enter('W6 actors back');
+        s.undo();
+        await mapCount(3);
+        // reorder: the third map earlier, through the real button
+        await enter('W6 actors reorder');
+        mapSelect().value = '2';
+        mapSelect().dispatchEvent(new Event('change', { bubbles: true }));
+        await until('world: W6 actors: the third map selected', () => nameValue() === 'M2S0');
+        [...document.querySelectorAll('#mapSettingsPanel button')].find((n) => n.title === 'Move this map earlier').click();
+        await until('world: W6 actors: the reorder', () => s.project.maps[1].screens[0].name === 'M2S0');
+        if (!wbox() || blocks().length !== 3) throw new Error('world: W6 actors: the reorder left World mode or changed the block count');
+        const reordered = (yes) => until('world: W6 actors: the order', () => (s.project.maps[1].screens[0].name === 'M2S0') === yes && blocks().length === 3);
+        const reorderCycle = cycle(() => s.undo(), () => s.redo(), (forward) => reordered(forward));
+        total += await followAll('after the reorder', 3, reorderCycle);
+        await enter('W6 actors undo of the reorder');
+        s.undo();
+        await reordered(false);
+        const unreorderCycle = cycle(() => s.redo(), () => s.undo(), (back) => reordered(!back));
+        total += await followAll('after the undo of the reorder', 3, unreorderCycle);
+        await enter('W6 actors redo of the reorder');
+        s.redo();
+        await reordered(true);
+        total += await followAll('after the redo of the reorder', 3, reorderCycle);
+        await enter('W6 actors end');
+        s.undo();
+        await reordered(false);
+        while (depth() > depthBase) s.undo();
+        await leave('W6 actors');
+        measure('W6 actors, marker and link clicks made', total);
+      }
+      step('world 6b: structure, with markers and links', 'in a three-map world with a door and an interact-event actor on the first map, a door on each of the other two, doors across maps both ways and every actor named: a map deleted from before the others, the undo and the redo of it, a reorder and its undo and redo each leave the mode on and every surviving actor marker and cross-map link is clicked (after the first, each click is made in a view built in the neighbouring state and moved to this one by a single undo or redo) -- the screen opened is read by its name and the map selector, the focused actor row by its label, link and marker counts are those that survive, none dangling; nothing is committed by following them');
+
+      // ---- W11 for the actor markers and the links (fix round 1 of C2): clicks beyond the first window. After the jump on the 255 x 1
+      // row, and after the diagonal walk and the return on the mixed world, an actor marker and a cross-map link are clicked at nonzero
+      // scroll offsets (both at once on the mixed world), the click point taken from the overlay at the first frame after the scroll
+      // and turned to a client point from the box's actual offsets. The screen opened is read by its name and the map selector, the
+      // focused actor row by its label. (wrong: a pick that reads window coordinates or one scroll offset, an entity index or a
+      // destination kept from the first window)
+      {
+        const placed = []; // { map, screen, label, toMap, toScreen }: what the test authored, in flat terms of its own arithmetic
+        const farWorld = async (what, shapes, jump) => {
+          setWorld(what, shapes);
+          await showMap();
+          await enter(what);
+          wbox().scrollLeft = 0;
+          wbox().scrollTop = 0;
+          await frame();
+          covered(what + ' start');
+          return jump;
+        };
+        const flatOf = (map, screen) => s.project.maps.slice(0, map).reduce((total, m) => total + m.screens.length, 0) + screen;
+        const wholeVisible = (map) => visibleCells(map).filter((i) => cellWhole(cellBox(map, i)));
+        // put a door actor on a visible cell of the map, leading to a cell of another
+        const door = (map, screen, label, toMap, toScreen) => {
+          s.commit('smoke W11 actors: ' + label, (project) => put(project, map, screen, gate, 32, 48, { name: label, toScreen: flatOf(toMap, toScreen) }));
+          placed.push({ map, screen, label, toMap, toScreen });
+        };
+        // click the marker of a placed door that is whole in view, then the links of the placed doors that cross it
+        const followFar = async (what) => {
+          const v = viewOf();
+          if (!(v.L > 0 || v.T > 0)) throw new Error('world: ' + what + ': setup: the box is at 0,0');
+          covered(what + ' before the clicks');
+          const mine = placed.filter((p) => wholeVisible(p.map).includes(p.screen));
+          if (!mine.length) throw new Error('world: ' + what + ': no placed door is whole in view at ' + v.L + ',' + v.T);
+          const p = mine[0];
+          // the marker's place from the door's authored position (x 32, y 48), as in world 6b, checked to hold the marker fill
+          const cb = cellBox(p.map, p.screen);
+          const spot = { x: cb.x + Math.round(((32 + 8) * cb.w) / 256), y: cb.y + Math.round(((48 + 8) * cb.h) / 240) };
+          const [wx, wy] = winRect();
+          const px = ovl().getContext('2d').getImageData(spot.x - wx, spot.y - wy, 1, 1).data;
+          if (Math.abs(px[0] - FILL.door[0]) + Math.abs(px[1] - FILL.door[1]) + Math.abs(px[2] - FILL.door[2]) > 36 || px[3] !== 255) throw new Error('world: ' + what + ': the pixel at the position of ' + p.label + ' (' + spot.x + ',' + spot.y + ') is ' + px.join() + ', not the door marker fill, at ' + v.L + ',' + v.T);
+          moveWorld(spot.x, spot.y);
+          if (ds().worldHover !== 'marker:door') throw new Error('world: ' + what + ': hovering the marker at ' + v.L + ',' + v.T + ' names ' + ds().worldHover);
+          clickWorld(spot.x, spot.y);
+          if (wbox() || nameValue() !== 'M' + p.map + 'S' + p.screen || mapSelect().value !== String(p.map) || actorLabel() !== p.label) {
+            throw new Error('world: ' + what + ': the marker at ' + v.L + ',' + v.T + ' opened ' + nameValue() + ' in map ' + mapSelect().value + ' with ' + actorLabel() + ', not M' + p.map + 'S' + p.screen + ' with ' + p.label);
+          }
+          // a link: pixels of the link colour outside the cells, kept where a hover names a link of a door this test placed
+          await enter(what + ' link');
+          wbox().scrollLeft = v.L;
+          wbox().scrollTop = v.T;
+          await frame();
+          if (wbox().scrollLeft !== v.L || wbox().scrollTop !== v.T) throw new Error('world: ' + what + ': could not restore the offsets ' + v.L + ',' + v.T + ' (' + wbox().scrollLeft + ',' + wbox().scrollTop + ')');
+          covered(what + ' for the link');
+          const byKey = {};
+          for (const q of placed) byKey['link:door:' + flatOf(q.map, q.screen) + '>' + flatOf(q.toMap, q.toScreen)] = q;
+          const candidates = nearColour(FILL.door, [], 60).filter(inViewPt);
+          const found = {};
+          for (let i = 0; i < candidates.length; i += 2) {
+            moveWorld(candidates[i].x, candidates[i].y);
+            const name = ds().worldHover;
+            if (byKey[name] && !found[name]) found[name] = candidates[i];
+          }
+          surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+          const names = Object.keys(found);
+          if (!names.length) throw new Error('world: ' + what + ': no link of the placed doors was found at ' + v.L + ',' + v.T + ' (' + candidates.length + ' candidates in view)');
+          for (const name of names) {
+            const q = byKey[name];
+            await enter(what + ' following ' + name);
+            wbox().scrollLeft = v.L;
+            wbox().scrollTop = v.T;
+            await frame();
+            covered(what + ' following ' + name);
+            clickWorld(found[name].x, found[name].y);
+            if (wbox() || nameValue() !== 'M' + q.toMap + 'S' + q.toScreen || mapSelect().value !== String(q.toMap)) {
+              throw new Error('world: ' + what + ': the link ' + name + ' at ' + v.L + ',' + v.T + ' opened ' + nameValue() + ' in map ' + mapSelect().value + ', not M' + q.toMap + 'S' + q.toScreen);
+            }
+          }
+          return names.length + 1;
+        };
+        const actorLabel = () => {
+          const input = document.activeElement;
+          return input && input.tagName === 'INPUT' && input.closest('[data-entity]') ? input.value || input.placeholder : null;
+        };
+        let clicks = 0;
+        // the 255 x 1 row and a Cave beside it: the jump to 5000 and the doors put on its cells
+        await farWorld('W11 actors: 255 x 1', [['Long', 255, 1, true], ['Cave', 1, 1, false]], null);
+        wbox().scrollLeft = 5000;
+        await frame();
+        covered('W11 actors: the jump');
+        {
+          const near = wholeVisible(0);
+          if (near.length < 4) throw new Error('world: W11 actors: only ' + near.length + ' cells are whole in view after the jump');
+          door(0, near[1], 'Far gate 1', 1, 0);
+          door(1, 0, 'Cave gate', 0, near[near.length - 2]);
+          await two();
+          covered('W11 actors: the doors');
+          clicks += await followFar('W11 actors: 255 x 1 after the jump');
+        }
+        await enter('W11 actors: return');
+        wbox().scrollLeft = 0;
+        await frame();
+        covered('W11 actors: back at the origin');
+        await leave('W11 actors: 255 x 1');
+        // the mixed world: the diagonal walk, the return, and the doors put where both offsets are nonzero
+        placed.length = 0;
+        await farWorld('W11 actors: mixed', [['Row', 127, 1, true], ['Column', 1, 128, true]], null);
+        for (const stepAt of [[0, 150], [0, 260], [100, 260], [260, 260], [300, 300], [700, 700]]) {
+          wbox().scrollLeft = stepAt[0];
+          wbox().scrollTop = stepAt[1];
+          await frame();
+          covered('W11 actors: mixed walk ' + stepAt);
+        }
+        wbox().scrollLeft = 0;
+        wbox().scrollTop = 0;
+        await frame();
+        covered('W11 actors: mixed return');
+        wbox().scrollLeft = 1500;
+        wbox().scrollTop = 20;
+        await frame();
+        covered('W11 actors: mixed at 1500,20');
+        {
+          const row = wholeVisible(0);
+          if (row.length < 3) throw new Error('world: W11 actors: only ' + row.length + ' row cells are whole in view at 1500,20');
+          door(0, row[1], 'Row gate', 1, 100);
+          await two();
+          covered('W11 actors: mixed row door');
+          clicks += await followFar('W11 actors: mixed row at 1500,20');
+        }
+        await enter('W11 actors: mixed column');
+        wbox().scrollLeft = 8;
+        wbox().scrollTop = 1500;
+        await frame();
+        covered('W11 actors: mixed at 8,1500');
+        {
+          const col = wholeVisible(1);
+          if (col.length < 3) throw new Error('world: W11 actors: only ' + col.length + ' column cells are whole in view at 8,1500');
+          door(1, col[1], 'Column gate', 0, 40);
+          await two();
+          covered('W11 actors: mixed column door');
+          clicks += await followFar('W11 actors: mixed column at 8,1500');
+        }
+        // the first door's actor is still reachable after all that, at the same offsets as before
+        await enter('W11 actors: mixed again');
+        wbox().scrollLeft = 1500;
+        wbox().scrollTop = 20;
+        await frame();
+        covered('W11 actors: mixed row again');
+        clicks += await followFar('W11 actors: mixed row again at 1500,20');
+        await leave('W11 actors');
+        measure('W11 actors, marker and link clicks made', clicks);
+      }
+      step('world 17b: markers and links beyond the first window', 'on a 255 x 1 row with a Cave beside it after the 5000 px jump, and on the mixed 127 x 1 + 1 x 128 world after its diagonal walk and the return to the origin at 1500,20 (row) and 8,1500 (column), the doors put on cells in view are drawn at the first frame (covered), a hover names the door marker, a click on it opens its screen by name in the right map with its actor row (read by its label) focused, and each link found by a hover of the placed doors is followed by a click at pixels taken from the overlay and the own scroll offsets of the box, opening the target by name and map selector');
+    }
 
     // back to the baseline: this block's own commits undone (the project switch above cleared the stack, so the baseline is reopened)
     while (depth() > 0) s.undo();

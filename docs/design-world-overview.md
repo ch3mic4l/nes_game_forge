@@ -1,6 +1,8 @@
 # Design: the world overview (ROADMAP item 7, last piece)
 
-Status: design round D2 (D1 fixed per review 1), for review. **No product code is written by this document.** It
+Status: **shipped** -- C1 `eb3c254` (World view, layout, start/title markers, navigation) and C2 (doors, warps, events,
+talkers, links; closes ROADMAP item 7). Corrections the build made are listed under "Built" at the end. Written as design
+round D2 (D1 fixed per review 1). **No product code is written by this document.** It
 settles what ROADMAP item 7's last open bullet ("A **world overview** showing starts, warps and event markers")
 builds, with Chris's four rulings (quoted at the end) held fixed. `docs/design-maporg.md` §12 sliced this out;
 `docs/design-streamed-worlds-phase4.md` C2 shipped the *per-map* overview (`renderer/forges/map/overview.js`), whose
@@ -463,18 +465,21 @@ read (`loadProject`); every cross-map, warp, streamed and dangling case is built
   `remapScreenReferences` asks its recording `translate` about equal `referenceInventory(project)` as a multiset: each
   body once, called or not (D1's expanded count gave `[2,2,0,0]` against the remapper's `[0,0,2]`, `probe-remap.out`).
   (b) After a rotation permutation, rebuilt links' targets equal the permutation of the old, expanded per caller,
-  including dangling ones. (c) **The change detector:** a digest of the comment-stripped, whitespace-normalised
-  `remapScreenReferences.toString()` is pinned in the test beside "re-audit `referenceInventory` and this fixture, then
-  update the digest". It reddens on any edit to the remapper, so a field added there cannot pass unnoticed even when
-  no fixture carries it; the claim is that, not automatic coverage.
+  including dangling ones. (c) **The change detector:** the **raw SHA-256 of the whole files `shared/project.js` and `shared/eventrules.js`**
+  (no comment/whitespace normalisation, no short hash: both missed real changes, `d2-review2.md` finding 2) is pinned in
+  the test, whose failure message says "audit `referenceInventory` against `remapScreenReferences` (and
+  `projectEvents`/`allCommands`), then update the pinned digests". It reddens on any edit to either file, including a
+  harmless one; a field added to the remapper cannot pass unnoticed even when no fixture carries it. The claim is that,
+  not automatic coverage. The recording-`translate` oracle of (a) stays a separate behavioural assertion.
 - **M7 read-only, fixtures, `eventlist.js`.** `buildWorldMarkers` on a deep-frozen project neither throws nor changes it
   (catches an in-place sort). `sample/` gives 1 start, 1 title, 1 door marker, 2 event markers, 1 talk marker and 1 link
   (screen 3 → 0); `sample-rpg/` 1 start, no title, 1 event, no link (the probe's numbers). `eventlist.js`'s door line,
   dangling and normal, is unchanged after importing `doorTarget`.
 
-**`test/unit/worldlinks.test.js`** (C2): **reciprocal side, independently asserted**: for A = (0,0), B = (100,0) and
-`bow` 20, A → B has control point (50, 20) and B → A (50, −20), also with the endpoints swapped and for a vertical pair,
-as literals (D1's rule gives (50, 20) twice and fails this). A `self` link is a ring, never a zero-length path; an arrow
+**`test/unit/worldlinks.test.js`** (C2): **reciprocal side, independently asserted**: for A = (0,0), B = (100,0) the public `linkPath`
+has `bow = clamp(0.18·100, 6, 40)` = 18, so A → B has control point (50, 18) and B → A (50, −18), also with the endpoints
+swapped and for a vertical pair, as literals (D1's rule gives (50, 18) twice and fails this); the helper that takes an
+explicit bow is also tested with a 20 px example ((50, 20) / (50, −20)), beside tests of the public formula and its clamps. A `self` link is a ring, never a zero-length path; an arrow
 ends inside the target cell for landings at 0 and at 240/224; `linkAt` picks the nearest within tolerance and nothing
 beyond; marker beats link beats cell; `linkFocus` includes incoming, outgoing and self links; `defaultLinkMode` flips at 32.
 
@@ -597,3 +602,26 @@ Chris, 2026-10-16:
   `main/build/` or `engine/`: any such edit moves the ROM identity fingerprint and costs a ~90 minute ring-certificate
   renewal. Importing from `shared/` is fine. If the design finds something that genuinely needs a `shared/` edit,
   name it as an open question for Chris, with the renderer-only alternative and its cost; do not assume it.
+
+## Built: C1 `eb3c254` and C2
+
+Where the build departed from, or pinned down, the text above (each is also in `handoff-next/worldview/c2/report.md`):
+
+- **M6(c), the change detector.** Before: a digest of the comment-stripped `remapScreenReferences.toString()`. After: the raw
+  SHA-256 of the whole files `shared/project.js` and `shared/eventrules.js` (section 7, M6 (c)).
+- **The bow literal.** Before: `bow` 20 with control points (50, ±20) for the public function. After: the public `linkPath`
+  has `bow = clamp(0.18·len, 6, 40)` = 18 for a 100 px chord, so (50, ±18); the helper `quadraticControl(a, b, bow)` is tested
+  with the 20 px example too.
+- **Focus and what can be clicked.** In Focus only the links of the focus screen (the one under the pointer, else the current
+  one) are drawn *and* hit-tested, so the middle of a long link is clickable in All, or while its end screen is in focus;
+  the end markers and the landing are always reachable. This is what "what is drawn is what is clickable" means.
+- **`self`** records only that the link is incident on one screen (a door or warp that lands on its own flat screen); it does not
+  choose the drawing. `linkPath` reads the geometry alone: ends closer than `worldMarkerSize` draw a ring at the landing, separated
+  ends (a same-screen door from (0, 0) to (240, 224)) draw a curve, as any other link does.
+- **A click on an actor marker** passes `entityIndex` to `openFromWorld`, which scrolls that actor's row into view and focuses
+  its first input, the statements `findEvent` uses, without its modal.
+- **The controls.** Links Auto / All / Focus / Off (`data-world-links`) and Show Doors / Events / Talkers
+  (`data-world-filter`) sit in `.world-controls`; their state is `worldOptions` in `mount()`, so it lasts as long as the
+  Forge is mounted and is reset with it (R4 holds for it as for the mode). `state.world` is unchanged.
+- **Cost.** `buildWorldMarkers` runs once per render, so an edit in a world with about 2,000 links costs about 90 ms to flush
+  (against 18 ms with none); a hover costs 0.9 ms in Focus and 3.4 ms in All at that size (`handoff-next/worldview/c2/measurements.md`).

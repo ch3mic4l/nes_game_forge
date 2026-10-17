@@ -2462,6 +2462,7 @@ export function mount(container, app) {
     worldView = createWorldView({
       getProject: () => store.project,
       getCurrent: () => ({ mapIndex: Math.min(state.mapIndex, store.project.maps.length - 1), screenIndex: state.screenIndex }),
+      getOptions: () => worldOptions,
       openFromWorld
     });
     worldView.setScale(state.world.scale);
@@ -2488,15 +2489,33 @@ export function mount(container, app) {
   /**
    * What a click in the World view means: open that screen for editing. Synchronous on purpose and on the Forge's own state,
    * not `app.goTo` -- nothing leaves the Map Forge, so there is no navigation context and no selection token window.
-   * A target the project no longer has is ignored.
+   * A target the project no longer has is ignored. A click on an actor's marker also names the actor (`entityIndex`): its row
+   * is scrolled into view and focused, `findEvent`'s own statements without its modal.
    */
-  function openFromWorld({ mapIndex, screenIndex }) {
+  function openFromWorld({ mapIndex, screenIndex, entityIndex }) {
     if (!store.project.maps[mapIndex]?.screens[screenIndex]) return;
     state.mapIndex = mapIndex;
     state.screenIndex = screenIndex;
     state.regionSelection = null; // a selection made on one screen means nothing on another
     leaveWorld();
     renderAll();
+    if (Number.isInteger(entityIndex)) {
+      const row = entityList.querySelectorAll('[data-entity]')[entityIndex];
+      row?.scrollIntoView({ block: 'nearest' });
+      row?.querySelector('input')?.focus();
+    }
+  }
+
+  // How the World view draws links and markers: the author's choice, kept until the Forge is left (like state.mapIndex). The link
+  // mode 'auto' is the default by count (All up to 32 links, Focus above); the three others override it. Talkers are off by default.
+  const worldOptions = { links: 'auto', show: { door: true, event: true, talk: false } };
+
+  function setWorldLinks(choice) {
+    worldOptions.links = choice;
+    root.querySelectorAll('button[data-world-links]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.worldLinks === choice);
+    });
+    worldView?.render();
   }
 
   function setWorldScale(choice) {
@@ -2570,6 +2589,47 @@ export function mount(container, app) {
                 onclick: () => setWorldScale(choice)
               },
               choice === 'fit' ? 'Fit' : `${choice}×`
+            )
+          ),
+          el('span.sep'),
+          el('span.field-label', null, 'Links'),
+          ...[
+            ['auto', 'Auto', 'Every link up to 32, only the links of the screen under the pointer above that'],
+            ['all', 'All', 'Draw every door and warp link; the screen under the pointer stands out'],
+            ['focus', 'Focus', 'Draw only the links of the screen under the pointer (or the current screen)'],
+            ['off', 'Off', 'Draw no links; the markers still show where doors and events are']
+          ].map(([choice, label, title]) =>
+            el(
+              'button.btn.btn-sm',
+              {
+                class: worldOptions.links === choice ? 'active' : '',
+                dataset: { worldLinks: choice },
+                title,
+                onclick: () => setWorldLinks(choice)
+              },
+              label
+            )
+          ),
+          el('span.sep'),
+          el('span.field-label', null, 'Show'),
+          ...[
+            ['door', 'Doors', 'Mark every door actor'],
+            ['event', 'Events', 'Mark every actor with an event; grey when the event is switched off'],
+            ['talk', 'Talkers', 'Mark actors that only have dialogue']
+          ].map(([kind, label, title]) =>
+            el(
+              'label.check',
+              { title },
+              el('input', {
+                type: 'checkbox',
+                checked: worldOptions.show[kind],
+                dataset: { worldFilter: kind },
+                onchange: (event) => {
+                  worldOptions.show[kind] = event.target.checked;
+                  worldView?.render();
+                }
+              }),
+              label
             )
           )
         ),

@@ -1008,11 +1008,12 @@ a bigger version of the same thing.~~ — **done**: see item 12 below.
 ## 7. Map organization and reuse
 
 The Map Forge already has stamp, rectangle, fill, picker, start and actor tools
-(`renderer/forges/map/map.js:31`). What it lacked was everything about handling *many* maps. Five of
-six items below are now complete: duplicate, copy/paste, folders and safe reorder shipped as
+(`renderer/forges/map/map.js:31`). What it lacked was everything about handling *many* maps. All six
+items below are now complete: duplicate, copy/paste, folders and safe reorder shipped as
 `de19269`, in five reviewed phases against `handoff-maporg/design-maporg.md`; named screens
 predated item 7 (landing with item 2) and this commit added only their ambiguity warnings; the
-sixth, the world overview, was deliberately sliced out. CLAUDE.md's own item-7 passage (near
+sixth, the world overview, was deliberately sliced out and then shipped as the World view in two
+commits, C1 `eb3c254` and C2 (the last bullet below), so item 7 is done. CLAUDE.md's own item-7 passage (near
 `renderer/store.js`) carries the mechanism; it is not repeated here.
 
 - ~~**Duplicate** a screen or a whole map~~ — **done**: a whole map (`duplicateMapCore`), and a
@@ -1033,13 +1034,11 @@ sixth, the world overview, was deliberately sliced out. CLAUDE.md's own item-7 p
   Forge shows under Problems (`renderer/forges/build/build.js`'s `renderSummary`) — duplicate names
   still compile fine, the warning is just telling you why a remembered scenario touching one of them
   would refuse.
-- A **world overview** showing starts, warps and event markers — **still open**, deliberately sliced
-  out of the design (§12): `renderer/forges/map/eventlist.js`'s `buildEventIndex` can already supply
-  searchable event/actor rows, useful input for the event-marker portion, but it reads neither
-  `project.project.startMap` nor `startScreen` and folds warp targets into human-readable command
-  text rather than structured marker records — a world overview still needs explicit start and
-  structured warp-marker extraction of its own. Building one before folders had settled risked
-  rework too. Item 7 is not wholly done; this is the remaining piece.
+- ~~A **world overview** showing starts, warps and event markers~~ — **done**, as the Map Forge's **World**
+  view (`docs/design-world-overview.md`): commit C1 `eb3c254` built the view, its layout, the start and title
+  markers and navigation; C2 (this commit) added doors, warps, events and talkers as markers, the links between
+  screens with their modes and filters, and following a link or a marker. Renderer-only, read-only. It was sliced
+  out of the design (§12) until folders had settled. Item 7 is done.
 
 Reordering was the one with teeth, and the prediction held: screen indices are referenced by warps,
 doors and compiled event bytecode, so the operation had to rewrite every stored reference in the
@@ -1929,8 +1928,8 @@ own answer for whatever a continuous world's authoring unit turns out to be. Wha
 cleanly is the discipline item 7 established across all of them regardless of mechanism: one
 commit-free core per structural edit, one `store.commit` per user action, every stored reference kept
 correct (or deliberately left alone, as paste and folders already are) in the same step. Item 7's own
-remaining open piece — the world overview showing starts, warps and event markers, sliced out of
-`handoff-maporg/design-maporg.md`'s own §12 (not this roadmap's item 12) — is a natural companion
+last piece — the world overview showing starts, warps and event markers, sliced out of
+`handoff-maporg/design-maporg.md`'s own §12 (not this roadmap's item 12) and since built as the World view — is a natural companion
 here: a world large enough to need streaming is a world too big to see all of on the Map Forge's own
 screen-by-screen picker.
 

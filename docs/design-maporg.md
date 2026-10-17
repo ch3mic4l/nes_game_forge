@@ -3098,7 +3098,8 @@ list), and given reorder/duplicate/copy-paste are the roadmap's own "teeth," thi
 shipping this slice without the overview and taking it up separately once §6-§9 have shipped and any
 schema changes (folders, in particular) have settled — an overview built against a folder scheme that
 hasn't landed yet risks needing rework the moment folders' final shape is decided. **Confirmed correct
-by round 1's review** — unchanged in this revision.
+by round 1's review** — unchanged in this revision. *Later:* the overview was built as the World view, designed in
+`docs/design-world-overview.md` (commits C1 `eb3c254` and C2).
 
 ## §13. Store/undo semantics — resolved by §6.7/§8/§9 directly, restated here for clarity
 
