@@ -17,7 +17,7 @@
 // A file that fails to tokenize is a real failure, not something to skip:
 // every function below lets acorn's own SyntaxError propagate uncaught.
 
-import { tokenizer } from 'acorn';
+import { parse, tokenizer } from 'acorn';
 import { isBuiltin } from 'node:module';
 
 const TOKENIZER_OPTIONS = { ecmaVersion: 'latest', sourceType: 'module' };
@@ -308,4 +308,168 @@ export function namedImportSource(text, name) {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// The diagnostic-producer scan (docs/design-equipment.md section 9, test 7).
+//
+// Every problem a producer raises carries `{ severity, where, message, rule, subject, counts }`. This finds the places in a file
+// that build one and reports what each lacks, by AST (acorn.parse, not the tokenizer above: the question is about call
+// arguments and object properties, which a token stream cannot answer).
+//
+// A producer is any of:
+//   add(severity, where, message, rule, subject, counts)   -- validateProject's and streamedBoardProblems' closures (6 arguments)
+//   addFrom(severity, where, diagnostic)                   -- a message builder's result passed on (3 arguments)
+//   <problems|out>.push({ ...message... })                 -- an object literal pushed onto a problem list
+//   any object literal holding a `message` together with `severity`, `where` or `kind` (a hand-built diagnostic), and any object
+//   literal returned from a function named `diagnose*` (the message builders)
+//
+// For each: `missing` lists which of rule / subject / counts are absent, and `bad` explains a rule, subject or counts that is
+// present but wrong in kind -- a rule that is not a kebab-case literal (a digit in it is a count smuggled into the identity), a
+// subject built from a string or a name, counts holding a string.
+
+const RULE_PATTERN = /^[a-z]+(-[a-z]+)*$/;
+const RULE_TEMPLATE_HELPERS = new Set(['reservedRangeId']);
+const NAME_LIKE = new Set(['name', 'label', 'title', 'text']);
+
+function ruleProblem(node) {
+  if (!node) return null;
+  if (node.type === 'Literal') {
+    return typeof node.value === 'string' && RULE_PATTERN.test(node.value) ? null : `rule ${JSON.stringify(node.value)} is not a kebab-case id with no digits`;
+  }
+  if (node.type === 'TemplateLiteral') {
+    const ok = node.expressions.every((e) => e.type === 'CallExpression' && e.callee.type === 'Identifier' && RULE_TEMPLATE_HELPERS.has(e.callee.name));
+    return ok ? null : 'rule is a template literal with an expression other than a reservedRangeId() call (a count or a name in the identity)';
+  }
+  if (node.type === 'ConditionalExpression') return ruleProblem(node.consequent) ?? ruleProblem(node.alternate);
+  if (node.type === 'Identifier' || node.type === 'MemberExpression') return null; // a rule passed through (problem.rule, a local chosen by a branch)
+  return `rule is a ${node.type}`;
+}
+
+function subjectProblem(node) {
+  if (!node) return null;
+  if (node.type === 'Literal' || node.type === 'TemplateLiteral' || node.type === 'BinaryExpression') return `subject is a ${node.type}, not a structured object`;
+  let found = null;
+  const visit = (n) => {
+    if (!n || typeof n.type !== 'string' || found) return;
+    if (n.type === 'TemplateLiteral') found = 'subject holds a template literal (a string built from names)';
+    else if (n.type === 'MemberExpression' && !n.computed && NAME_LIKE.has(n.property.name)) found = `subject reads .${n.property.name} (a name, not an index)`;
+    else if (n.type === 'Identifier' && NAME_LIKE.has(n.name)) found = `subject reads ${n.name} (a name, not an index)`;
+    else for (const key of Object.keys(n)) {
+      const child = n[key];
+      if (Array.isArray(child)) child.forEach(visit);
+      else if (child && typeof child.type === 'string') visit(child);
+    }
+  };
+  if (node.type === 'ObjectExpression') node.properties.forEach((p) => visit(p.value));
+  return found;
+}
+
+function countsProblem(node) {
+  if (!node) return null;
+  if (node.type === 'ArrayExpression') {
+    return node.elements.some((e) => e?.type === 'Literal' && typeof e.value === 'string' || e?.type === 'TemplateLiteral') ? 'counts holds a string' : null;
+  }
+  if (node.type === 'ConditionalExpression') return countsProblem(node.consequent) ?? countsProblem(node.alternate);
+  if (node.type === 'Identifier' || node.type === 'MemberExpression') return null;
+  return `counts is a ${node.type}`;
+}
+
+/**
+ * @returns {{line: number, kind: string, fn: string, missing: string[], bad: string[]}[]}
+ */
+export function diagnosticProducers(text) {
+  const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', locations: true });
+  const sites = [];
+  const counted = new Set();
+  const fnOf = (stack) => {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const n = stack[i];
+      if (n.type === 'FunctionDeclaration' && n.id) return n.id.name;
+      if ((n.type === 'ArrowFunctionExpression' || n.type === 'FunctionExpression') && i > 0 && stack[i - 1].type === 'VariableDeclarator') return stack[i - 1].id.name;
+    }
+    return '(top)';
+  };
+  const keyOf = (p) => (p.key?.type === 'Identifier' ? p.key.name : p.key?.value);
+  const objectSite = (obj, kind, stack) => {
+    if (counted.has(obj)) return;
+    counted.add(obj);
+    const props = new Map(obj.properties.filter((p) => p.type === 'Property').map((p) => [keyOf(p), p.value]));
+    const missing = ['rule', 'subject', 'counts'].filter((k) => !props.has(k));
+    const bad = [ruleProblem(props.get('rule')), subjectProblem(props.get('subject')), countsProblem(props.get('counts'))].filter(Boolean);
+    sites.push({ line: obj.loc.start.line, kind, fn: fnOf(stack), missing, bad });
+  };
+  // What a function hands back (a `return` argument or an expression-bodied arrow's body), followed through a BOUNDED set of shapes and
+  // nothing else: conditional and logical (`?:`, `||`, `??`, `&&`) result branches; within a returned array, its elements, those elements'
+  // own conditional / logical branches, and spreads of literal arrays. A bare returned object literal is a producer only in a `diagnose*`
+  // builder. It does NOT descend into nested object properties, callback arguments (`list.map(() => ({ message }))`) or identifiers: that
+  // would be dataflow analysis, and a listed file the scan cannot see through is the (7b) inventory's business, not this walker's.
+  const hasMessage = (o) => o.properties.some((p) => p.type === 'Property' && keyOf(p) === 'message');
+  const arrayElement = (e, stack) => {
+    if (!e) return;
+    if (e.type === 'ObjectExpression') {
+      if (hasMessage(e)) objectSite(e, 'return-array', stack);
+    } else if (e.type === 'ConditionalExpression') {
+      arrayElement(e.consequent, stack);
+      arrayElement(e.alternate, stack);
+    } else if (e.type === 'LogicalExpression') {
+      arrayElement(e.left, stack);
+      arrayElement(e.right, stack);
+    } else if (e.type === 'SpreadElement' && e.argument.type === 'ArrayExpression') {
+      e.argument.elements.forEach((inner) => arrayElement(inner, stack));
+    }
+  };
+  const returnedValue = (value, stack) => {
+    if (!value) return;
+    if (value.type === 'ObjectExpression') {
+      if (fnOf(stack).startsWith('diagnose')) objectSite(value, 'return', stack);
+    } else if (value.type === 'ArrayExpression') {
+      value.elements.forEach((element) => arrayElement(element, stack));
+    } else if (value.type === 'ConditionalExpression') {
+      returnedValue(value.consequent, stack);
+      returnedValue(value.alternate, stack);
+    } else if (value.type === 'LogicalExpression') {
+      returnedValue(value.left, stack);
+      returnedValue(value.right, stack);
+    }
+  };
+  const walk = (node, stack) => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'CallExpression') {
+      const callee = node.callee;
+      if (callee.type === 'Identifier' && callee.name === 'add' && !counted.has(node)) {
+        counted.add(node);
+        const [, , , rule, subject, counts] = node.arguments;
+        const missing = ['rule', 'subject', 'counts'].filter((k, i) => node.arguments.length < 4 + i);
+        const bad = [ruleProblem(rule), subjectProblem(subject), countsProblem(counts)].filter(Boolean);
+        if (node.arguments.length > 6) bad.push('more than six arguments');
+        sites.push({ line: node.loc.start.line, kind: 'add', fn: fnOf(stack), missing, bad });
+      } else if (callee.type === 'Identifier' && callee.name === 'addFrom' && !counted.has(node)) {
+        counted.add(node);
+        const third = node.arguments[2];
+        const missing = node.arguments.length === 3 ? [] : ['rule', 'subject', 'counts'];
+        // a literal object handed to addFrom must itself be complete
+        if (third?.type === 'ObjectExpression') objectSite(third, 'addFrom-literal', stack);
+        sites.push({ line: node.loc.start.line, kind: 'addFrom', fn: fnOf(stack), missing, bad: [] });
+      } else if (callee.type === 'MemberExpression' && callee.property.name === 'push' && ['problems', 'out'].includes(callee.object.name)) {
+        const arg = node.arguments[0];
+        if (arg?.type === 'ObjectExpression' && arg.properties.some((p) => keyOf(p) === 'message')) objectSite(arg, 'push', stack);
+      }
+    } else if (node.type === 'ObjectExpression') {
+      const keys = node.properties.filter((p) => p.type === 'Property').map(keyOf);
+      if (keys.includes('message') && ['severity', 'where', 'kind'].some((k) => keys.includes(k))) objectSite(node, 'literal', stack);
+    } else if (node.type === 'ReturnStatement' && node.argument) {
+      returnedValue(node.argument, [...stack, node]);
+    } else if (node.type === 'ArrowFunctionExpression' && node.body.type !== 'BlockStatement') {
+      returnedValue(node.body, [...stack, node]); // an expression-bodied arrow returns its body
+    }
+    const next = [...stack, node];
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach((c) => walk(c, next));
+      else if (child && typeof child.type === 'string') walk(child, next);
+    }
+  };
+  walk(ast, []);
+  return sites.sort((a, b) => a.line - b.line);
 }

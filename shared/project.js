@@ -3114,21 +3114,34 @@ export function spriteReservedRanges(project, mapper) {
 }
 
 /**
- * The exact text for a reserved-tile-reference warning (design §3.12).
- * `collision` is one entry of `metaspriteTileCollisions`' own return array
+ * Which semantic variant a `spriteReservedRanges` entry is, as a stable id: a diagnostic's rule is fixed by the range, not
+ * by the wording around it. Never called with the player's own range, which is never reported.
+ */
+function reservedRangeId(range) {
+  if (range.label === 'the HUD hearts') return 'hud-hearts';
+  if (range.label === 'the MISS overlay') return 'miss';
+  return 'naming-or-cursor';
+}
+
+/**
+ * The exact text for a reserved-tile-reference warning (design §3.12), with its stable identity (docs/design-equipment.md
+ * section 9). `collision` is one entry of `metaspriteTileCollisions`' own return array
  * (`{index, name, tiles}`); `ranges` is `spriteReservedRanges`'s own output,
  * consulted only to look up each hit tile's own `label`.
  */
-export function describeReservedReferenceWarning(collision, ranges) {
+export function diagnoseReservedReference(collision, ranges) {
   const labels = collision.tiles.map((tile) => {
     const range = ranges.find((r) => tile >= r.start && tile < r.end);
     const hex = `$${tile.toString(16).toUpperCase().padStart(2, '0')}`;
     return range ? `${hex} (${range.label})` : hex;
   });
-  return (
-    `Metasprite "${collision.name}" references ${labels.join(', ')}, which will be replaced at ` +
-    'build time.'
-  );
+  const message =
+    `Metasprite "${collision.name}" references ${labels.join(', ')}, which will be replaced at ` + 'build time.';
+  return { message, rule: 'sprite-reserved-reference', subject: { metasprite: collision.index }, counts: [] };
+}
+
+export function describeReservedReferenceWarning(collision, ranges) {
+  return diagnoseReservedReference(collision, ranges).message;
 }
 
 /**
@@ -3442,6 +3455,8 @@ export function* animationReferenceLocations(project) {
         get: () => actor.anims?.[slot],
         set: (id) => { actor.anims[slot] = id; },
         battleOnly: false,
+        // Structured identity (indices only, never names): what a diagnostic's `subject` carries.
+        key: { actor: actorIndex, slot },
         describe: () => `Actor ${actorIndex} ("${actor.name}")'s ${label}`
       };
     }
@@ -3450,6 +3465,7 @@ export function* animationReferenceLocations(project) {
         get: () => actor.battle.attackAnim,
         set: (id) => { actor.battle.attackAnim = id; },
         battleOnly: true,
+        key: { actor: actorIndex, attack: true },
         describe: () => `Actor ${actorIndex} ("${actor.name}")'s attack animation`
       };
     }
@@ -3461,6 +3477,7 @@ export function* animationReferenceLocations(project) {
       get: () => spell.anim,
       set: (id) => { spell.anim = id; },
       battleOnly: true,
+      key: { spell: spellIndex },
       describe: () => `Spell ${spellIndex} ("${spell.name}")'s cast animation`
     };
   }
@@ -3471,6 +3488,7 @@ export function* animationReferenceLocations(project) {
       get: () => member.attackAnim,
       set: (id) => { member.attackAnim = id; },
       battleOnly: true,
+      key: { member: memberIndex },
       describe: () => `Party member ${memberIndex} ("${member.name}")'s attack animation`
     };
   }
@@ -3718,16 +3736,21 @@ export function streamTileBoundFor(project) {
  * figure and the limit, and a bound that switch-bound tiles have lowered says so. A timing bound,
  * distinct from describeScreenSpriteWarning's hardware sprite count.
  */
-export function describeStreamTileWarning(project, mapIndex, screenIndex, tiles, bound = streamTileBoundFor(project)) {
+export function diagnoseStreamTile(project, mapIndex, screenIndex, tiles, bound = streamTileBoundFor(project)) {
   const lowered = bound < STREAM_TILE_BOUND
     ? ` (the usual limit is ${STREAM_TILE_BOUND}; switch-bound tiles in this project make every streamed frame dearer, so it is held to ${bound})`
     : '';
-  return (
+  const message = (
     `${screenLabel(project, mapIndex, screenIndex)} places actors whose art can draw up to ${tiles} sprite tiles ` +
     `at once; streamed screens are supported up to ${bound}${lowered}. Above that the game still runs, but busy moments ` +
     'slow down (sprites may hold for a frame while scrolling continues). Reduce the number or size of the ' +
     'actors on this screen.'
   );
+  return { message, rule: 'streamed-screen-tile-bound', subject: { map: mapIndex, screen: screenIndex }, counts: [tiles, bound] };
+}
+
+export function describeStreamTileWarning(project, mapIndex, screenIndex, tiles, bound = streamTileBoundFor(project)) {
+  return diagnoseStreamTile(project, mapIndex, screenIndex, tiles, bound).message;
 }
 
 /**
@@ -3830,13 +3853,23 @@ export function overlaySpriteBudget(project) {
  * `budget` is `screenSpriteBudget`'s own return shape (`{field, overlay,
  * limit}`).
  */
-export function describeScreenSpriteWarning(project, mapIndex, screenIndex, budget) {
+export function diagnoseScreenSprites(project, mapIndex, screenIndex, budget) {
   const total = budget.field + budget.overlay;
-  return (
+  const message = (
     `${screenLabel(project, mapIndex, screenIndex)} could need ${total} sprites at once ` +
     `(${budget.field} for the player and its actors, plus up to ${budget.overlay} for the HUD and ` +
     `menus); the NES can only show ${budget.limit}.`
   );
+  return {
+    message,
+    rule: 'screen-sprites-over',
+    subject: { map: mapIndex, screen: screenIndex },
+    counts: [total, budget.field, budget.overlay]
+  };
+}
+
+export function describeScreenSpriteWarning(project, mapIndex, screenIndex, budget) {
+  return diagnoseScreenSprites(project, mapIndex, screenIndex, budget).message;
 }
 
 // The pure spriteBytes term main/build/generate.js's kernelTableBytes used
@@ -3872,8 +3905,13 @@ export function metaspriteKernelBytes(project) {
  * The exact text for the battle OAM warning (design §3.12). `budget` is
  * `battleSpriteBudget`'s own return shape (`{used, limit}`).
  */
+export function diagnoseBattleSprites(budget) {
+  const message = `A battle could need ${budget.used} sprites at once; the NES can only show ${budget.limit}.`;
+  return { message, rule: 'battle-sprites-over', subject: {}, counts: [budget.used] };
+}
+
 export function describeBattleSpriteWarning(budget) {
-  return `A battle could need ${budget.used} sprites at once; the NES can only show ${budget.limit}.`;
+  return diagnoseBattleSprites(budget).message;
 }
 
 /**
@@ -3992,7 +4030,7 @@ export function battleFxOamRoom(project, mapper) {
  * animation at all triggers only the first warning, byte-for-byte unchanged
  * from before this slice existed.
  */
-export function describeBattleAnimationOamWarning(project, mapper) {
+export function diagnoseBattleAnimationOam(project, mapper) {
   const combatantMax = battleCombatantOamMax(project, mapper);
   const missTiles = projectUsesMiss(project) ? MISS_OAM_TILES : 0;
   let worstId = null;
@@ -4013,13 +4051,23 @@ export function describeBattleAnimationOamWarning(project, mapper) {
   if (worstId === null) return null;
   const name = project.sprites.animations[worstId].name;
   const missClause = missTiles ? ` plus MISS's own ${missTiles} sprites` : '';
-  return (
+  const message = (
     `"${name}" (${worstTiles} sprite tiles) plus this project's own worst-case combatants and cursor ` +
     `(${combatantMax})${missClause} would need more than the NES's ${MAX_OAM_ENTRIES} sprites at once, so it will be ` +
     'skipped in-game whenever it does not fit — even in a battle with real room, since the check is a ' +
     "project-wide worst case, not this battle's own. Use a smaller animation, or reduce the party/" +
     'formation/cursor cost elsewhere.'
   );
+  return {
+    message,
+    rule: 'battle-animation-oam',
+    subject: { animation: worstId },
+    counts: [worstTiles, combatantMax, missTiles]
+  };
+}
+
+export function describeBattleAnimationOamWarning(project, mapper) {
+  return diagnoseBattleAnimationOam(project, mapper)?.message ?? null;
 }
 
 // Every formation the project can reach, from all three sources the engine
@@ -4230,11 +4278,16 @@ export function fieldScanlineDensity(project, screen, opts = {}) {
  * placed entity could be showing its own worst pose at the identical
  * instant every other one is (design §8).
  */
-export function describeFieldDensityWarning(project, mapIndex, screenIndex, count) {
-  return (
+export function diagnoseFieldDensity(project, mapIndex, screenIndex, count) {
+  const message = (
     `${screenLabel(project, mapIndex, screenIndex)}: at these actors' own placed positions (a ` +
     `rough estimate — actors and the player both move), ${count} tiles could share one scanline.`
   );
+  return { message, rule: 'screen-field-density', subject: { map: mapIndex, screen: screenIndex }, counts: [count] };
+}
+
+export function describeFieldDensityWarning(project, mapIndex, screenIndex, count) {
+  return diagnoseFieldDensity(project, mapIndex, screenIndex, count).message;
 }
 
 /**
@@ -5268,17 +5321,25 @@ export function streamedGridProblems(raw) {
     const h = axis(map.gridH);
     const validAxis = (n) => Number.isInteger(n) && n >= 1 && n <= LIMITS.streamedGrid;
     const authored = Array.isArray(map.screens) ? map.screens.length : 0;
+    // A count in `counts` is always a number, even for the garbage axis this function tolerates.
+    const count = (n) => (Number.isFinite(n) ? n : 0);
     const limits =
       `a streamed map holds at most ${LIMITS.projectScreens} screens, at most ${LIMITS.streamedGrid} along either side`;
     if (!validAxis(w) || !validAxis(h) || w * h > LIMITS.projectScreens) {
       problems.push({
         mapIndex,
-        message: `${name} is ${w} x ${h} screens; ${limits}. Change its "gridW"/"gridH" in the project's map JSON, or shrink the map in the Map Forge.`
+        message: `${name} is ${w} x ${h} screens; ${limits}. Change its "gridW"/"gridH" in the project's map JSON, or shrink the map in the Map Forge.`,
+        rule: 'streamed-grid-axes',
+        subject: { map: mapIndex },
+        counts: [count(w), count(h)]
       });
     } else if (authored > w * h) {
       problems.push({
         mapIndex,
-        message: `${name} holds ${authored} screens but is only ${w} x ${h}; ${limits}. Fix its "gridW"/"gridH" in the project's map JSON so the grid holds every screen.`
+        message: `${name} holds ${authored} screens but is only ${w} x ${h}; ${limits}. Fix its "gridW"/"gridH" in the project's map JSON so the grid holds every screen.`,
+        rule: 'streamed-grid-overfull',
+        subject: { map: mapIndex },
+        counts: [authored, count(w), count(h)]
       });
     }
   });
@@ -5417,11 +5478,16 @@ export function metaspriteScanlineDensity(metasprite) {
  * shared by the Sprite Forge's own live hint and validateProject's matching
  * warning, so the two can never disagree about the wording.
  */
-export function describeMetaspriteDensityWarning(metasprite, count) {
-  return (
+export function diagnoseMetaspriteDensity(metasprite, count, index = null) {
+  const message = (
     `Metasprite "${metasprite.name}": ${count} of its tiles can share one scanline; the NES ` +
     'can only show 8 there, so some of them will not appear on that row.'
   );
+  return { message, rule: 'metasprite-scanline-density', subject: { metasprite: index }, counts: [count] };
+}
+
+export function describeMetaspriteDensityWarning(metasprite, count) {
+  return diagnoseMetaspriteDensity(metasprite, count).message;
 }
 
 function normalizeAnimation(raw, id) {
@@ -6808,7 +6874,7 @@ function eventHasOp(event, ops, commonById, seen) {
 export function streamedBoardProblems(project) {
   const out = [];
   let mapIndex = -1;
-  const add = (kind, where, message) => out.push({ mapIndex, kind, where, message });
+  const add = (kind, where, message, rule, subject, counts) => out.push({ mapIndex, kind, where, message, rule, subject, counts });
   const streamed = project.maps.map((map, index) => ({ map, index })).filter(({ map }) => map.streamed === true);
   if (!streamed.length) return out;
 
@@ -6842,7 +6908,8 @@ export function streamedBoardProblems(project) {
         `${name} is streamed, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring ` +
           `cannot stream a world. Streamed maps need ${ringClause ? `${ringClause}, or ` : ''}UNROM 512 with four-screen mirroring ` +
           '-- change the board in the Build panel, or remove ' +
-          '"streamed" (or set it to false) for this map in the project\'s map JSON.'
+          '"streamed" (or set it to false) for this map in the project\'s map JSON.',
+        'streamed-board-cannot-stream', { map: index }, []
       );
     } else if (!streamCapableFourScreen(mapper, mirroringId)) {
       // The two-nametable ring (phase 3b). The ONE decision of which boards and game types it is admitted for is
@@ -6860,7 +6927,8 @@ export function streamedBoardProblems(project) {
           `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
             `which only reaches the two-nametable ring -- not implemented yet on this board. Streamed maps work on ${ringClause ? `${ringClause} and on ` : ''}` +
             'UNROM 512 with four-screen mirroring; change the board and ' +
-            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
+            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.',
+          'streamed-board-no-ring', { map: index }, []
         );
       } else if (!streamRingAdmitted(mapper, mirroringId, gameType)) {
         add(
@@ -6871,11 +6939,12 @@ export function streamedBoardProblems(project) {
             `${gameType === 'rpg' ? 'RPGs' : 'games of this type'} are not implemented there yet. A streamed ${gameType === 'rpg' ? 'RPG' : 'game of this type'} works on ` +
             `${streamRingAdmittedBoardNames(gameType) ? `${streamRingAdmittedBoardNames(gameType)} with horizontal or vertical mirroring, or on ` : ''}` +
             'UNROM 512 with four-screen mirroring; change the board and ' +
-            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.'
+            'mirroring in the Build panel, or remove "streamed" (or set it to false) for this map in the project\'s map JSON.',
+          'streamed-ring-game', { map: index }, []
         );
       }
     }
-    for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message);
+    for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message, problem.rule, problem.subject, problem.counts);
     // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.
     if (deadAxes.includes('horizontal') && map.gridW > 1) {
       add(
@@ -6883,7 +6952,8 @@ export function streamedBoardProblems(project) {
         'Map Forge',
         `${name} is ${map.gridW} screens wide, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} ` +
           'mirroring can only stream up and down, so a streamed map must be 1 screen wide (1 x N). Shrink the map, ' +
-          'or choose a mirroring that scrolls sideways in the Build panel.'
+          'or choose a mirroring that scrolls sideways in the Build panel.',
+        'streamed-dead-axis-wide', { map: index }, [map.gridW]
       );
     }
     if (deadAxes.includes('vertical') && map.gridH > 1) {
@@ -6892,7 +6962,8 @@ export function streamedBoardProblems(project) {
         'Map Forge',
         `${name} is ${map.gridH} screens tall, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} ` +
           'mirroring can only stream side to side, so a streamed map must be 1 screen tall (N x 1). Shrink the map, ' +
-          'or choose a mirroring that scrolls up and down in the Build panel.'
+          'or choose a mirroring that scrolls up and down in the Build panel.',
+        'streamed-dead-axis-tall', { map: index }, [map.gridH]
       );
     }
   }
@@ -6909,14 +6980,15 @@ export function streamedBoardProblems(project) {
 function validateStreamedMaps(project, add) {
   const streamed = project.maps.map((map, index) => ({ map, index })).filter(({ map }) => map.streamed === true);
   if (!streamed.length) return;
-  for (const problem of streamedBoardProblems(project)) add('error', problem.where, problem.message);
+  for (const problem of streamedBoardProblems(project)) add('error', problem.where, problem.message, problem.rule, problem.subject, problem.counts);
 
   const total = project.maps.reduce((sum, map) => sum + map.screens.length, 0);
   if (total > LIMITS.projectScreens) {
     add(
       'error',
       'Map Forge',
-      `The project holds ${total} screens; with a streamed map the limit is ${LIMITS.projectScreens} across all maps.`
+      `The project holds ${total} screens; with a streamed map the limit is ${LIMITS.projectScreens} across all maps.`,
+      'streamed-project-screens-over', {}, [total]
     );
   }
 
@@ -6965,7 +7037,8 @@ function validateStreamedMaps(project, add) {
           'error',
           'Map Forge',
           `${label()} has switch-bound tiles, which a streamed screen cannot use yet -- remove them, or make ` +
-            'this map ordinary.'
+            'this map ordinary.',
+          'streamed-screen-bound-tiles', { map: index, screen: screenIndex }, []
         );
       }
       // Items 4 and 6 are lifted (phase 2 slices 6 and 8: ui_tick's priority patch closes a text box before a Move
@@ -7011,16 +7084,20 @@ function validateStreamedMaps(project, add) {
       'error',
       'Map Forge',
       'This project has the camera off, and a streamed map needs it on to keep its own screen scrolled into ' +
-        'view after the landing frame -- turn the camera on in the Build panel, or remove the streamed map.'
+        'view after the landing frame -- turn the camera on in the Build panel, or remove the streamed map.',
+      'streamed-camera-off', {}, []
     );
   }
 }
 
 export function validateProject(project) {
   const problems = [];
-  const add = (severity, where, message) => problems.push({ severity, where, message });
+  const add = (severity, where, message, rule, subject, counts) => problems.push({ severity, where, message, rule, subject, counts });
+  // For a message a builder (diagnose*) made: it carries its own rule, subject and counts.
+  const addFrom = (severity, where, diagnostic) =>
+    add(severity, where, diagnostic.message, diagnostic.rule, diagnostic.subject, diagnostic.counts);
 
-  if (!project.maps.length) add('error', 'Map Forge', 'A project needs at least one map.');
+  if (!project.maps.length) add('error', 'Map Forge', 'A project needs at least one map.', 'maps-none', {}, []);
 
   project.maps.forEach((map, mapIndex) => {
     map.screens.forEach((screen, index) => {
@@ -7029,7 +7106,8 @@ export function validateProject(project) {
           'error',
           'Map Forge',
           `${screenLabel(project, mapIndex, index)} has ${screen.entities.length} entities; ` +
-            `the engine allows ${LIMITS.entitiesPerScreen}.`
+            `the engine allows ${LIMITS.entitiesPerScreen}.`,
+          'screen-entities-over', { map: mapIndex, screen: index }, [screen.entities.length]
         );
       }
 
@@ -7045,7 +7123,8 @@ export function validateProject(project) {
           'error',
           'Map Forge',
           `${screenLabel(project, mapIndex, index)} has ${bound.length} switch-bound tiles; ` +
-            `the engine allows ${LIMITS.boundTilesPerScreen}.`
+            `the engine allows ${LIMITS.boundTilesPerScreen}.`,
+          'screen-bound-tiles-over', { map: mapIndex, screen: index }, [bound.length]
         );
       }
 
@@ -7065,7 +7144,8 @@ export function validateProject(project) {
             'error',
             'Map Forge',
             `${screenLabel(project, mapIndex, index)} has an invalid switch-bound tile (entry ${i}): ` +
-              'switch, row, column or metatile is out of range.'
+              'switch, row, column or metatile is out of range.',
+            'bound-tile-invalid', { map: mapIndex, screen: index, entry: i }, []
           );
         } else {
           inRange.push(entry);
@@ -7084,7 +7164,8 @@ export function validateProject(project) {
             'error',
             'Map Forge',
             `${screenLabel(project, mapIndex, index)} has two switch-bound tiles at row ${entry.row}, ` +
-              `col ${entry.col}. Remove one.`
+              `col ${entry.col}. Remove one.`,
+            'bound-tile-duplicate', { map: mapIndex, screen: index, row: entry.row, col: entry.col }, []
           );
         }
         seenCells.add(key);
@@ -7103,7 +7184,8 @@ export function validateProject(project) {
             'Map Forge',
             `${screenLabel(project, mapIndex, index)} row ${entry.row}, col ${entry.col}: the ` +
               `switch-bound substitute uses a different palette group than what is painted there. ` +
-              'Repaint the cell or choose a same-palette substitute.'
+              'Repaint the cell or choose a same-palette substitute.',
+            'bound-tile-palette', { map: mapIndex, screen: index, row: entry.row, col: entry.col }, []
           );
         }
       }
@@ -7112,7 +7194,7 @@ export function validateProject(project) {
 
   const players = project.sprites.actors.filter((a) => a.behavior === 'player');
   if (players.length > 1) {
-    add('warning', 'Sprite Forge', 'More than one actor is marked as the player; the first is used.');
+    add('warning', 'Sprite Forge', 'More than one actor is marked as the player; the first is used.', 'player-multiple', {}, []);
   }
 
   const usedMetatiles = new Set();
@@ -7120,7 +7202,7 @@ export function validateProject(project) {
     for (const screen of map.screens) for (const id of screen.metatiles) usedMetatiles.add(id);
   }
   if (usedMetatiles.size > LIMITS.metatiles) {
-    add('error', 'Map Forge', `Maps reference ${usedMetatiles.size} metatiles; the limit is ${LIMITS.metatiles}.`);
+    add('error', 'Map Forge', `Maps reference ${usedMetatiles.size} metatiles; the limit is ${LIMITS.metatiles}.`, 'metatiles-over', {}, [usedMetatiles.size]);
   }
 
   // The message font is stamped over the top of every background table, so any
@@ -7131,7 +7213,7 @@ export function validateProject(project) {
   const artworkMapper = resolveMapper(project.cartridge.mapper);
   const splitFont = fontBankSplit(project, artworkMapper);
   if (projectUsesText(project) && !splitFont) {
-    for (const tileset of project.tilesets) {
+    for (const [tilesetIndex, tileset] of project.tilesets.entries()) {
       const occupied = tileset.background.tiles.findIndex(
         (tile, index) => index >= FONT_BASE && tile !== BLANK_TILE
       );
@@ -7141,7 +7223,8 @@ export function validateProject(project) {
           'Tile Forge',
           `Tileset "${tileset.name}" has artwork in background tiles $${FONT_BASE.toString(16).toUpperCase()}-$FF, ` +
             'which the message font reserves while dialogue, a title screen, combat or an RPG battle system is in ' +
-            'use. Move that artwork below row 10.'
+            'use. Move that artwork below row 10.',
+          'tile-reserved-font', { tileset: tilesetIndex }, []
         );
       }
     }
@@ -7157,26 +7240,30 @@ export function validateProject(project) {
   // stamping over it never destroys an author's fresh work, it corrects an
   // inconsistency the modular-parts feature exists to fix.
   for (const range of spriteReservedRanges(project, artworkMapper).slice(1)) {
-    for (const tileset of project.tilesets) {
+    for (const [tilesetIndex, tileset] of project.tilesets.entries()) {
       const occupied = tileset.sprites.tiles.findIndex(
         (tile, index) => index >= range.start && index < range.end && tile !== BLANK_TILE
       );
       if (occupied < 0) continue;
       let message;
+      let rule;
       if (range.label === 'the HUD hearts') {
+        rule = 'tile-reserved-hud-hearts';
         message =
           `Tileset "${tileset.name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
           'while anything in the project can hurt the player.';
       } else if (range.label === 'the MISS overlay') {
+        rule = 'tile-reserved-miss';
         message =
           `Tileset "${tileset.name}" has artwork in sprite tiles $${range.start.toString(16).toUpperCase()}-` +
           `$${(range.end - 1).toString(16).toUpperCase()}, which the MISS overlay reserves on this project.`;
       } else {
+        rule = 'tile-reserved-targeting-cursor';
         message =
           `Tileset "${tileset.name}" has artwork in sprite tile $${range.start.toString(16).toUpperCase()}, ` +
           'which the battle targeting cursor reserves on this cartridge.';
       }
-      add('error', 'Tile Forge', message);
+      add('error', 'Tile Forge', message, rule, { tileset: tilesetIndex }, []);
     }
   }
 
@@ -7195,7 +7282,8 @@ export function validateProject(project) {
           'error', 'Sprite Forge',
           `Metasprite "${collision.name}" references a blank tile inside the range reserved for ${range.label} ` +
             `on tileset "${tileset.name}" — the build will draw ${range.label} there instead ` +
-            'of leaving it empty.'
+            'of leaving it empty.',
+          `sprite-blank-reserved-${reservedRangeId(range)}`, { metasprite: collision.index, tileset: tilesetIndex }, []
         );
       }
     }
@@ -7209,10 +7297,11 @@ export function validateProject(project) {
       add(
         'error',
         'Build',
-        `${rpgUnsupportedReason(mapper)} Choose a mapper with program bank switching in the Build panel.`
+        `${rpgUnsupportedReason(mapper)} Choose a mapper with program bank switching in the Build panel.`,
+        'rpg-board-incapable', {}, []
       );
     }
-    if (!project.party.length) add('error', 'Character Forge', 'A turn-based RPG needs at least one party member.');
+    if (!project.party.length) add('error', 'Character Forge', 'A turn-based RPG needs at least one party member.', 'party-empty', {}, []);
     // A live join naming a party member the project does not have is not a
     // display quirk to leave to the engine's own defense in depth.
     // battle_entry_join (engine/battle.asm) does guard this operand at
@@ -7247,15 +7336,16 @@ export function validateProject(project) {
           'error',
           'Map Forge',
           `${danglingJoins} Party member joins command${danglingJoins === 1 ? '' : 's'} do not name a real ` +
-            'party member. Pick a member or switch the command off.'
+            'party member. Pick a member or switch the command off.',
+          'join-dangling', {}, [danglingJoins]
         );
       }
     }
     const hostile = project.sprites.actors.filter((actor) => actor.damage > 0);
     if (!hostile.length) {
-      add('warning', 'Sprite Forge', 'No actor deals damage, so no battle can ever start.');
+      add('warning', 'Sprite Forge', 'No actor deals damage, so no battle can ever start.', 'rpg-no-damaging-actor', {}, []);
     }
-    for (const actor of project.sprites.actors) {
+    for (const [actorIndex, actor] of project.sprites.actors.entries()) {
       // A validator runs against whatever it is handed, including a project the
       // UI is mid-edit on, so it never assumes normalisation has been through.
       const { battleTile, battleW = 4, battleH = 4 } = actor.battle ?? {};
@@ -7270,14 +7360,15 @@ export function validateProject(project) {
           'error',
           'Monster Forge',
           `${actor.name}'s battle artwork runs into the message font's tiles. Move it below background tile ` +
-            `$${FONT_BASE.toString(16).toUpperCase()} or make it smaller.`
+            `$${FONT_BASE.toString(16).toUpperCase()} or make it smaller.`,
+          'monster-art-font-tiles', { actor: actorIndex }, []
         );
       }
     }
-    for (const map of project.maps) {
+    for (const [mapIndex, map] of project.maps.entries()) {
       for (const id of map.encounters.actorIds) {
         if (id >= project.sprites.actors.length) {
-          add('warning', 'Map Forge', `${map.name}'s encounter table names an actor that no longer exists.`);
+          add('warning', 'Map Forge', `${map.name}'s encounter table names an actor that no longer exists.`, 'encounter-actor-missing', { map: mapIndex }, []);
         }
       }
     }
@@ -7305,14 +7396,15 @@ export function validateProject(project) {
     // itemMissing now asks only "does this item id exist" — a drop naming an
     // item with no physical pickup (actorId null or stale) is not this
     // warning's business; that item still exists and still gets dropped.
-    for (const actor of project.sprites.actors) {
+    for (const [actorIndex, actor] of project.sprites.actors.entries()) {
       const drop = actor.battle?.drop;
       if (drop === null || drop === undefined) continue;
       if (itemMissing(project.items, drop)) {
         add(
           'warning',
           'Monster Forge',
-          `${actor.name} is set to drop an item that no longer exists, so it will leave nothing behind.`
+          `${actor.name} is set to drop an item that no longer exists, so it will leave nothing behind.`,
+          'monster-drop-missing', { actor: actorIndex }, []
         );
       }
     }
@@ -7368,7 +7460,8 @@ export function validateProject(project) {
         'error',
         'Map Forge',
         `${emptyBattles} Start a battle command${emptyBattles === 1 ? '' : 's'} name no monsters, which would ` +
-          'compile to an instant win rather than a fight. Add at least one monster to each.'
+          'compile to an instant win rather than a fight. Add at least one monster to each.',
+        'battle-empty', {}, [emptyBattles]
       );
     }
     if (staleBattleMonsters) {
@@ -7376,7 +7469,8 @@ export function validateProject(project) {
         'warning',
         'Map Forge',
         `${staleBattleMonsters} Start a battle command${staleBattleMonsters === 1 ? '' : 's'} name an actor that ` +
-          'no longer exists.'
+          'no longer exists.',
+        'battle-monsters-stale', {}, [staleBattleMonsters]
       );
     }
   }
@@ -7401,7 +7495,8 @@ export function validateProject(project) {
       add(
         'error',
         'Build',
-        `${saveUnsupportedReason(saveMapper)} Choose MMC1, MMC3 or UNROM 512 in the Build panel, or remove the Save command.`
+        `${saveUnsupportedReason(saveMapper)} Choose MMC1, MMC3 or UNROM 512 in the Build panel, or remove the Save command.`,
+        'save-board-unsupported', {}, []
       );
     }
     // Continue is a title-screen option (engine/title.asm); a save with no
@@ -7419,7 +7514,8 @@ export function validateProject(project) {
         'error',
         'Map Forge',
         'A project with a Save command needs a title screen — Continue has nowhere to appear without one. ' +
-          'Set a title map, or remove the Save command.'
+          'Set a title map, or remove the Save command.',
+        'save-needs-title', {}, []
       );
     }
   }
@@ -7453,7 +7549,8 @@ export function validateProject(project) {
       'error',
       'Map Forge',
       'A Say uses {name}, but this project has no party member to read a default name from. Add a party ' +
-        'member on the Character Forge, or remove the token.'
+        'member on the Character Forge, or remove the token.',
+      'name-token-no-party', {}, []
     );
   }
 
@@ -7491,7 +7588,8 @@ export function validateProject(project) {
         'Map Forge',
         `${nameTokenChoiceLabels} choice option label${nameTokenChoiceLabels === 1 ? '' : 's'} ` +
           `contain${nameTokenChoiceLabels === 1 ? 's' : ''} {name} — the token only expands inside Say text, ` +
-          'so this label will show the literal braces instead.'
+          'so this label will show the literal braces instead.',
+        'choice-label-name-token', {}, [nameTokenChoiceLabels]
       );
     }
   }
@@ -7539,7 +7637,8 @@ export function validateProject(project) {
         `(ids 0-${LIMITS.actors - 1}) — id $FF is reserved to mean “no actor”. Delete ` +
         `${project.sprites.actors.length - LIMITS.actors} of them. The extra actors are kept, but references ` +
         `to any actor above id ${LIMITS.actors - 1} are not preserved: a reference is a single byte, so it ` +
-        'cannot name them, and editing the roster while over the ceiling will not bring them back.'
+        'cannot name them, and editing the roster while over the ceiling will not bring them back.',
+      'actors-over-ceiling', {}, [project.sprites.actors.length, project.sprites.actors.length - LIMITS.actors]
     );
   }
 
@@ -7564,7 +7663,8 @@ export function validateProject(project) {
       'Items Forge',
       `This project has ${project.items.length} items but the Forge holds ${LIMITS.items} ` +
         `(ids 0-${LIMITS.items - 1}) — id $FF is reserved to mean “no item”. Delete ` +
-        `${project.items.length - LIMITS.items} of them before this can build.`
+        `${project.items.length - LIMITS.items} of them before this can build.`,
+      'items-over-ceiling', {}, [project.items.length, project.items.length - LIMITS.items]
     );
   }
 
@@ -7586,7 +7686,8 @@ export function validateProject(project) {
       'Sprite Forge',
       `This project has ${project.sprites.metasprites.length} metasprites but the Forge holds ` +
         `${LIMITS.metasprites} (ids 0-${LIMITS.metasprites - 1}) — id $FF is reserved to mean “no icon”. Delete ` +
-        `${project.sprites.metasprites.length - LIMITS.metasprites} of them before this can build.`
+        `${project.sprites.metasprites.length - LIMITS.metasprites} of them before this can build.`,
+      'metasprites-over-ceiling', {}, [project.sprites.metasprites.length, project.sprites.metasprites.length - LIMITS.metasprites]
     );
   }
 
@@ -7601,34 +7702,42 @@ export function validateProject(project) {
       `This project has ${project.sprites.animations.length} animations but the Forge holds ` +
         `${LIMITS.animations} (ids 0-${LIMITS.animations - 1}) — id $FF is reserved to mean “no ` +
         `animation”. Delete ${project.sprites.animations.length - LIMITS.animations} of them before ` +
-        'this can build.'
+        'this can build.',
+      'animations-over-ceiling', {}, [project.sprites.animations.length, project.sprites.animations.length - LIMITS.animations]
     );
   }
 
   // Hop 1: is the reference itself valid?
   const badAnimationRefs = [];
+  const badAnimationKeys = []; // the same references as structured indices, in traversal (index) order
   for (const location of animationReferenceLocations(project)) {
     const id = location.get();
     if (id === null || id === undefined) continue;
-    if (!isValidAnimationRef(id, project)) badAnimationRefs.push(location.describe());
+    if (!isValidAnimationRef(id, project)) {
+      badAnimationRefs.push(location.describe());
+      badAnimationKeys.push(location.key);
+    }
   }
   if (badAnimationRefs.length) {
     add(
       'error',
       'Sprite Forge',
       `${badAnimationRefs.length} animation reference(s) (${badAnimationRefs.join(', ')}) do not ` +
-        'name a real animation. Pick one or clear it.'
+        'name a real animation. Pick one or clear it.',
+      'animation-ref-invalid', { refs: badAnimationKeys }, [badAnimationRefs.length]
     );
   }
 
   // Hop 2: for a battle-only reference, are the animation's own frames valid?
   const unplayableBattleAnims = [];
+  const unplayableBattleKeys = [];
   for (const location of animationReferenceLocations(project)) {
     if (!location.battleOnly) continue;
     const id = location.get();
     if (id === null || id === undefined) continue;
     if (isValidAnimationRef(id, project) && !isPlayableBattleAnimation(id, project)) {
       unplayableBattleAnims.push(location.describe());
+      unplayableBattleKeys.push(location.key);
     }
   }
   if (unplayableBattleAnims.length) {
@@ -7637,7 +7746,8 @@ export function validateProject(project) {
       'Sprite Forge',
       `${unplayableBattleAnims.length} battle animation(s) (${unplayableBattleAnims.join(', ')}) ` +
         'name an animation with a frame that does not name a real metasprite. Fix the animation in ' +
-        'the Sprite Forge or pick a different one.'
+        'the Sprite Forge or pick a different one.',
+      'animation-ref-unplayable', { refs: unplayableBattleKeys }, [unplayableBattleAnims.length]
     );
   }
 
@@ -7675,7 +7785,8 @@ export function validateProject(project) {
       'error',
       'Sprite Forge',
       `${sharedActorItems} actor${sharedActorItems === 1 ? ' backs more than one item' : 's back more than one item each'} ` +
-        '— each item must name a different actor.'
+        '— each item must name a different actor.',
+      'item-actor-shared', {}, [sharedActorItems]
     );
   }
 
@@ -7713,7 +7824,8 @@ export function validateProject(project) {
       'warning',
       'Sprite Forge',
       `${actor.name} has behaviour Pickup but no item names it — picking it up will disappear and count ` +
-        'toward the pickup total, but will not be held in the bag. Give an item this actorId if that is not intended.'
+        'toward the pickup total, but will not be held in the bag. Give an item this actorId if that is not intended.',
+      'pickup-unbacked', { actor: project.sprites.actors.indexOf(actor) }, []
     );
   }
 
@@ -7751,7 +7863,8 @@ export function validateProject(project) {
       // View ▸ Reload item, which discards the same way) runs loadProject
       // fresh and actually gets a normalized copy back into the session.
       `${malformedEffects} item${malformedEffects === 1 ? ' has' : 's have'} an effect this version cannot ` +
-        'compile — close and reopen the project so it can be normalized again; re-saving alone will not fix it.'
+        'compile — close and reopen the project so it can be normalized again; re-saving alone will not fix it.',
+      'item-effect-malformed', {}, [malformedEffects]
     );
   }
 
@@ -7781,7 +7894,8 @@ export function validateProject(project) {
       'error',
       'Map Forge',
       `${missingGiveTake} Give item / Take item command${missingGiveTake === 1 ? '' : 's'} do not name a real ` +
-        'item. Pick an item or switch the command off.'
+        'item. Pick an item or switch the command off.',
+      'give-take-missing-item', {}, [missingGiveTake]
     );
   }
 
@@ -7812,7 +7926,8 @@ export function validateProject(project) {
       'error',
       'Map Forge',
       `${missingStings} Sound sting command${missingStings === 1 ? '' : 's'} do not name a real ` +
-        'song. Pick a song or switch the command off.'
+        'song. Pick a song or switch the command off.',
+      'sting-missing-song', {}, [missingStings]
     );
   }
   if (overlongStings) {
@@ -7821,7 +7936,8 @@ export function validateProject(project) {
       'Map Forge',
       `${overlongStings} Sound sting command${overlongStings === 1 ? '' : 's'} name a song that ` +
         'takes longer than 255 frames (4.25s) to complete its own first pass. Shorten the song ' +
-        'or pick a different one.'
+        'or pick a different one.',
+      'sting-song-overlong', {}, [overlongStings]
     );
   }
 
@@ -7849,7 +7965,8 @@ export function validateProject(project) {
       'error',
       'Map Forge',
       `${missingSfx} Play a sound effect command${missingSfx === 1 ? '' : 's'} do not name a real ` +
-        'effect. Pick an effect or switch the command off.'
+        'effect. Pick an effect or switch the command off.',
+      'sfx-missing', {}, [missingSfx]
     );
   }
   if (overlongSfx) {
@@ -7858,7 +7975,8 @@ export function validateProject(project) {
       'Map Forge',
       `${overlongSfx} Play a sound effect command${overlongSfx === 1 ? '' : 's'} name an effect ` +
         'that takes longer than 255 frames (4.25s) to play. Shorten the effect or pick a different ' +
-        'one.'
+        'one.',
+      'sfx-overlong', {}, [overlongSfx]
     );
   }
 
@@ -7871,7 +7989,8 @@ export function validateProject(project) {
       'Sound Forge',
       `This project has ${project.sfx.length} sound effects but the Forge holds ${LIMITS.sfx} ` +
         `(ids 0-${LIMITS.sfx - 1}) — id $FF is reserved to mean "no effect". Delete ` +
-        `${project.sfx.length - LIMITS.sfx} of them before this can build.`
+        `${project.sfx.length - LIMITS.sfx} of them before this can build.`,
+      'sfx-over-ceiling', {}, [project.sfx.length, project.sfx.length - LIMITS.sfx]
     );
   }
 
@@ -7884,7 +8003,8 @@ export function validateProject(project) {
       'error',
       'Sound Forge',
       `This project has ${project.songs.length} songs but the driver can only address ${LIMITS.songs} ` +
-        `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`
+        `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`,
+      'songs-over-ceiling', {}, [project.songs.length, project.songs.length - LIMITS.songs]
     );
   }
 
@@ -7923,7 +8043,8 @@ export function validateProject(project) {
       'error',
       'Map Forge',
       `${danglingCalls} Run common event command${danglingCalls === 1 ? '' : 's'} name a common event that no ` +
-        'longer exists or has nothing left in it. Pick another common event or switch the command off.'
+        'longer exists or has nothing left in it. Pick another common event or switch the command off.',
+      'call-dangling', {}, [danglingCalls]
     );
   }
 
@@ -7945,7 +8066,8 @@ export function validateProject(project) {
       'warning',
       'Map Forge',
       `${dupMapNames} map name${dupMapNames === 1 ? ' is' : 's are'} used more than once — ` +
-        "the remembered ▶ Test scenario can't tell two same-named maps apart and will refuse to resolve."
+        "the remembered ▶ Test scenario can't tell two same-named maps apart and will refuse to resolve.",
+      'map-name-duplicate', {}, [dupMapNames]
     );
   }
 
@@ -7958,7 +8080,7 @@ export function validateProject(project) {
   // this exclusion the check would fire on nearly every ordinary
   // multi-screen map, since createScreen() defaults every screen's name to
   // '' and most stay that way.
-  for (const map of project.maps) {
+  for (const [mapIndex, map] of project.maps.entries()) {
     const screenNameCounts = new Map();
     for (const screen of map.screens) {
       const name = screen.name.trim();
@@ -7972,7 +8094,8 @@ export function validateProject(project) {
         'Map Forge',
         `"${map.name}" has ${dupScreenNames} screen name${dupScreenNames === 1 ? '' : 's'} used more than ` +
           "once — the remembered ▶ Test scenario can't tell same-named screens apart within this map and " +
-          'will refuse to resolve.'
+          'will refuse to resolve.',
+        'screen-name-duplicate', { map: mapIndex }, [dupScreenNames]
       );
     }
   }
@@ -7985,47 +8108,47 @@ export function validateProject(project) {
   // own live hint uses (§3.12), so the Problems list and the editor never
   // disagree about the wording.
 
-  for (const metasprite of project.sprites.metasprites) {
+  for (const [metaspriteIndex, metasprite] of project.sprites.metasprites.entries()) {
     const density = metaspriteScanlineDensity(metasprite);
     if (density > 8) {
-      add('warning', 'Sprite Forge', describeMetaspriteDensityWarning(metasprite, density));
+      addFrom('warning', 'Sprite Forge', diagnoseMetaspriteDensity(metasprite, density, metaspriteIndex));
     }
   }
 
   const reservedRanges = spriteReservedRanges(project, artworkMapper);
   const reservedIndices = reservedRanges.flatMap((r) => Array.from({ length: r.end - r.start }, (_, i) => r.start + i));
   for (const collision of metaspriteTileCollisions(project, reservedIndices)) {
-    add('warning', 'Sprite Forge', describeReservedReferenceWarning(collision, reservedRanges));
+    addFrom('warning', 'Sprite Forge', diagnoseReservedReference(collision, reservedRanges));
   }
 
   for (const { mapIndex, screenIndex, screen } of flatScreens(project)) {
     const budget = screenSpriteBudget(project, screen);
     if (budget.field + budget.overlay > budget.limit) {
-      add('warning', 'Map Forge', describeScreenSpriteWarning(project, mapIndex, screenIndex, budget));
+      addFrom('warning', 'Map Forge', diagnoseScreenSprites(project, mapIndex, screenIndex, budget));
     }
 
     // Phase 3a slice S1 (plan section 5.5): a timing bound on a STREAMED screen's placed art, not
     // the hardware sprite count above. One warning per offending screen; nothing is refused.
     if (project.maps[mapIndex].streamed === true) {
       const tiles = streamTiles(project, screen);
-      if (tiles > streamTileBoundFor(project)) add('warning', 'Map Forge', describeStreamTileWarning(project, mapIndex, screenIndex, tiles));
+      if (tiles > streamTileBoundFor(project)) addFrom('warning', 'Map Forge', diagnoseStreamTile(project, mapIndex, screenIndex, tiles));
     }
 
     const isStartScreen =
       mapIndex === project.project.startMap && screenIndex === project.project.startScreen;
     const density = fieldScanlineDensity(project, screen, { isStartScreen });
     if (density > 8) {
-      add('warning', 'Map Forge', describeFieldDensityWarning(project, mapIndex, screenIndex, density));
+      addFrom('warning', 'Map Forge', diagnoseFieldDensity(project, mapIndex, screenIndex, density));
     }
   }
 
   const battleBudget = battleSpriteBudget(project, artworkMapper);
   if (battleBudget.used > battleBudget.limit) {
-    add('warning', 'Build', describeBattleSpriteWarning(battleBudget));
+    addFrom('warning', 'Build', diagnoseBattleSprites(battleBudget));
     // Phase 1b: a second, distinct warning -- see describeBattleAnimationOamWarning's
     // own comment for why this is not folded into the one above.
-    const animWarning = describeBattleAnimationOamWarning(project, artworkMapper);
-    if (animWarning) add('warning', 'Monster Forge', animWarning);
+    const animWarning = diagnoseBattleAnimationOam(project, artworkMapper);
+    if (animWarning) addFrom('warning', 'Monster Forge', animWarning);
   }
 
   return problems;
@@ -8325,6 +8448,9 @@ function errorKey(problem) {
   return `${problem.severity} ${problem.where}`;
 }
 
+// The legacy derivation, for a problem with no `rule` (hand-built, or from code not yet migrated; validateProject's own
+// producers all carry one -- test/unit/diagnosticids.test.js scans for it): the message's text with every number blanked,
+// and the numbers it held.
 function messageSkeleton(message) {
   return message.replace(/\d+/g, '#');
 }
@@ -8333,36 +8459,47 @@ function messageNumbers(message) {
   return (message.match(/\d+/g) || []).map(Number);
 }
 
-// True only if `after` is textually identical to `before`, or shares the
-// same skeleton with every embedded number no greater than `before`'s
-// corresponding number, position by position (§7.5).
-function isNotWorse(beforeMessage, afterMessage) {
-  if (messageSkeleton(beforeMessage) !== messageSkeleton(afterMessage)) return false;
-  const beforeNumbers = messageNumbers(beforeMessage);
-  const afterNumbers = messageNumbers(afterMessage);
-  if (beforeNumbers.length !== afterNumbers.length) return false;
-  return afterNumbers.every((n, i) => n <= beforeNumbers[i]);
+// True only if the two vectors are the same length and every value of `after` is no greater than `before`'s, position by position.
+function countsNotWorse(before, after) {
+  return before.length === after.length && after.every((n, i) => n <= before[i]);
+}
+
+// Is `after` the same problem as `before`, and no worse? Identity is `rule` + `subject` (what the producer says it is, not
+// what it is worded as); "no worse" is `counts`, positionally non-increasing (§7.5). A problem without a `rule` on either
+// side falls back to the former text comparison: the same skeleton with every embedded number no greater.
+function isNotWorse(before, after) {
+  if (before.rule === undefined || after.rule === undefined) {
+    if (messageSkeleton(before.message) !== messageSkeleton(after.message)) return false;
+    return countsNotWorse(messageNumbers(before.message), messageNumbers(after.message));
+  }
+  if (before.rule !== after.rule || JSON.stringify(before.subject) !== JSON.stringify(after.subject)) return false;
+  return countsNotWorse(before.counts, after.counts);
 }
 
 /**
  * §7.5: only the errors an import's own writes actually caused may refuse
  * it. Matches each `after` error against an unclaimed `before` error at the
- * same (severity, where) whose message is textually the same or numerically
- * no worse; anything left over in `after` is a genuine regression.
+ * same (severity, where) bucket with the same rule and subject whose counts are
+ * no greater (see isNotWorse); anything left over in `after` is a genuine regression.
  */
 export function attributedErrors(originalProject, candidateClone) {
+  return attributeProblems(validateProject(originalProject), validateProject(candidateClone));
+}
+
+/** The pure core of attributedErrors, over two already-built problem lists: the errors of `after` that `before` does not account for. */
+export function attributeProblems(beforeProblems, afterProblems) {
   const before = new Map();
-  for (const p of validateProject(originalProject)) {
+  for (const p of beforeProblems) {
     if (p.severity !== 'error') continue;
     const key = errorKey(p);
     if (!before.has(key)) before.set(key, []);
-    before.get(key).push({ message: p.message, used: false });
+    before.get(key).push({ problem: p, used: false });
   }
   const regressions = [];
-  for (const p of validateProject(candidateClone)) {
+  for (const p of afterProblems) {
     if (p.severity !== 'error') continue;
     const pool = before.get(errorKey(p)) || [];
-    const match = pool.find((entry) => !entry.used && isNotWorse(entry.message, p.message));
+    const match = pool.find((entry) => !entry.used && isNotWorse(entry.problem, p));
     if (match) {
       match.used = true;
     } else {

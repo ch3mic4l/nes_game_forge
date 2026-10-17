@@ -302,7 +302,7 @@ export const MAPPERS = [
     // The game types the two-nametable ring is ADMITTED for on this board (phase 3b S4a action, S5 RPG); see `streamRingAdmittedGameTypes`.
     streamRingGameTypes: ['action', 'rpg'],
     supported: true,
-    summary: 'Up to 512 KB of program and 256 KB of graphics: 32 tilesets and 15 screen banks.',
+    summary: 'Up to 256 KB of program and 256 KB of graphics: 32 tilesets and 15 screen banks.',
     hint: 'The largest cartridge on offer. Its scanline interrupt gives the message font its own graphics bank, so showing text costs no background tiles on this board.'
   }
 ];

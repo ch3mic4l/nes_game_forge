@@ -940,7 +940,10 @@ test('validateProject: an action-with-combat project with artwork at $FE gets ex
     where: 'Tile Forge',
     message:
       `Tileset "${project.tilesets[0].name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
-      'while anything in the project can hurt the player.'
+      'while anything in the project can hurt the player.',
+    rule: 'tile-reserved-hud-hearts',
+    subject: { tileset: 0 },
+    counts: []
   });
 
   project.sprites.actors[actorId].damage = 0; // combat off -- projectUsesHeartArt now false
@@ -972,7 +975,10 @@ test('validateProject: a metasprite referencing a genuinely blank $FE tile, with
     message:
       'Metasprite "Icon" references a blank tile inside the range reserved for the HUD hearts ' +
       `on tileset "${project.tilesets[0].name}" — the build will draw the HUD hearts there instead ` +
-      'of leaving it empty.'
+      'of leaving it empty.',
+    rule: 'sprite-blank-reserved-hud-hearts',
+    subject: { metasprite: project.sprites.metasprites.length - 1, tileset: 0 },
+    counts: []
   });
 });
 
@@ -1068,7 +1074,10 @@ test('validateProject: (a) an RPG with miss:true and artwork at $FA gets exactly
     where: 'Tile Forge',
     message:
       `Tileset "${project.tilesets[0].name}" has artwork in sprite tiles $FA-$FC, which the MISS overlay ` +
-      'reserves on this project.'
+      'reserves on this project.',
+    rule: 'tile-reserved-miss',
+    subject: { tileset: 0 },
+    counts: []
   });
   assert.ok(!missErrors[0].message.includes('targeting cursor'), 'must never use the cursor wording');
 });
@@ -1102,7 +1111,10 @@ test('validateProject: (b)/(b2)/(b3) a metasprite referencing a blank $FA tile i
     message:
       'Metasprite "Icon" references a blank tile inside the range reserved for the MISS overlay ' +
       `on tileset "${referencing.tilesets[0].name}" — the build will draw the MISS overlay there instead ` +
-      'of leaving it empty.'
+      'of leaving it empty.',
+    rule: 'sprite-blank-reserved-miss',
+    subject: { metasprite: referencing.sprites.metasprites.length - 1, tileset: 0 },
+    counts: []
   });
 
   // (b2) a genuinely blank, UNREFERENCED $FA-$FC tile is allowed.

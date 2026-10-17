@@ -828,3 +828,16 @@ test('MIRRORING: the three hint strings match Decision 3 exactly, ids and order 
       'pick it for that, not for cartridge-board compatibility alone.'
   );
 });
+
+test('every board summary states the program size its prgUnits give', () => {
+  // The wrong implementation is a summary typed by hand that drifts from the registry: MMC3 once said "128 KB of program" with prgUnits 16 (256 KB).
+  // A PRG unit is 16 KB (shared/cartridge.js), so "N KB of program" must equal prgUnits * 16 for every board that quotes one.
+  let checked = 0;
+  for (const mapper of MAPPERS) {
+    const match = /(\d+) KB of program/.exec(mapper.summary);
+    if (!match) continue;
+    checked += 1;
+    assert.equal(Number(match[1]), mapper.prgUnits * 16, `${mapper.name}: "${mapper.summary}"`);
+  }
+  assert.ok(checked >= 4, 'the assertion must actually see several summaries');
+});

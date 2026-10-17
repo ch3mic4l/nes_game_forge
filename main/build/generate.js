@@ -2238,6 +2238,38 @@ export function projectWithoutCommands(project, ops) {
 }
 
 /**
+ * The key `switchableMappers` counts an error under: where | rule | subject | counts, the producer's own identity and never the
+ * wording. `counts` is part of it, so equal values are required -- one error rising OR falling is a different key and refuses the
+ * candidate board, exactly as the old `where: message` key (which embedded the numbers) did. A problem with no `rule` (hand-built; every
+ * producer carries one, and test/unit/diagnosticids.test.js scans for it) falls back to this caller's own old derivation, `where: message`.
+ */
+export function diagnosticTallyKey(problem) {
+  return problem.rule === undefined
+    ? `${problem.where}: ${problem.message}`
+    : `${problem.where} | ${problem.rule} | ${JSON.stringify(problem.subject)} | ${JSON.stringify(problem.counts)}`;
+}
+
+/** A count per diagnosticTallyKey, errors only. Counted, not a Set: see the comment in switchableMappers on multiplicity. */
+export function errorTally(problems) {
+  const counts = new Map();
+  for (const problem of problems) {
+    if (problem.severity !== 'error') continue;
+    const key = diagnosticTallyKey(problem);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Does `after` hold any error more times than `before` does? A *fall* in multiplicity is accepted, a rise (or a new key) is not. */
+export function introducesErrors(before, after) {
+  const existing = errorTally(before);
+  for (const [key, count] of errorTally(after)) {
+    if (count > (existing.get(key) ?? 0)) return true;
+  }
+  return false;
+}
+
+/**
  * The boards this project could switch to without losing something in the
  * move -- the candidate list every "would a different mapper fix this?"
  * answer is drawn from, shared by kernelShortfallAdvice and
@@ -2282,10 +2314,10 @@ export function projectWithoutCommands(project, ops) {
  * -- which every board shares. Rejecting a candidate for an error it merely
  * inherited would mean a project with one unrelated mistake gets no mapper
  * advice at all, silently. Only an error the *switch introduces* disqualifies
- * a board. Errors are keyed by their rendered text, which can call the same
- * rule "new" when a message quotes the board's own name; that direction is the
- * safe one -- a board wrongly withheld is weaker advice, a board wrongly
- * offered is wrong advice.
+ * a board. Errors are keyed by their producer-fixed identity and counts
+ * (diagnosticTallyKey), so a count that changes in either direction is a new key;
+ * that direction is the safe one -- a board wrongly withheld is weaker advice, a
+ * board wrongly offered is wrong advice.
  *
  * checkCapacity is deliberately NOT called here, even though it would answer
  * the capacity half in one line: it calls kernelShortfallAdvice, which calls
@@ -2381,20 +2413,7 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
       // those. It is kept because it is free and because the day a per-item
       // mapper-dependent rule appears, the Set version fails silently and in
       // the unsafe direction -- offering a board that breaks the project.
-      const errorKey = (problem) => `${problem.where}: ${problem.message}`;
-      const tally = (list) => {
-        const counts = new Map();
-        for (const problem of list) {
-          if (problem.severity !== 'error') continue;
-          const key = errorKey(problem);
-          counts.set(key, (counts.get(key) ?? 0) + 1);
-        }
-        return counts;
-      };
-      const existing = tally(validateProject(project));
-      for (const [key, count] of tally(validateProject(moved))) {
-        if (count > (existing.get(key) ?? 0)) return false;
-      }
+      if (introducesErrors(validateProject(project), validateProject(moved))) return false;
       // Still fits? Three banks, asked in the same terms checkCapacity asks. A project with a streamed
       // map asks checkStreamedMapperSwitch for the screen-region half instead of restating it: the
       // streamed maps' own screens are not ordinary records, so the flat count below would be wrong.
@@ -2878,25 +2897,31 @@ function checkCode(project) {
   const code = project.code ?? { overrides: [], files: [] };
   const stock = new Set(engineFileNames());
 
-  for (const file of code.files) {
+  for (const [fileIndex, file] of code.files.entries()) {
     if (stock.has(file.name)) {
       problems.push({
         severity: 'error',
         where: 'Code Forge',
         message:
           `"${file.name}" is the name of a stock engine file, so it would overwrite it. Rename your file, or ` +
-          'edit the engine file itself — the Code Forge keeps your changes as a per-project copy.'
+          'edit the engine file itself — the Code Forge keeps your changes as a per-project copy.',
+        rule: 'code-file-shadows-engine',
+        subject: { file: fileIndex },
+        counts: []
       });
     }
   }
   // An override naming a file this version does not ship is skipped rather than
   // refused, so a project saved by a later version still builds here.
-  for (const file of code.overrides) {
+  for (const [overrideIndex, file] of code.overrides.entries()) {
     if (!stock.has(file.name)) {
       problems.push({
         severity: 'warning',
         where: 'Code Forge',
-        message: `"${file.name}" is not a file in this version's engine, so your edited copy is not used.`
+        message: `"${file.name}" is not a file in this version's engine, so your edited copy is not used.`,
+        rule: 'code-override-unknown',
+        subject: { override: overrideIndex },
+        counts: []
       });
     }
   }
@@ -2909,7 +2934,10 @@ function checkCode(project) {
         'The assembler enforces the bank limits; any overflow names the file and line.' +
         // Phase 3a slice S1 (plan section 7 S0, "Custom code contract"): the streamed sprite projection is
         // derived from the art's own poses, so code that draws an unauthored pose voids its bounds.
-        (projectUsesStreamedActors(project) ? STREAMED_BOUNDS_CODE_SENTENCE : '')
+        (projectUsesStreamedActors(project) ? STREAMED_BOUNDS_CODE_SENTENCE : ''),
+      rule: 'code-handwritten',
+      subject: {},
+      counts: []
     });
   }
   // design-tile.md §11, finding 13, §12 test 18: esptr_lo/esptr_hi's shared-
@@ -2938,7 +2966,10 @@ function checkCode(project) {
         'tile is also present. esptr_lo/esptr_hi is shared, aliased scratch (bdptr_lo/bdptr_hi, ' +
         'engine/constants.asm): rebuild_bound_cache and tile_switch_changed set and consume it inside one ' +
         'call whenever a Turn switch command runs, so an override that stashes esptr_lo/esptr_hi across its ' +
-        'own calls will have it silently clobbered, with no assembler error.'
+        'own calls will have it silently clobbered, with no assembler error.',
+      rule: 'code-esptr-override',
+      subject: {},
+      counts: []
     });
   }
   return problems;
@@ -3120,10 +3151,22 @@ export function planStreamedRegions(project, mapper, options = {}) {
 function streamedCapacityProblems(project, mapper, options = {}) {
   if (!project.maps.some((map) => map.streamed === true)) return [];
   const plan = planStreamedRegions(project, mapper, options);
+  // "Choose a board with more program space" is advice only where a larger board that can stream exists to choose: it cannot
+  // work on the largest one. Derived from the registry, never a literal board id.
+  const largerBoard = SUPPORTED_MAPPERS.some((candidate) => candidate.streamable && candidate.prgUnits > mapper.prgUnits);
   if (!plan.baseBanks) {
     return [
-      `The streamed maps need ${plan.streamedNeed} of the ${plan.usable.length} 8 KB program regions ${mapper.name} has free ` +
-        'for world data. Shrink a streamed map, remove one, or choose a board with more program space in the Build panel.'
+      {
+        message:
+          `The streamed maps need ${plan.streamedNeed} of the ${plan.usable.length} 8 KB program regions ${mapper.name} has free ` +
+          'for world data. ' +
+          (largerBoard
+            ? 'Shrink a streamed map, remove one, or choose a board with more program space in the Build panel.'
+            : 'Shrink a streamed map or remove one.'),
+        rule: 'streamed-regions-over',
+        subject: {},
+        counts: [plan.streamedNeed, plan.usable.length]
+      }
     ];
   }
   const fits = fitsCapacity(
@@ -3138,9 +3181,17 @@ function streamedCapacityProblems(project, mapper, options = {}) {
   );
   if (fits) return [];
   return [
-    `The ${plan.ordinaryFlat.length} ordinary screens no longer fit beside the streamed maps, which take ${plan.streamedNeed} of ` +
-      `${mapper.name}'s ${plan.usable.length} 8 KB program regions. Remove a screen, shrink a map, or choose a board with more ` +
-      'program space in the Build panel.'
+    {
+      message:
+        `The ${plan.ordinaryFlat.length} ordinary screens no longer fit beside the streamed maps, which take ${plan.streamedNeed} of ` +
+        `${mapper.name}'s ${plan.usable.length} 8 KB program regions. ` +
+        (largerBoard
+          ? 'Remove a screen, shrink a map, or choose a board with more program space in the Build panel.'
+          : 'Remove a screen or shrink a map.'),
+      rule: 'streamed-ordinary-screens-over',
+      subject: {},
+      counts: [plan.ordinaryFlat.length, plan.streamedNeed, plan.usable.length]
+    }
   ];
 }
 
@@ -3168,7 +3219,7 @@ export function checkStreamedMapperSwitch(project, candidateMapperId, candidateM
     const failed = board.filter((problem) => problem.kind === kind);
     if (failed.length) return failed.map((problem) => problem.message);
   }
-  return streamedCapacityProblems(moved, resolveMapper(moved.cartridge.mapper));
+  return streamedCapacityProblems(moved, resolveMapper(moved.cartridge.mapper)).map((problem) => problem.message);
 }
 
 /**
@@ -3352,7 +3403,10 @@ export function checkCapacity(project) {
       message:
         `${mapper.name} has no measured kernel-lo battle allowance yet, so this project's real capacity ` +
         'cannot be computed on it. This is a gap in engine support for that mapper, not a problem with ' +
-        'the project -- choose a different mapper in the Build panel.'
+        'the project -- choose a different mapper in the Build panel.',
+      rule: 'battle-allowance-unmeasured',
+      subject: {},
+      counts: []
     });
   } else {
     kernelBudget = kernelCodeBytes(project, mapper);
@@ -3386,7 +3440,10 @@ export function checkCapacity(project) {
       message:
         `This project has ${project.tilesets.length} tilesets but ${mapper.name} holds ${tilesetCeiling}` +
         (fontPages ? ' alongside the message font’s own graphics page. ' : '. ') +
-        'Remove a tileset.'
+        'Remove a tileset.',
+      rule: 'tilesets-over',
+      subject: {},
+      counts: [project.tilesets.length, tilesetCeiling]
     });
   }
 
@@ -3414,8 +3471,15 @@ export function checkCapacity(project) {
   const sfxBytes = sfxSize(project.sfx);
 
   if (hasStreamed) {
-    for (const message of streamedCapacityProblems(project, mapper, { reserveFlashSave })) {
-      problems.push({ severity: 'error', where: 'Map Forge', message });
+    for (const diagnostic of streamedCapacityProblems(project, mapper, { reserveFlashSave })) {
+      problems.push({
+        severity: 'error',
+        where: 'Map Forge',
+        message: diagnostic.message,
+        rule: diagnostic.rule,
+        subject: diagnostic.subject,
+        counts: diagnostic.counts
+      });
     }
   } else if (flat.length > capacity) {
     problems.push({
@@ -3425,7 +3489,10 @@ export function checkCapacity(project) {
         `This project has ${flat.length} screens but ${mapper.name} holds ${capacity}. ` +
         (layout.dataBankCount === 1
           ? 'Choose a mapper with program bank switching in the Build panel, remove a screen, or shrink a map grid.'
-          : 'Remove a screen or shrink a map grid.')
+          : 'Remove a screen or shrink a map grid.'),
+      rule: 'screens-over-capacity',
+      subject: {},
+      counts: [flat.length, capacity]
     });
   }
   if (kernelFree !== null && kernelFree < 0) {
@@ -3434,7 +3501,10 @@ export function checkCapacity(project) {
       where: 'Map Forge',
       message:
         `The lookup tables need ${tableBytes} bytes but only ${BANK_SIZE - kernelBudget - fixedBytes} are ` +
-        `free alongside the engine code. ${kernelShortfallAdvice(project, mapper, -kernelFree)}`
+        `free alongside the engine code. ${kernelShortfallAdvice(project, mapper, -kernelFree)}`,
+      rule: 'kernel-lo-tables-over',
+      subject: {},
+      counts: [tableBytes, BANK_SIZE - kernelBudget - fixedBytes]
     });
   }
   // The other bank with a budget: the switchable code region holding
@@ -3523,7 +3593,10 @@ export function checkCapacity(project) {
             // so it can distinguish a board with no room from no board at all.
             alternatives: switchableMappers(project, mapper, { checkBattleRegion: false }),
             exact: !overridden
-          })
+          }),
+        rule: overridden ? 'battle-region-tables-over' : swBanked ? 'battle-region-streamed-dialogue-over' : 'battle-region-over',
+        subject: {},
+        counts: overridden ? [regionBytes, regionCeiling] : swBanked ? [musicBytes, sfxBytes, text.bytes, regionBytes, regionCeiling] : [regionBytes, regionCeiling]
       });
     }
   }
@@ -3553,7 +3626,10 @@ export function checkCapacity(project) {
         'objects if they land somewhere with no room for them. This is a read of the file’s text, not a ' +
         'check of the build: what it found may be a label or a comment rather than a directive, it does not ' +
         'know whether a real directive is ever assembled, and it cannot see a relocation reached through ' +
-        '.include or produced by a macro at all.'
+        '.include or produced by a macro at all.',
+      rule: 'code-battle-relocation',
+      subject: {},
+      counts: []
     });
   }
   problems.push(...checkCode(project));
@@ -3568,7 +3644,10 @@ export function checkCapacity(project) {
       where: 'Sound Forge',
       message:
         `This project's songs use ${totalInstruments} instruments combined, but the driver can only ` +
-        `address ${MAX_TOTAL_INSTRUMENTS}. Remove some instruments from one or more songs.`
+        `address ${MAX_TOTAL_INSTRUMENTS}. Remove some instruments from one or more songs.`,
+      rule: 'instruments-over',
+      subject: {},
+      counts: [totalInstruments]
     });
   }
   // Round 2 finding 1: LIMITS.songs (shared/project.js) is a real hardware
@@ -3583,7 +3662,10 @@ export function checkCapacity(project) {
       where: 'Sound Forge',
       message:
         `This project has ${project.songs.length} songs but the driver can only address ${LIMITS.songs} ` +
-        `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`
+        `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`,
+      rule: 'songs-over-ceiling',
+      subject: {},
+      counts: [project.songs.length, project.songs.length - LIMITS.songs]
     });
   }
   // Music, sound effects, text and (streaming only) the resident streamed-worlds package share the
@@ -3609,7 +3691,10 @@ export function checkCapacity(project) {
             ` reserves ${streamworldHiBytes} bytes of the same bank`
           : '') +
         `. Together they must fit in ${ceiling} bytes of the ${BANK_SIZE}-byte music and text bank -- ` +
-        `${overBy} byte${overBy === 1 ? '' : 's'} over. Shorten a song or effect, or cut some dialogue.`
+        `${overBy} byte${overBy === 1 ? '' : 's'} over. Shorten a song or effect, or cut some dialogue.`,
+      rule: 'content-bank-over',
+      subject: {},
+      counts: [musicBytes, sfxBytes, text.bytes, streamworldHiBytes, ceiling, overBy]
     });
   }
   return {

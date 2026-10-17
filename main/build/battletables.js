@@ -492,7 +492,10 @@ export function checkBattleTables(project) {
     problems.push({
       severity: 'error',
       where: 'Character Forge',
-      message: 'No party member starts in the party, so the first battle would begin with nobody in it.'
+      message: 'No party member starts in the party, so the first battle would begin with nobody in it.',
+      rule: 'party-none-starting',
+      subject: {},
+      counts: []
     });
   }
   if ((project.spells ?? []).length > 8) {
@@ -501,18 +504,24 @@ export function checkBattleTables(project) {
       where: 'Magic Forge',
       message:
         `This project has ${project.spells.length} spells, and a party member can only learn the first 8. ` +
-        'The rest can still be cast by monsters.'
+        'The rest can still be cast by monsters.',
+      rule: 'spells-over-learnable',
+      subject: {},
+      counts: [project.spells.length]
     });
   }
-  for (const member of party) {
-    for (const entry of member.spells ?? []) {
+  for (const [memberIndex, member] of party.entries()) {
+    for (const [entryIndex, entry] of (member.spells ?? []).entries()) {
       if (entry.level > project.rpg.maxLevel) {
         problems.push({
           severity: 'warning',
           where: 'Character Forge',
           message:
             `${member.name} learns a spell at level ${entry.level}, past the maximum of ` +
-            `${project.rpg.maxLevel}, so it will never be learned.`
+            `${project.rpg.maxLevel}, so it will never be learned.`,
+          rule: 'spell-learned-past-max',
+          subject: { member: memberIndex, spell: entryIndex },
+          counts: [entry.level, project.rpg.maxLevel]
         });
       }
     }
@@ -522,14 +531,20 @@ export function checkBattleTables(project) {
     problems.push({
       severity: 'warning',
       where: 'Sprite Forge',
-      message: 'No actor is hostile, so no battle can start. Give a monster some contact damage.'
+      message: 'No actor is hostile, so no battle can start. Give a monster some contact damage.',
+      rule: 'battle-no-hostile-actor',
+      subject: {},
+      counts: []
     });
   }
   if (party.length > RPG_LIMITS.party) {
     problems.push({
       severity: 'error',
       where: 'Character Forge',
-      message: `The party holds ${RPG_LIMITS.party} members and this project has ${party.length}.`
+      message: `The party holds ${RPG_LIMITS.party} members and this project has ${party.length}.`,
+      rule: 'party-over',
+      subject: {},
+      counts: [party.length]
     });
   }
   return problems;

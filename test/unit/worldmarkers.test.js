@@ -416,7 +416,7 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // alarm is accepted; a missed change is not. (No comment/whitespace normalisation and no short hash: both were shown to miss
 // real changes, handoff-next/worldview/d2-review2.md, finding 2.)
 const PINNED_DIGESTS = {
-  'shared/project.js': 'd5c8276f33f4fd36012f48f125e2e4bad925c347fe9b735d26f1846485e11e51',
+  'shared/project.js': 'e0427f50f9f41720d45fc8764ba4f2ba62a8d780af81f119a4cce20329faadba',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

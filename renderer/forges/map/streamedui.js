@@ -30,25 +30,28 @@ const board = (project) => ({
   mirroringId: project.cartridge.mirroring
 });
 
-/** Every error validateProject reports: `{ severity, where, message }` -- that is all a problem carries. */
+/** Every error validateProject reports: `{ severity, where, message, rule, subject, counts }`. */
 export const errorProblems = (project) => validateProject(project).filter((problem) => problem.severity === 'error');
 
 /** The same errors as message strings. */
 export const errorMessages = (project) => errorProblems(project).map((problem) => problem.message);
 
-// validateProject's problems have no rule id, code or kind: `where` (a Forge name) and `message` are all there is,
-// and a counted rule speaks in a different GRAMMAR as its count changes ("2 Give item / Take item commands do not
-// name a real item" becomes "1 Give item / Take item command do not ..."; "has"/"have", "is"/"are", "backs ... item"
-// / "back ... item each"). So a rule's identity here is its `where` plus its words with the count, the number
-// inflection and punctuation taken out -- never the message string. A name in double quotes is kept verbatim
-// (digits and case included, as the project's names are case-sensitive): a different map failing the same rule is a
-// different instance, not the same one speaking.
+// A problem is the same problem when its `where`, `rule` and `subject` are the same (docs/design-equipment.md section 9):
+// the producer fixes each at the site that raises it, so the wording -- which changes with the count and its grammar
+// ("2 Give item / Take item commands do not ..." becomes "1 ... command do not ...") -- is never read, and `counts` is
+// ignored entirely here: this caller's policy is that a rising or falling number on an existing instance is not new.
+//
+// LEGACY FALLBACK. A problem with no `rule` (a hand-built one in a test; validateProject's own producers all carry
+// one, and test/unit/diagnosticids.test.js scans for that) falls back to this caller's former derivation: `where` plus
+// the message's words with the count, the number inflection and punctuation taken out. A name in double quotes is kept
+// verbatim (digits and case included, as the project's names are case-sensitive). It is unreachable for a real project.
 const IRREGULAR = { has: 'have', is: 'be', are: 'be', does: 'do' };
 const SILENT = new Set(['each']);
 const foldWord = (word) => IRREGULAR[word] ?? (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word);
 
-/** A rule's identity: stable across the count changing, and across the grammatical number that follows it. */
+/** A problem's identity: stable across the count changing, and across the grammatical number that follows it. */
 export function ruleKey(problem) {
+  if (problem.rule !== undefined) return `${problem.where}|${problem.rule}|${JSON.stringify(problem.subject)}`;
   const words = problem.message.split(/("[^"]*")/).flatMap((part, i) =>
     i % 2 === 1
       ? [part]
@@ -58,7 +61,7 @@ export function ruleKey(problem) {
 }
 
 /**
- * The problems in `after` that `before` did not already have: one for one by `ruleKey`, so an edit that keeps or
+ * The problems in `after` that `before` did not already have: one for one by `ruleKey`, so an edit that keeps, raises or
  * lowers a violation of a rule the project already failed ("holds 271 screens" -> "holds 272"; 2 -> 1 commands) is
  * not new, a rule that was not failing is, and so is a second instance of one (a second map, a second screen).
  */

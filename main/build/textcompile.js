@@ -234,8 +234,11 @@ export function compileText(project) {
   // makes it reachable, and a length that wrapped would send the engine into the
   // middle of a command — so it is refused here, naming what to shorten.
   const tooLong = [];
+  // Which event is being encoded, by index (a common event's id, or map/screen/entity), and the page within it: the subject of an
+  // over-long body, which `what` (a name-shaped label) cannot be.
+  let site = {};
   const measureLength = (length, what) => {
-    if (length > MAX_BODY) tooLong.push({ what, length });
+    if (length > MAX_BODY) tooLong.push({ what, length, subject: { ...site } });
     return length;
   };
   const measured = (bytes, what) => {
@@ -543,7 +546,9 @@ export function compileText(project) {
 
   const encodeEvent = (pages, where) => {
     const bytes = [];
+    const owner = site;
     pages.forEach((page, index) => {
+      site = { ...owner, page: index };
       const at = `${where}, page ${index + 1}`;
       const body = encodeBody(page.commands, at);
       body.push(OP_END);
@@ -555,6 +560,7 @@ export function compileText(project) {
       bytes.push(...encodeCondition(page.cond), body.length, ...body);
     });
     bytes.push(EVT_PAGES_END);
+    site = owner;
     return bytes;
   };
 
@@ -564,12 +570,13 @@ export function compileText(project) {
   // common event.
   for (const { entry, id } of liveCommonEventEntries) {
     const name = String(entry.name ?? '').trim() || `Common event ${id}`;
+    site = { commonEvent: id };
     events.push(encodeEvent(compiledPages(entry.event), `Common event “${name}”`));
   }
 
   for (const [mapIndex, map] of (project.maps ?? []).entries()) {
     for (const [screenIndex, screen] of (map.screens ?? []).entries()) {
-      for (const entity of screen.entities ?? []) {
+      for (const [entityIndex, entity] of (screen.entities ?? []).entries()) {
         // An authored event wins; plain dialogue becomes an event of one
         // unconditional page that says one thing, so the engine has a single
         // path for "talking to somebody" rather than a special case beside the
@@ -581,6 +588,7 @@ export function compileText(project) {
         const dialogue = String(entity.props?.dialogue ?? '').trim();
         if (!pages.length && !dialogue) continue;
         eventFor.set(entity, events.length);
+        site = { map: mapIndex, screen: screenIndex, entity: entityIndex };
         events.push(
           pages.length
             ? encodeEvent(
@@ -597,7 +605,7 @@ export function compileText(project) {
   }
 
   const problems = [];
-  for (const { what, length } of tooLong) {
+  for (const { what, length, subject } of tooLong) {
     problems.push({
       severity: 'error',
       where: 'Map Forge',
@@ -607,21 +615,30 @@ export function compileText(project) {
         'costs no more than short — or move some of them onto another actor. A branch would not ' +
         'help, because everything inside one still counts towards the body holding it, and ' +
         'another page would not either, because pages are alternatives: only the first that ' +
-        'matches runs.'
+        'matches runs.',
+      rule: 'event-body-too-long',
+      subject: subject,
+      counts: [length]
     });
   }
   if (strings.length > MAX_TABLE) {
     problems.push({
       severity: 'error',
       where: 'Map Forge',
-      message: `This project has ${strings.length} pieces of dialogue and the engine holds ${MAX_TABLE}.`
+      message: `This project has ${strings.length} pieces of dialogue and the engine holds ${MAX_TABLE}.`,
+      rule: 'dialogue-strings-over',
+      subject: {},
+      counts: [strings.length]
     });
   }
   if (events.length > MAX_TABLE) {
     problems.push({
       severity: 'error',
       where: 'Map Forge',
-      message: `This project has ${events.length} events and the engine holds ${MAX_TABLE}.`
+      message: `This project has ${events.length} events and the engine holds ${MAX_TABLE}.`,
+      rule: 'events-over',
+      subject: {},
+      counts: [events.length]
     });
   }
   if (unmapped.size) {
@@ -630,7 +647,10 @@ export function compileText(project) {
       where: 'Map Forge',
       message:
         `The font has no glyph for ${[...unmapped].map((char) => `"${char}"`).join(', ')}, ` +
-        'so those characters are written as spaces.'
+        'so those characters are written as spaces.',
+      rule: 'font-glyph-missing',
+      subject: {},
+      counts: []
     });
   }
 
