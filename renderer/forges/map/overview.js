@@ -66,22 +66,27 @@ export function layoutOverview(gridW, gridH, box) {
       break;
     }
   }
-  const width = widthAt(scale);
-  const height = heightAt(scale);
-  const cellW = LIMITS.screenCols * scale;
-  const cellH = LIMITS.screenRows * scale;
+  const grid = gridLayoutAt(gridW, gridH, scale);
+  return { ...grid, scrollX: grid.width > box.width, scrollY: grid.height > box.height };
+}
+
+/**
+ * The geometry of a `gridW` x `gridH` grid drawn at `scale` pixels per metatile, with no box to fit: the cell size, the
+ * gap and margin, and the extent. The part of `layoutOverview` that does not depend on the room it has, so the world
+ * view (`worldlayout.js`) lays each map's grid out with the same arithmetic. Its fields are `layoutOverview`'s own,
+ * less `scrollX` / `scrollY`, which are about a box.
+ */
+export function gridLayoutAt(gridW, gridH, scale) {
   return {
     gridW,
     gridH,
     scale,
-    cellW,
-    cellH,
+    cellW: LIMITS.screenCols * scale,
+    cellH: LIMITS.screenRows * scale,
     gap: OVERVIEW_GAP,
     pad: OVERVIEW_PAD,
-    width,
-    height,
-    scrollX: width > box.width,
-    scrollY: height > box.height
+    width: extentAt(gridW, LIMITS.screenCols, scale),
+    height: extentAt(gridH, LIMITS.screenRows, scale)
   };
 }
 
@@ -122,12 +127,13 @@ const fitsAxis = (start, size, scroll, room) => start >= scroll && start + size 
  * nothing.
  */
 export function inView(layout, index, view) {
-  const rect = cellRect(layout, index);
+  return inViewFor(cellRect(layout, index), layout.gap, view);
+}
+
+/** `inView` for a cell already placed: `rect` is where it is drawn (null for a screen that does not exist) and `gap` the frame round it. */
+export function inViewFor(rect, gap, view) {
   if (!rect) return false;
-  return (
-    fitsAxis(rect.x - layout.gap, rect.w + 2 * layout.gap, view.left, view.width) &&
-    fitsAxis(rect.y - layout.gap, rect.h + 2 * layout.gap, view.top, view.height)
-  );
+  return fitsAxis(rect.x - gap, rect.w + 2 * gap, view.left, view.width) && fitsAxis(rect.y - gap, rect.h + 2 * gap, view.top, view.height);
 }
 
 /**
@@ -136,7 +142,11 @@ export function inView(layout, index, view) {
  * clicking never jerks it; one that is not is centred on each axis that needs it, clamped to the scrollable range.
  */
 export function scrollTarget(layout, index, view) {
-  const rect = cellRect(layout, index);
+  return scrollTargetFor(cellRect(layout, index), layout.gap, { width: layout.width, height: layout.height }, view);
+}
+
+/** `scrollTarget` for a cell already placed: `rect` where it is drawn, `gap` the frame round it, `extent` the `{ width, height }` it scrolls in. */
+export function scrollTargetFor(rect, gap, extent, view) {
   if (!rect) return { left: view.left, top: view.top };
   const axis = (start, size, scroll, room, extent) => {
     if (fitsAxis(start, size, scroll, room)) return scroll;
@@ -144,8 +154,8 @@ export function scrollTarget(layout, index, view) {
     return Math.max(0, Math.min(Math.max(0, extent - room), Math.round(centred)));
   };
   return {
-    left: axis(rect.x - layout.gap, rect.w + 2 * layout.gap, view.left, view.width, layout.width),
-    top: axis(rect.y - layout.gap, rect.h + 2 * layout.gap, view.top, view.height, layout.height)
+    left: axis(rect.x - gap, rect.w + 2 * gap, view.left, view.width, extent.width),
+    top: axis(rect.y - gap, rect.h + 2 * gap, view.top, view.height, extent.height)
   };
 }
 

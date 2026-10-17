@@ -683,3 +683,44 @@ test('T-close: the current-state docs give the worst-case vram_buf frame as 88 (
   assert.doesNotMatch(design, /unchanged and exempt:\*\* the/);
   assert.match(design, /Superseded 2026-10-04 by the Say\/Move overrun fix/);
 });
+
+test('World view (item 7, C1): the renderer-only, read-only, synchronous boundary the design record states is what the code has', () => {
+  // docs/design-world-overview.md sections 4 and 6: the pure modules and world.js hold no project state and nothing in them waits; map.js reaches the view through
+  // openFromWorld, a plain function; and the editing stage the C2 overview pins above are unchanged (they run in the test before this one).
+  const files = ['world.js', 'worldlayout.js', 'worldmarkers.js'];
+  for (const f of files) {
+    const text = read(`renderer/forges/map/${f}`);
+    assert.doesNotMatch(text, /commit\(|beginStroke|touch\(|\bstore\b/, `${f} mentions no way to write the project`);
+    assert.doesNotMatch(text, /\bawait\b|\bimport\(|\basync\b/, `${f} has no await, no import( and no async function`);
+  }
+  // the pure modules say "window" in their prose (the rectangle of the world a canvas holds), so the DOM-global check reads code only
+  const codeOnly = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const f of ['worldlayout.js', 'worldmarkers.js']) assert.doesNotMatch(codeOnly(read(`renderer/forges/map/${f}`)), /\b(document|window|localStorage)\b/, `${f} is DOM-free`);
+  const world = read('renderer/forges/map/world.js');
+  assert.match(world, /import \{[^}]*\bworldHit\b[^}]*\bworldCellRect\b[^}]*\} from '\.\/worldlayout\.js'|import \{[^}]*\bworldCellRect\b[^}]*\bworldHit\b[^}]*\} from '\.\/worldlayout\.js'/s, 'world.js imports the pure hit-test and cell rectangle, not a private copy');
+  assert.match(world, /import \{ buildWorldMarkers \} from '\.\/worldmarkers\.js'/);
+  assert.doesNotMatch(world, /function (worldHit|worldCellRect|buildWorldMarkers)\b/, 'and defines none of them itself');
+  assert.equal([...world.matchAll(/function flushWorld\b/g)].length, 1, 'one flush');
+  assert.equal([...world.matchAll(/picture\.width = overlay\.width = win\.w;/g)].length, 1, 'the canvases are sized in one place, to the window');
+  assert.equal([...world.matchAll(/picture\.width = /g)].length, 2, 'and the only other write is destroy() zeroing them');
+
+  const src = read('renderer/forges/map/map.js');
+  assert.match(src, /import \{ createWorldView \} from '\.\/world\.js'/);
+  const fn = /function openFromWorld\(\{ mapIndex, screenIndex \}\) \{([\s\S]*?)\n  \}\n/.exec(src);
+  assert.ok(fn, 'openFromWorld is a plain function declaration');
+  assert.doesNotMatch(src, /async function openFromWorld/);
+  assert.doesNotMatch(fn[1], /\bawait\b|\bimport\(|goTo|selectionToken/, 'it waits for nothing and is not a navigation');
+  for (const used of [/state\.mapIndex = mapIndex;/, /state\.screenIndex = screenIndex;/, /state\.regionSelection = null;/, /leaveWorld\(\);/, /renderAll\(\);/]) assert.match(fn[1], used, `openFromWorld has ${used}`);
+  for (const used of [
+    /world: \{ on: false, scale: 'fit' \}/,
+    /dataset: \{ worldToggle: '' \}/,
+    /if \(state\.world\.on\) return; \/\/ the screen canvas is detached/,
+    /if \(state\.world\.on\) return; \/\/ as renderScreen/,
+    /if \(state\.world\.on\) \{\s*worldView\.render\(\);\s*\} else \{\s*renderNavigator\(\);/,
+    /worldView\?\.destroy\(\);/,
+    /getProject: \(\) => store\.project/
+  ]) assert.match(src, used, `map.js still has ${used}`);
+  const doc = read('docs/reference-electron-layout.md');
+  assert.match(doc, /The World view \(ROADMAP item 7/);
+  assert.match(doc, /no `await` and no `import\(`/);
+});

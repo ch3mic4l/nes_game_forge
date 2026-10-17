@@ -1636,3 +1636,39 @@ canvas.sheet {
 .tok-ident {
   color: var(--text);
 }
+
+/* ---------------------------------------------------------- Map Forge: the World view */
+
+/* The editing controls and the World controls swap by one root class, so no [data-tool] / [data-zoom] node is removed or renamed. */
+.edit-controls {
+  display: contents;
+}
+
+.world-controls,
+.forge.world-mode .edit-controls {
+  display: none;
+}
+
+.forge.world-mode .world-controls {
+  display: contents;
+}
+
+/* Its own scroll container, constrained to the stage: a flex child otherwise grows to its content. A stable gutter keeps
+   clientWidth, which the wrap reads, from changing when a scrollbar appears and re-wrapping the world. */
+.world-box {
+  overflow: auto;
+  scrollbar-gutter: stable;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 120px;
+  max-width: 100%;
+  align-self: stretch;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-1);
+}
+
+.world-surface {
+  position: relative;
+  cursor: pointer;
+}

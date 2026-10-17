@@ -81,6 +81,7 @@ import {
   cellState,
   changedCells
 } from './overview.js';
+import { createWorldView } from './world.js';
 import { templatesFor, firstFreeSwitch } from './templates.js';
 import {
   MetatileRenderer,
@@ -219,8 +220,12 @@ export function mount(container, app) {
     // The free-form battle-test picker's own selection -- ephemeral debugger
     // state, not project data, so it is never committed and simply resets on
     // remount like the rest of `state` does.
-    battleTestPicks: []
+    battleTestPicks: [],
+    // The World view (world.js): a mode of this Forge, not a Forge of its own. Like mapIndex it lives and dies with the mount,
+    // so leaving the Forge or opening another project resets it. `scale` is 'fit' or 1-4.
+    world: { on: false, scale: 'fit' }
   };
+  let worldView = null;
 
   const currentMap = () => store.project.maps[Math.min(state.mapIndex, store.project.maps.length - 1)];
   const currentScreen = () => currentMap().screens[Math.min(state.screenIndex, currentMap().screens.length - 1)];
@@ -331,12 +336,8 @@ export function mount(container, app) {
       )
     );
   }
-  const mapStage = el(
-    'div.canvas-stage',
-    { style: { flexDirection: 'column', gap: `${NAV_GAP}px` } },
-    el('div', { style: { position: 'relative', lineHeight: '0' } }, canvas, overlay),
-    navigator
-  );
+  const screenWrap = el('div', { style: { position: 'relative', lineHeight: '0' } }, canvas, overlay);
+  const mapStage = el('div.canvas-stage', { style: { flexDirection: 'column', gap: `${NAV_GAP}px` } }, screenWrap, navigator);
 
   // The navigator sits under the screen in the same stage, so its height is not
   // room the screen can grow into.
@@ -351,6 +352,7 @@ export function mount(container, app) {
   }
 
   function renderScreen() {
+    if (state.world.on) return; // the screen canvas is detached while the World view is up; renderAll draws the World view
     const zoom = screenZoom();
     canvas.width = SCREEN_PX_W * zoom;
     canvas.height = SCREEN_PX_H * zoom;
@@ -562,6 +564,7 @@ export function mount(container, app) {
   }
 
   function renderNavigator() {
+    if (state.world.on) return; // as renderScreen: the stage holds the World view
     const map = currentMap();
     if (usesOverview(map) !== overview.active) {
       overview.active = !overview.active;
@@ -2438,10 +2441,89 @@ export function mount(container, app) {
     metatilePanel.render();
     renderBoundSwitchOptions();
     renderBoundMetatileOptions(null);
-    renderNavigator(); // before renderScreen: the fit subtracts the navigator's height
-    renderScreen();
+    if (state.world.on) {
+      worldView.render();
+    } else {
+      renderNavigator(); // before renderScreen: the fit subtracts the navigator's height
+      renderScreen();
+    }
     renderMapSettings();
   }
+
+  // ------------------------------------------------------------- the World view
+
+  /**
+   * Show the World view: the stage's screen and navigator give way to the view's scroll box, on the same stage element, so
+   * the size observer, `stageInner()` and `data-laid-out` keep working. The side panels stay live.
+   */
+  function enterWorld() {
+    if (state.world.on) return;
+    state.world.on = true;
+    worldView = createWorldView({
+      getProject: () => store.project,
+      getCurrent: () => ({ mapIndex: Math.min(state.mapIndex, store.project.maps.length - 1), screenIndex: state.screenIndex }),
+      openFromWorld
+    });
+    worldView.setScale(state.world.scale);
+    screenWrap.remove();
+    navigator.remove();
+    overviewScroller.remove();
+    mapStage.append(worldView.box);
+    root.classList.add('world-mode');
+    worldToggle.classList.add('active');
+    renderAll();
+  }
+
+  /** Put the editing stage back, as it was left. The caller redraws (`renderAll`). */
+  function leaveWorld() {
+    if (!state.world.on) return;
+    state.world.on = false;
+    worldView.destroy();
+    worldView = null;
+    root.classList.remove('world-mode');
+    worldToggle.classList.remove('active');
+    mapStage.append(screenWrap, overview.active ? overviewScroller : navigator);
+  }
+
+  /**
+   * What a click in the World view means: open that screen for editing. Synchronous on purpose and on the Forge's own state,
+   * not `app.goTo` -- nothing leaves the Map Forge, so there is no navigation context and no selection token window.
+   * A target the project no longer has is ignored.
+   */
+  function openFromWorld({ mapIndex, screenIndex }) {
+    if (!store.project.maps[mapIndex]?.screens[screenIndex]) return;
+    state.mapIndex = mapIndex;
+    state.screenIndex = screenIndex;
+    state.regionSelection = null; // a selection made on one screen means nothing on another
+    leaveWorld();
+    renderAll();
+  }
+
+  function setWorldScale(choice) {
+    state.world.scale = choice;
+    root.querySelectorAll('[data-world-scale]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.worldScale === String(choice));
+    });
+    worldView?.setScale(choice);
+    worldView?.render();
+  }
+
+  const worldToggle = el(
+    'button.btn.btn-sm',
+    {
+      dataset: { worldToggle: '' },
+      title: 'Show every map at once; click a screen to open it for editing',
+      onclick: () => {
+        if (state.world.on) {
+          leaveWorld();
+          renderAll();
+        } else {
+          enterWorld();
+        }
+      }
+    },
+    '🗺 World'
+  );
 
   function setTool(id) {
     state.tool = id;
@@ -2473,61 +2555,84 @@ export function mount(container, app) {
       el(
         'div.toolbar',
         null,
-        TOOLS.map(toolButton),
-        el('span.sep'),
+        worldToggle,
         el(
-          'label.check',
+          'span.world-controls',
           null,
-          el('input', {
-            type: 'checkbox',
-            checked: state.showGrid,
-            onchange: (event) => {
-              state.showGrid = event.target.checked;
-              renderScreen();
-            }
-          }),
-          'Grid'
+          el('span.field-label', null, 'Scale'),
+          ...['fit', 1, 2, 3, 4].map((choice) =>
+            el(
+              'button.btn.btn-sm',
+              {
+                class: state.world.scale === choice ? 'active' : '',
+                dataset: { worldScale: choice },
+                title: choice === 'fit' ? 'The largest scale at which every map fits' : `${choice} screen pixels per metatile`,
+                onclick: () => setWorldScale(choice)
+              },
+              choice === 'fit' ? 'Fit' : `${choice}×`
+            )
+          )
         ),
         el(
-          'label.check',
+          'span.edit-controls',
           null,
-          el('input', {
-            type: 'checkbox',
-            checked: state.showCollision,
-            onchange: (event) => {
-              state.showCollision = event.target.checked;
-              renderScreen();
-            }
-          }),
-          'Collision'
-        ),
-        el(
-          'label.check',
-          null,
-          boundPreviewCheckbox,
-          'Preview: switches on'
-        ),
-        el('span.field-label', null, 'Bind'),
-        boundSwitchSelect,
-        boundMetatileSelect,
-        el('span.sep'),
-        el('span.field-label', null, 'Zoom'),
-        ...['fit', 1, 2, 3].map((zoom) =>
+          el('span.sep'),
+          TOOLS.map(toolButton),
+          el('span.sep'),
           el(
-            'button.btn.btn-sm',
-            {
-              class: state.zoom === zoom ? 'active' : '',
-              dataset: { zoom },
-              title: zoom === 'fit' ? 'Scale the screen to the window' : `${zoom} screen pixels per NES pixel`,
-              onclick: () => {
-                state.zoom = zoom;
-                root.querySelectorAll('[data-zoom]').forEach((button) => {
-                  button.classList.toggle('active', button.dataset.zoom === String(zoom));
-                });
+            'label.check',
+            null,
+            el('input', {
+              type: 'checkbox',
+              checked: state.showGrid,
+              onchange: (event) => {
+                state.showGrid = event.target.checked;
                 renderScreen();
               }
-            },
-            zoom === 'fit' ? 'Fit' : `${zoom}×`
+            }),
+            'Grid'
+          ),
+          el(
+            'label.check',
+            null,
+            el('input', {
+              type: 'checkbox',
+              checked: state.showCollision,
+              onchange: (event) => {
+                state.showCollision = event.target.checked;
+                renderScreen();
+              }
+            }),
+            'Collision'
+          ),
+          el(
+            'label.check',
+            null,
+            boundPreviewCheckbox,
+            'Preview: switches on'
+          ),
+          el('span.field-label', null, 'Bind'),
+          boundSwitchSelect,
+          boundMetatileSelect,
+          el('span.sep'),
+          el('span.field-label', null, 'Zoom'),
+          ...['fit', 1, 2, 3].map((zoom) =>
+            el(
+              'button.btn.btn-sm',
+              {
+                class: state.zoom === zoom ? 'active' : '',
+                dataset: { zoom },
+                title: zoom === 'fit' ? 'Scale the screen to the window' : `${zoom} screen pixels per NES pixel`,
+                onclick: () => {
+                  state.zoom = zoom;
+                  root.querySelectorAll('[data-zoom]').forEach((button) => {
+                    button.classList.toggle('active', button.dataset.zoom === String(zoom));
+                  });
+                  renderScreen();
+                }
+              },
+              zoom === 'fit' ? 'Fit' : `${zoom}×`
+            )
           )
         ),
         el('span.spacer'),
@@ -2541,8 +2646,13 @@ export function mount(container, app) {
   container.append(root);
   renderAll();
   const stopWatchingStage = observeSize(mapStage, () => {
-    if (overview.active) renderOverview(); // the room it may take follows the stage; before the screen, which fits to what is left
-    renderScreen();
+    if (state.world.on) {
+      worldView.render();
+      globalThis.__worldAfterResize?.(); // a hook a test installs to look at the canvases before presentation; absent in the product
+    } else {
+      if (overview.active) renderOverview(); // the room it may take follows the stage; before the screen, which fits to what is left
+      renderScreen();
+    }
     // the size this pass laid the Forge out for: what a test waits on instead of a delay
     mapStage.dataset.laidOut = `${mapStage.offsetWidth}x${mapStage.offsetHeight}`;
   });
@@ -2551,6 +2661,7 @@ export function mount(container, app) {
   return {
     destroy() {
       stopWatchingStage();
+      worldView?.destroy();
       app.setMeta('');
     },
     onProjectChange() {

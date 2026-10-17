@@ -1644,6 +1644,1074 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     if (JSON.stringify(s.project) !== baselineJson) throw new Error('streamed: the smoke block did not undo back to its baseline');
   }
 
+  // --- Map Forge: the World view (ROADMAP item 7, build commit C1; docs/design-world-overview.md section 7, "Smoke"). The
+  // view is driven the way an author drives it -- the toggle, clicks and pointer moves on the surface, scrolls of its box --
+  // and read back from the DOM it publishes (data-world-*), never from the pure helpers. Run from the 1-map baseline the
+  // streamed block restored; undone to that baseline at the end. (This scenario is a template string: no backticks, no
+  // dollar-brace, no backslashes.) The door and link parts of W2/W3/W6/W11 finish with the links, in the next commit.
+  {
+    const s = window.__app.store;
+    const depth = () => s.undoStack.length;
+    const baseDepth = depth();
+    const baselineJson = JSON.stringify(s.project);
+    const { deleteMapCore } = await import('../shared/project.js');
+    const toggle = () => document.querySelector('[data-world-toggle]');
+    const wbox = () => document.querySelector('[data-world-box]');
+    const surf = () => document.querySelector('[data-world-surface]');
+    const pic = () => document.querySelector('[data-world-picture]');
+    const ovl = () => document.querySelector('[data-world-overlay]');
+    const blocks = () => [...document.querySelectorAll('[data-world-block]')];
+    const stageEl = () => document.querySelector('#stage .canvas-stage');
+    const nameLabel = () => [...document.querySelectorAll('#mapSettingsPanel .field-label')].map((n) => n.textContent).find((t) => /^Screen [0-9]+ name$/.test(t));
+    const nameValue = () => {
+      const label = [...document.querySelectorAll('#mapSettingsPanel .field-label')].find((n) => /^Screen [0-9]+ name$/.test(n.textContent));
+      return label ? label.parentElement.querySelector('input[type=text]').value : null;
+    };
+    const mapSelect = () => document.querySelector('#mapSettingsPanel select');
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    const two = async () => { await frame(); await frame(); };
+    const ds = () => surf().dataset;
+    const num = (key) => Number(ds()[key]);
+    const winRect = () => ds().worldWindow.split(',').map(Number);
+    const extent = () => ds().worldExtent.split('x').map(Number);
+    const geoOf = (node) => {
+      const d = {};
+      for (const key of Object.keys(node.dataset)) d[key] = Number(node.dataset[key]);
+      return d;
+    };
+    const geo = (map) => geoOf(blocks().find((n) => n.dataset.map === String(map)));
+    const cellBox = (map, i) => {
+      const g = geo(map);
+      const col = i % g.gridW;
+      const row = Math.floor(i / g.gridW);
+      return { x: g.gridX + g.pad + col * (g.cellW + g.gap), y: g.gridY + g.pad + row * (g.cellH + g.gap), w: g.cellW, h: g.cellH };
+    };
+    const clientOf = (x, y) => {
+      const b = wbox();
+      const r = b.getBoundingClientRect();
+      return { clientX: r.left + b.clientLeft + x - b.scrollLeft, clientY: r.top + b.clientTop + y - b.scrollTop, bubbles: true };
+    };
+    const clickWorld = (x, y) => surf().dispatchEvent(new MouseEvent('click', clientOf(x, y)));
+    const moveWorld = (x, y) => surf().dispatchEvent(new PointerEvent('pointermove', clientOf(x, y)));
+    const centre = (box) => ({ x: box.x + Math.floor(box.w / 2), y: box.y + Math.floor(box.h / 2) });
+    const viewOf = () => ({ L: wbox().scrollLeft, T: wbox().scrollTop, W: wbox().clientWidth, H: wbox().clientHeight });
+    const inViewPt = (pt) => { const v = viewOf(); return pt.x >= v.L && pt.x < v.L + v.W && pt.y >= v.T && pt.y < v.T + v.H; };
+    const visibleCells = (map) => {
+      const g = geo(map);
+      const out = [];
+      for (let i = 0; i < g.gridW * g.gridH; i++) if (inViewPt(centre(cellBox(map, i)))) out.push(i);
+      return out;
+    };
+    const pixel = (canvas, x, y) => {
+      const [wx, wy] = winRect();
+      return [...canvas.getContext('2d').getImageData(x - wx, y - wy, 1, 1).data];
+    };
+    // Markers: the overlay draws the start (orange disc) and the title screen (blue square) in flat colours, so a marker is found
+    // by scanning its cell's rectangle on the overlay for that exact fill; the pixel found is inside the marker's rectangle.
+    const MARKER_FILL = { start: [255, 157, 60], title: [111, 208, 255] };
+    const hasBlock = (map) => Number.isInteger(map) && blocks().some((n) => n.dataset.map === String(map));
+    const markerCell = (map, screen) => (hasBlock(map) && screen >= 0 && screen < geo(map).gridW * geo(map).gridH ? cellBox(map, screen) : null);
+    const markerPixel = (kind, map, screen) => {
+      const box = markerCell(map, screen);
+      if (!box) return null;
+      const [wx, wy] = winRect();
+      const data = ovl().getContext('2d').getImageData(box.x - wx, box.y - wy, box.w, box.h).data;
+      const want = MARKER_FILL[kind];
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] === want[0] && data[i + 1] === want[1] && data[i + 2] === want[2] && data[i + 3] === 255) {
+          const k = i / 4;
+          return { x: box.x + (k % box.w), y: box.y + Math.floor(k / box.w) };
+        }
+      }
+      return null;
+    };
+    const cellWhole = (box) => { const v = viewOf(); return box.x >= v.L && box.y >= v.T && box.x + box.w <= v.L + v.W && box.y + box.h <= v.T + v.H; };
+    // the markers the project names that the world draws: [{ kind, map, screen }]; a title on the start's own screen sits under it
+    const markerSpots = () => {
+      const pr = s.project.project;
+      const spots = [];
+      if (markerCell(pr.startMap, pr.startScreen)) spots.push({ kind: 'start', map: pr.startMap, screen: pr.startScreen });
+      if (markerCell(pr.titleMap, pr.titleScreen) && !(pr.titleMap === pr.startMap && pr.titleScreen === pr.startScreen)) spots.push({ kind: 'title', map: pr.titleMap, screen: pr.titleScreen });
+      return spots;
+    };
+    let shotCount = 0;
+    const shot = async (name) => {
+      const n = ++shotCount;
+      console.log('SMOKE_SHOT ' + n + ' ' + name);
+      await until('world: the screenshot ' + name, () => window.__shotDone === n, 8000);
+    };
+    // "Covered": the picture canvas's pixel at the centre of every visible cell is opaque and the first pixel of the gap
+    // after it is not, the header strips in view are opaque, the overlay's current frame is there, and both canvases are the
+    // published window and hold the viewport.
+    const covered = (what) => {
+      const fail = (message) => { throw new Error('world: ' + what + ': ' + message); };
+      const b = wbox();
+      const p = pic();
+      const o = ovl();
+      if (p.width !== o.width || p.height !== o.height || p.style.left !== o.style.left || p.style.top !== o.style.top) fail('the two canvases disagree about their window');
+      const [wx, wy, ww, wh] = winRect();
+      const [ew, eh] = extent();
+      if (p.width !== ww || p.height !== wh || parseFloat(p.style.left) !== wx || parseFloat(p.style.top) !== wy) fail('the canvas is not the published window ' + ds().worldWindow);
+      const v = viewOf();
+      if (wx > v.L || wy > v.T || wx + ww < Math.min(ew, v.L + v.W) || wy + wh < Math.min(eh, v.T + v.H)) fail('the window ' + ds().worldWindow + ' does not hold the view ' + [v.L, v.T, v.W, v.H]);
+      if (ww * wh > (v.W + 512) * (v.H + 512)) fail('the window ' + ds().worldWindow + ' is larger than the viewport ' + v.W + 'x' + v.H + ' grown by the margin (' + (ww * wh) + ' > ' + ((v.W + 512) * (v.H + 512)) + ' px)');
+      let cells = 0;
+      let headers = 0;
+      for (const n of blocks()) {
+        const g = geoOf(n);
+        for (let i = 0; i < g.gridW * g.gridH; i++) {
+          const box = cellBox(g.map, i);
+          const c = centre(box);
+          if (inViewPt(c)) {
+            if (pixel(p, c.x, c.y)[3] !== 255) fail('cell ' + g.map + ':' + i + ' is not painted at its centre');
+            cells++;
+          }
+          const gapPt = { x: box.x + box.w, y: c.y };
+          if (i % g.gridW < g.gridW - 1 && inViewPt(gapPt) && pixel(p, gapPt.x, gapPt.y)[3] !== 0) fail('the gap after cell ' + g.map + ':' + i + ' is painted');
+        }
+        const hx0 = Math.max(g.x, v.L);
+        const hx1 = Math.min(g.x + g.w, v.L + v.W);
+        const hy0 = Math.max(g.y, v.T);
+        const hy1 = Math.min(g.y + g.header, v.T + v.H);
+        if (hx0 < hx1 && hy0 < hy1) {
+          if (pixel(p, Math.floor((hx0 + hx1) / 2), Math.floor((hy0 + hy1) / 2))[3] !== 255) fail('the header of map ' + g.map + ' is not painted');
+          headers++;
+        }
+      }
+      const [cm, cs] = ds().worldCurrent.split(':').map(Number);
+      const cur = cellBox(cm, cs);
+      if (inViewPt(centre(cur)) && cur.x - 1 >= v.L && pixel(o, cur.x - 1, centre(cur).y)[3] !== 255) fail('the current screen has no frame');
+      for (const m of markerSpots()) {
+        if (cellWhole(markerCell(m.map, m.screen)) && !markerPixel(m.kind, m.map, m.screen)) fail('the ' + m.kind + ' marker on screen ' + m.map + ':' + m.screen + ' is not drawn');
+      }
+      return { cells, headers };
+    };
+    const currentVisible = () => {
+      const [cm, cs] = ds().worldCurrent.split(':').map(Number);
+      const cur = cellBox(cm, cs);
+      const v = viewOf();
+      return cur.x >= v.L && cur.x + cur.w <= v.L + v.W && cur.y >= v.T && cur.y + cur.h <= v.T + v.H;
+    };
+    const blank = (name) => ({ name: name, metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+    const mapLit = (id, name, w, h, streamed, tag) => {
+      const m = {
+        id: id,
+        name: name,
+        gridW: w,
+        gridH: h,
+        screens: Array.from({ length: w * h }, (_, k) => blank(tag + 'S' + k)),
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      };
+      if (streamed) { m.streamed = true; m.fillMetatileId = 0; }
+      return m;
+    };
+    const setWorld = (label, shapes) => s.commit('smoke world: ' + label, (project) => {
+      project.cartridge.mapper = 4;
+      project.cartridge.mirroring = 'horizontal';
+      project.cartridge.camera = true;
+      project.maps = shapes.map((sh, i) => mapLit(i, sh[0], sh[1], sh[2], sh[3], 'M' + i));
+      project.project.startMap = 0;
+      project.project.startScreen = 0;
+      // a solid tile and a metatile made of it: what an "edited" screen is drawn with, distinguishable from the fill
+      project.tilesets[0].background.tiles[2] = '3'.repeat(64);
+      project.metatiles[5].tiles = [2, 2, 2, 2];
+      project.metatiles[5].palette = 2;
+    });
+    const showMap = async () => {
+      await window.__app.goTo('map');
+      await until('world: the Map Forge', () => toggle());
+    };
+    const enter = async (what) => {
+      if (wbox()) return;
+      toggle().click();
+      await until('world: ' + what + ' enters', () => wbox() && surf().dataset.worldWindow);
+    };
+    const leave = async (what) => {
+      if (!wbox()) return;
+      toggle().click();
+      await until('world: ' + what + ' leaves', () => !wbox());
+    };
+    const editScreen = (map, index, id) => s.commit('smoke world: screen ' + map + ':' + index, (project) => { project.maps[map].screens[index].metatiles.fill(id); });
+    const snapshot = () => ({ revision: s.revision, depth: depth(), dirty: s.dirty, json: JSON.stringify(s.project) });
+    const unchanged = (before, what) => {
+      const now = snapshot();
+      for (const key of ['revision', 'depth', 'dirty', 'json']) if (now[key] !== before[key]) throw new Error('world: ' + what + ' changed the project state (' + key + ')');
+    };
+    const measures = [];
+    const measure = (name, value) => { measures.push({ name: name, value: value }); console.log('WORLD_MEASURE ' + JSON.stringify({ name: name, value: value })); };
+    const minimumWindow = async (paneWidth, paneHeight) => {
+      const stage = stageEl();
+      const saved = stage.style.cssText;
+      stage.style.flex = 'none';
+      stage.style.width = paneWidth + 'px';
+      stage.style.height = paneHeight + 'px';
+      await until('world: the stage follows the pinned size', () => stage.dataset.laidOut === stage.offsetWidth + 'x' + stage.offsetHeight && stage.offsetWidth === paneWidth);
+      return () => { stage.style.cssText = saved; };
+    };
+
+    // ---- the project: a 4 x 4 ordinary map, a 1 x 1 "Cave" and a 1 x 1 "Third"; screens named M<map>S<screen>
+    setWorld('three maps', [['World', 4, 4, false], ['Cave', 1, 1, false], ['Third', 1, 1, false]]);
+    await showMap();
+    await until('world: the legacy thumbnails of the 4 x 4 map', () => document.querySelectorAll('#stage canvas').length >= 16);
+    const before1 = snapshot();
+
+    // W1 enter
+    toggle().click();
+    await until('world: the box', () => wbox() && surf().dataset.worldWindow);
+    if (!toggle().classList.contains('active')) throw new Error('world: the toggle does not look pressed in World mode');
+    if (document.querySelector('#stage .forge').classList.contains('world-mode') === false) throw new Error('world: the Forge root has no world-mode class');
+    if (getComputedStyle(document.querySelector('.edit-controls')).display !== 'none') throw new Error('world: the editing controls are shown in World mode');
+    if (getComputedStyle(document.querySelector('.world-controls')).display === 'none') throw new Error('world: the World controls are hidden in World mode');
+    if ([...stageEl().querySelectorAll('canvas')].some((c) => !wbox().contains(c))) throw new Error('world: a screen or thumbnail canvas is still in the stage');
+    if (stageEl().querySelectorAll('[data-map-overview]').length) throw new Error('world: an overview is still in the stage');
+    if (blocks().length !== 3) throw new Error('world: expected one block per map (3), saw ' + blocks().length);
+    if (document.querySelectorAll('[data-world-picture], [data-world-overlay]').length !== 2) throw new Error('world: expected exactly two canvases');
+    if (!(wbox().clientHeight > 0 && wbox().clientWidth > 0)) throw new Error('world: the box has no size');
+    covered('W1 entered');
+    unchanged(before1, 'entering the World view');
+    await shot('w1-enter');
+    step('world 1: enter', 'the toggle opens one scroll box in the stage with a block per map (3), the editing controls hidden and the World controls shown, no screen, thumbnail or overview canvas left in the stage; every visible cell and header is painted and the gaps are clear; revision, undo depth, dirty flag and project JSON are unchanged');
+
+    // W2 click through, across maps (the door that leads to the third map is drawn from the links commit on)
+    {
+      const before = snapshot();
+      const third = geo(2);
+      const c = centre(cellBox(2, 0));
+      clickWorld(c.x, c.y);
+      // read in the same task as the click: the mode is already off and the third map's only screen is the one shown
+      if (wbox()) throw new Error('world: a click on a cell left the World view on');
+      if (nameLabel() !== 'Screen 0 name' || nameValue() !== 'M2S0') throw new Error('world: a click on the third map opened ' + nameLabel() + ' / ' + nameValue());
+      if (mapSelect().value !== '2') throw new Error('world: the map selector shows ' + mapSelect().value + ', not the third map');
+      unchanged(before, 'a click through to the third map');
+      if (third.gridW !== 1) throw new Error('world: setup: the third map is not 1 x 1');
+      await enter('W2 second entry');
+      // a screen of the 4 x 4 map: its cell, then the map header, each a different destination by content
+      const c5 = centre(cellBox(0, 5));
+      clickWorld(c5.x, c5.y);
+      if (wbox() || nameValue() !== 'M0S5' || mapSelect().value !== '0') throw new Error('world: a click on screen 5 of the first map opened ' + nameValue());
+      await enter('W2 third entry');
+      if (ds().worldCurrent !== '0:5') throw new Error('world: re-entering does not mark the opened screen current: ' + ds().worldCurrent);
+      const hdr = geo(1);
+      clickWorld(hdr.x + 3, hdr.y + 3);
+      if (wbox() || nameValue() !== 'M1S0' || mapSelect().value !== '1') throw new Error('world: a click on the Cave header opened ' + nameValue());
+      unchanged(before, 'clicking through the World view');
+    }
+    step('world 2: click through, across maps', 'a click on the third map cell, on screen 5 of the first map and on the Cave header each end World mode in the same task and open that screen (read by the Screen N name label, the screen own name and the map selector) with nothing committed; re-entering marks the opened screen current; the door to the third map is drawn from the links commit on');
+
+    // W6 (cells): delete a preceding map, reorder, undo, redo -- the mode stays on, the block count follows, a surviving cell opens
+    {
+      await enter('W6');
+      // a click on the first cell of block map opens the screen with this name (content, never an index), and the view is entered again
+      const opensAt = async (what, map, expected) => {
+        const at = centre(cellBox(map, 0));
+        clickWorld(at.x, at.y);
+        if (wbox() || nameValue() !== expected) throw new Error('world: ' + what + ': a click on block ' + map + ' opened ' + nameValue() + ', not ' + expected);
+        await enter('W6 ' + what);
+      };
+      mapSelect().value = '0';
+      mapSelect().dispatchEvent(new Event('change', { bubbles: true }));
+      await until('world: the first map selected', () => nameValue() === 'M0S0');
+      const del = [...document.querySelectorAll('#mapSettingsPanel button')].find((n) => n.title === 'Delete this map');
+      const depthBefore = depth();
+      del.click();
+      await until('world: the delete confirmation', () => [...document.querySelectorAll('#modalHost button')].some((n) => n.textContent.trim() === 'Delete'));
+      [...document.querySelectorAll('#modalHost button')].find((n) => n.textContent.trim() === 'Delete').click();
+      await until('world: the map deleted', () => s.project.maps.length === 2);
+      if (!wbox()) throw new Error('world: deleting a map left World mode');
+      await until('world: the blocks follow the deletion', () => blocks().length === 2);
+      covered('W6 after delete');
+      let c = centre(cellBox(1, 0));
+      clickWorld(c.x, c.y);
+      if (wbox() || nameValue() !== 'M2S0') throw new Error('world: after the deletion a click on the surviving third map opened ' + nameValue());
+      await enter('W6 after delete');
+      s.undo();
+      await until('world: undo of the deletion', () => s.project.maps.length === 3 && blocks().length === 3);
+      if (!wbox()) throw new Error('world: undo left World mode');
+      covered('W6 after undo');
+      await opensAt('after the undo of the deletion (first block)', 0, 'M0S0');
+      await opensAt('after the undo of the deletion (second block)', 1, 'M1S0');
+      await opensAt('after the undo of the deletion (third block)', 2, 'M2S0');
+      s.redo();
+      await until('world: redo of the deletion', () => s.project.maps.length === 2 && blocks().length === 2);
+      covered('W6 after redo');
+      await opensAt('after the redo of the deletion (first block)', 0, 'M1S0');
+      await opensAt('after the redo of the deletion (second block)', 1, 'M2S0');
+      s.undo();
+      await until('world: the undo to three maps', () => s.project.maps.length === 3 && blocks().length === 3);
+      // reorder: the third map moves earlier through the real button
+      mapSelect().value = '2';
+      mapSelect().dispatchEvent(new Event('change', { bubbles: true }));
+      await until('world: the third map selected', () => nameValue() === 'M2S0');
+      [...document.querySelectorAll('#mapSettingsPanel button')].find((n) => n.title === 'Move this map earlier').click();
+      await until('world: the reorder', () => s.project.maps[1].screens[0].name === 'M2S0');
+      if (!wbox() || blocks().length !== 3) throw new Error('world: reordering left World mode or changed the block count');
+      covered('W6 after reorder');
+      c = centre(cellBox(1, 0));
+      clickWorld(c.x, c.y);
+      if (wbox() || nameValue() !== 'M2S0') throw new Error('world: after the reorder the second block opened ' + nameValue());
+      await enter('W6 after reorder');
+      s.undo();
+      await until('world: undo of the reorder', () => s.project.maps[1].screens[0].name === 'M1S0' && blocks().length === 3);
+      covered('W6 after the undo of the reorder');
+      await opensAt('after the undo of the reorder', 1, 'M1S0');
+      s.redo();
+      await until('world: redo of the reorder', () => s.project.maps[1].screens[0].name === 'M2S0');
+      covered('W6 after the redo of the reorder');
+      await opensAt('after the redo of the reorder', 1, 'M2S0');
+      s.undo();
+      await until('world: undo of the redo', () => s.project.maps[1].screens[0].name === 'M1S0');
+      while (depth() > depthBefore) s.undo();
+      await until('world: back to the three maps', () => s.project.maps.length === 3 && s.project.maps[1].screens[0].name === 'M1S0');
+      await leave('W6');
+    }
+    step('world 6: structure', 'in World mode a map deleted from before the others, undo, redo, a reorder and its undo and redo keep the mode on, the block count follows, every visible cell is painted, and after each of the six a click on a block opens that screen by its own name (never by an index); the actor-marker and link clicks finish with the links commit');
+
+    // W5 draw counts on the three maps
+    {
+      await showMap();
+      await enter('W5');
+      const redrawn = () => num('worldRedrawn');
+      const headers = () => num('worldHeadersRedrawn');
+      const total = () => num('worldDrawnTotal');
+      const winBefore = ds().worldWindow;
+      const movesBefore = num('worldMoves');
+      const t0 = total();
+      editScreen(0, 3, 5);
+      await until('world: the one-cell edit', () => total() - t0 === 1);
+      if (redrawn() !== 1 || headers() !== 0) throw new Error('world: one metatile commit redrew ' + redrawn() + ' cells, ' + headers() + ' headers');
+      covered('W5 after the edit');
+      const edited = centre(cellBox(0, 3));
+      const plain = centre(cellBox(0, 4));
+      if (pixel(pic(), edited.x, edited.y).join() === pixel(pic(), plain.x, plain.y).join()) throw new Error('world: the edited screen is drawn like its unedited neighbour');
+      s.undo();
+      await until('world: the undo of the edit', () => total() - t0 === 2);
+      if (redrawn() !== 1) throw new Error('world: undoing one edit redrew ' + redrawn() + ' cells');
+      s.redo();
+      await until('world: the redo of the edit', () => total() - t0 === 3);
+      if (redrawn() !== 1) throw new Error('world: redoing one edit redrew ' + redrawn() + ' cells');
+      s.undo();
+      await until('world: the second undo', () => total() - t0 === 4);
+      // a start-only change and a no-change render draw zero thumbnails
+      const t1 = total();
+      const f1 = num('worldFlushes');
+      s.commit('smoke world: move the start', (project) => { project.project.startX = 16; project.project.startY = 32; });
+      await until('world: the start move rendered', () => num('worldFlushes') > f1);
+      if (total() !== t1 || redrawn() !== 0 || headers() !== 0) throw new Error('world: a start-only change redrew ' + (total() - t1) + ' cells');
+      const f2 = num('worldFlushes');
+      s.commit('smoke world: an unrelated setting', (project) => { project.maps[1].encounters.rate = 0; });
+      await until('world: the no-change commit rendered', () => num('worldFlushes') > f2);
+      if (total() !== t1 || redrawn() !== 0 || headers() !== 0) throw new Error('world: a render with nothing changed redrew ' + (total() - t1) + ' cells');
+      if (ds().worldWindow !== winBefore || num('worldMoves') !== movesBefore) throw new Error('world: a repaint moved or replaced the window: ' + ds().worldWindow + ' moves ' + num('worldMoves'));
+      // an art change to a shared metatile redraws every cell the window holds
+      const cellsInWindow = (() => {
+        const [wx, wy, ww, wh] = winRect();
+        let n = 0;
+        for (const b of blocks()) {
+          const g = geoOf(b);
+          for (let i = 0; i < g.gridW * g.gridH; i++) {
+            const r = cellBox(g.map, i);
+            if (r.x < wx + ww && wx < r.x + r.w && r.y < wy + wh && wy < r.y + r.h) n++;
+          }
+        }
+        return n;
+      })();
+      const t2 = total();
+      s.commit('smoke world: metatile 0 art', (project) => { project.metatiles[0].palette = (project.metatiles[0].palette + 1) % 4; });
+      await until('world: the art change', () => total() - t2 >= cellsInWindow);
+      if (total() - t2 !== cellsInWindow) throw new Error('world: an art change to a shared metatile redrew ' + (total() - t2) + ' of the ' + cellsInWindow + ' cells');
+      if (ds().worldWindow !== winBefore || num('worldMoves') !== movesBefore) throw new Error('world: an art change moved the window');
+      s.undo();
+      await until('world: the art undo', () => total() - t2 === 2 * cellsInWindow);
+      s.undo(); // the unrelated setting
+      s.undo(); // the start move
+      await two();
+      // a scale change and a resized map repaint fully even though the old window rectangle still fits the new extent
+      const t3 = total();
+      document.querySelector('[data-world-scale="1"]').click();
+      await until('world: scale 1', () => ds().worldScale === '1');
+      const after1 = total() - t3;
+      if (after1 < 16 + 1 + 1) throw new Error('world: a scale change redrew only ' + after1 + ' cells');
+      if (ds().worldWindow !== '0,0,' + extent()[0] + ',' + extent()[1]) throw new Error('world: at scale 1 the whole small world should be one window, saw ' + ds().worldWindow);
+      document.querySelector('[data-world-scale="fit"]').click();
+      await until('world: Fit again', () => ds().worldScaleChoice === 'fit');
+      const t4 = total();
+      s.commit('smoke world: resize the third map', (project) => {
+        project.maps[2] = Object.assign(mapLit(2, 'Third', 2, 1, false, 'M2'), { id: 2 });
+      });
+      await until('world: the resized map rendered', () => geo(2).gridW === 2);
+      if (total() - t4 < 16 + 1 + 2) throw new Error('world: a resized map repainted only ' + (total() - t4) + ' cells');
+      covered('W5 after the resize');
+      s.undo();
+      await until('world: the undo of the resize', () => geo(2).gridW === 1);
+      // a repaint never moves the scroll
+      wbox().scrollLeft = 0;
+      await leave('W5');
+    }
+    step('world 5: draw counts', 'in World mode one metatile commit, its undo and its redo each redraw exactly that cell and the pixels show it; a start-only change and a render with nothing changed draw zero thumbnails, with the window and its move count unchanged; an art change to a shared metatile redraws every cell the window holds; a scale change and a resized map repaint fully');
+
+    // W10 caches: a rename and a folder edit redraw only the header; two maps exchanging tilesets redraw both blocks
+    {
+      await showMap();
+      await enter('W10');
+      const t0 = num('worldDrawnTotal');
+      const h0 = num('worldHeadersTotal');
+      const winBefore = ds().worldWindow;
+      const moves = num('worldMoves');
+      s.commit('smoke world: rename a map', (project) => { project.maps[0].name = 'Overworld'; });
+      await until('world: the rename', () => num('worldHeadersTotal') - h0 === 1);
+      if (num('worldDrawnTotal') !== t0) throw new Error('world: renaming a map redrew ' + (num('worldDrawnTotal') - t0) + ' cells');
+      if (num('worldHeadersRedrawn') !== 1) throw new Error('world: a rename redrew ' + num('worldHeadersRedrawn') + ' headers');
+      covered('W10 after the rename');
+      s.commit('smoke world: a folder', (project) => { project.maps[1].folder = 'Caves'; });
+      await until('world: the folder edit', () => num('worldHeadersTotal') - h0 === 2);
+      if (num('worldDrawnTotal') !== t0 || ds().worldWindow !== winBefore || num('worldMoves') !== moves) throw new Error('world: a folder edit redrew cells or moved the window');
+      s.undo();
+      s.undo();
+      await until('world: the undone names', () => num('worldHeadersTotal') - h0 === 4);
+      // redo: the same header-only redraw, zero thumbnails, the window and its move count unchanged
+      const headerOnly = (what) => {
+        if (num('worldDrawnTotal') !== t0 || num('worldHeadersRedrawn') !== 1) throw new Error('world: ' + what + ' redrew ' + (num('worldDrawnTotal') - t0) + ' cells and ' + num('worldHeadersRedrawn') + ' headers');
+        if (ds().worldWindow !== winBefore || num('worldMoves') !== moves) throw new Error('world: ' + what + ' moved or replaced the window');
+      };
+      s.redo();
+      await until('world: the redo of the rename', () => num('worldHeadersTotal') - h0 === 5);
+      headerOnly('the redo of a rename');
+      covered('W10 after the redo of the rename');
+      s.redo();
+      await until('world: the redo of the folder', () => num('worldHeadersTotal') - h0 === 6);
+      headerOnly('the redo of a folder edit');
+      covered('W10 after the redo of the folder');
+      s.undo();
+      s.undo();
+      await until('world: the names undone again', () => num('worldHeadersTotal') - h0 === 8);
+      // two maps exchange tilesets: both blocks redraw
+      s.commit('smoke world: a second tileset', (project) => {
+        project.tilesets.push(structuredClone(project.tilesets[0]));
+        project.tilesets[1].background.tiles[2] = '1'.repeat(64);
+      });
+      await two();
+      const t1 = num('worldDrawnTotal');
+      s.commit('smoke world: map 1 takes the second tileset', (project) => { project.maps[1].tilesetId = 1; });
+      await until('world: the exchange', () => num('worldDrawnTotal') - t1 >= 1);
+      if (num('worldDrawnTotal') - t1 !== 1) throw new Error('world: a tileset change on a 1 x 1 map redrew ' + (num('worldDrawnTotal') - t1) + ' cells');
+      const t2 = num('worldDrawnTotal');
+      s.commit('smoke world: map 0 takes the second tileset, map 1 the first', (project) => { project.maps[0].tilesetId = 1; project.maps[1].tilesetId = 0; });
+      await until('world: the swap', () => num('worldDrawnTotal') - t2 >= 17);
+      if (num('worldDrawnTotal') - t2 !== 17) throw new Error('world: exchanging two maps tilesets redrew ' + (num('worldDrawnTotal') - t2) + ' cells, not both blocks (16 + 1)');
+      covered('W10 after the swap');
+      s.undo();
+      await until('world: undo of the swap', () => num('worldDrawnTotal') - t2 >= 34);
+      s.redo();
+      await until('world: redo of the swap', () => num('worldDrawnTotal') - t2 >= 51);
+      s.undo();
+      s.undo();
+      s.undo();
+      await two();
+      await leave('W10');
+    }
+    step('world 10: caches', 'a map rename and a folder edit, their undo and their redo each redraw only that header strip (data-world-headers-redrawn) and zero thumbnails, with the window and its move count unchanged; a map taking another tileset redraws its block, two maps exchanging tilesets redraw both blocks (16 + 1 cells), and their undo and redo redraw them again');
+
+
+    // ---- W4: a long streamed map. One 255 x 1 row; Fit falls back to 2 (it fits at no scale), so the box scrolls sideways.
+    setWorld('a streamed 255 x 1', [['Long', 255, 1, true]]);
+    await showMap();
+    const longSnapshot = snapshot();
+    {
+      const t0 = performance.now();
+      toggle().click();
+      const painted = performance.now() - t0;
+      await until('world: the 255 x 1 view', () => wbox() && surf().dataset.worldWindow);
+      measure('first paint, 255x1, click to flush returned (ms)', Math.round(painted * 10) / 10);
+      const [ww, wh] = winRect().slice(2);
+      measure('allocation, 255x1, window px (w x h x 4 bytes x 2 canvases)', ww + 'x' + wh + ' = ' + (ww * wh * 8) + ' bytes; extent ' + ds().worldExtent);
+      if (ds().worldScale !== '2') throw new Error('world: Fit on a 255 x 1 row chose scale ' + ds().worldScale + ', not the fallback 2');
+      if (!(wbox().scrollWidth > wbox().clientWidth)) throw new Error('world: a 255 x 1 row does not scroll sideways');
+      if (pic().width * pic().height > (wbox().clientWidth + 512) * (wbox().clientHeight + 512)) throw new Error('world: the canvas is larger than the viewport plus its margin: ' + pic().width + 'x' + pic().height);
+      if (pic().width !== ww || pic().height !== wh) throw new Error('world: the picture canvas is not the published window');
+      covered('W4 entered');
+      await shot('w4-long-255x1');
+      // entering scrolls a far current cell into view: pick one from the end of the row, then come back in
+      wbox().scrollLeft = wbox().scrollWidth;
+      await frame();
+      covered('W4 end of the row');
+      const far = visibleCells(0);
+      const lastIndex = far[far.length - 1];
+      if (lastIndex !== 254) throw new Error('world: the last cell in view at the end of the row is ' + lastIndex);
+      // the far edge of the world is reachable: the last cell, and the gap its frame is drawn in, are whole in the view
+      if (cellBox(0, 254).x + cellBox(0, 254).w + geo(0).gap > viewOf().L + viewOf().W) throw new Error('world: at the end of the row the last cell is cut off by ' + (cellBox(0, 254).x + cellBox(0, 254).w + geo(0).gap - viewOf().L - viewOf().W) + ' px (the scroll range falls short of the world)');
+      const cl = centre(cellBox(0, 254));
+      clickWorld(cl.x, cl.y);
+      if (wbox() || nameLabel() !== 'Screen 254 name' || nameValue() !== 'M0S254') throw new Error('world: a click on the last cell opened ' + nameLabel() + ' / ' + nameValue());
+      toggle().click();
+      await frame();
+      if (!wbox() || !(wbox().scrollLeft > 0) || !currentVisible()) throw new Error('world: entering with screen 254 current did not scroll it into view (scrollLeft ' + (wbox() && wbox().scrollLeft) + ', view ' + JSON.stringify(viewOf()) + ', cell ' + JSON.stringify(cellBox(0, 254)) + ', current ' + ds().worldCurrent + ', extent ' + ds().worldExtent + ')');
+      covered('W4 re-entered at screen 254');
+      unchanged(longSnapshot, 'the 255 x 1 walkthrough');
+      await leave('W4');
+    }
+    step('world 4: a long streamed map', 'a streamed 255 x 1 row: Fit falls back to scale 2 and the box scrolls sideways, the canvases are the window (not the 8.7k-px world), the last cell opens screen 254 and re-entering scrolls it into view, every visible cell is painted at each stop, nothing is committed');
+
+    {
+      const restore = await minimumWindow(500, 380);
+      await enter('W4 minimum window');
+      const stage = stageEl();
+      const sr = stage.getBoundingClientRect();
+      const br = wbox().getBoundingClientRect();
+      if (!(wbox().clientHeight > 90)) throw new Error('world: at the minimum window the box is ' + wbox().clientHeight + ' px high');
+      if (br.left < sr.left - 1 || br.right > sr.right + 1 || br.top < sr.top - 1 || br.bottom > sr.bottom + 1) throw new Error('world: the box leaves the stage at the minimum window');
+      if (stage.scrollWidth > stage.clientWidth + 1 || stage.scrollHeight > stage.clientHeight + 1) throw new Error('world: the stage overflows at the minimum window');
+      covered('W4 minimum window');
+      wbox().scrollLeft = 0;
+      await frame();
+      const first = centre(cellBox(0, 0));
+      if (!inViewPt(first)) throw new Error('world: the first cell is not reachable at the minimum window');
+      clickWorld(first.x, first.y);
+      if (wbox() || nameValue() !== 'M0S0') throw new Error('world: the first cell at the minimum window opened ' + nameValue());
+      await enter('W4 minimum window, last cell');
+      wbox().scrollLeft = wbox().scrollWidth;
+      await frame();
+      const last = centre(cellBox(0, 254));
+      if (!inViewPt(last)) throw new Error('world: the last cell is not reachable at the minimum window');
+      clickWorld(last.x, last.y);
+      if (wbox() || nameValue() !== 'M0S254') throw new Error('world: the last cell at the minimum window opened ' + nameValue());
+      restore();
+      await until('world: the stage restored', () => stageEl().offsetWidth > 700);
+    }
+    step('world 4b: the minimum window', 'at a 500 x 380 stage the box keeps a positive height, stays inside the stage, which does not overflow, and the first and the last cell are reachable and open screens 0 and 254');
+
+    // ---- W11 on the 255 x 1 row
+    {
+      await showMap();
+      const wasAt = (key) => num(key);
+      wbox() || (await enter('W11'));
+      wbox().scrollLeft = 0;
+      await frame();
+      covered('W11 start');
+      const first = ds().worldWindow;
+      const m0 = wasAt('worldMoves');
+      // (a) a slow scroll inside the retained window: covered, no move, same window (wrong: a clear and repaint per scroll event)
+      for (const left of [60, 120, 180, 192]) {
+        wbox().scrollLeft = left;
+        await frame();
+        covered('W11 (a) slow scroll to ' + left);
+        if (ds().worldWindow !== first || wasAt('worldMoves') !== m0) throw new Error('world: a slow scroll to ' + left + ' moved the window: ' + ds().worldWindow + ' moves ' + wasAt('worldMoves'));
+      }
+      // (b) a jump beyond the margin, the thumb of the scrollbar: covered at the first frame, one move, the window holds the view
+      const t0 = performance.now();
+      wbox().scrollLeft = 5000;
+      await frame();
+      measure('window move after a 5000 px jump, scroll write to first frame (ms)', Math.round((performance.now() - t0) * 10) / 10);
+      covered('W11 (b) jump to 5000');
+      if (wasAt('worldMoves') !== m0 + 1) throw new Error('world: a jump moved the window ' + (wasAt('worldMoves') - m0) + ' times');
+      const jumped = ds().worldWindow;
+      if (jumped === first) throw new Error('world: a jump left the window where it was');
+      // the start and the title screen, put on cells of the jumped window: drawn, named by a hover and opened by a click at the new
+      // offset (wrong: a marker drawn or hit-tested in window coordinates, which names or opens a neighbour from the second window on)
+      {
+        const near = visibleCells(0);
+        const startAt = near[2];
+        const titleAt = near[near.length - 3];
+        s.commit('smoke world: start and title in the jumped window', (project) => {
+          project.project.startMap = 0;
+          project.project.startScreen = startAt;
+          project.project.startX = 120;
+          project.project.startY = 112;
+          project.project.titleMap = 0;
+          project.project.titleScreen = titleAt;
+        });
+        await two();
+        covered('W11 markers after the jump');
+        for (const [kind, at] of [['start', startAt], ['title', titleAt]]) {
+          wbox().scrollLeft = Math.max(0, cellBox(0, at).x - 100);
+          await frame();
+          covered('W11 ' + kind + ' marker in view');
+          const spot = markerPixel(kind, 0, at);
+          if (!spot) throw new Error('world: the ' + kind + ' marker of cell ' + at + ' is not drawn after the jump');
+          moveWorld(spot.x, spot.y);
+          if (ds().worldHover !== 'marker:' + kind) throw new Error('world: hovering the ' + kind + ' marker names ' + ds().worldHover);
+          clickWorld(spot.x, spot.y);
+          if (wbox() || nameValue() !== 'M0S' + at) throw new Error('world: a click on the ' + kind + ' marker opened ' + nameValue() + ', not screen ' + at);
+          await enter('W11 ' + kind + ' marker clicked');
+        }
+        wbox().scrollLeft = 5000;
+        await frame();
+        covered('W11 back in the jumped window');
+      }
+      // (e) clicks at nonzero offsets, by content
+      {
+        const visible = visibleCells(0);
+        const pick = visible[Math.floor(visible.length / 2)];
+        const c = centre(cellBox(0, pick));
+        clickWorld(c.x, c.y);
+        if (wbox() || nameValue() !== 'M0S' + pick) throw new Error('world: after a jump a click on cell ' + pick + ' opened ' + nameValue());
+      }
+      // (g) entering with the current screen far from the origin: covered at the first frame, current visible
+      toggle().click();
+      await frame();
+      covered('W11 (g) enter far');
+      if (!currentVisible() || !(wbox().scrollLeft > 1000)) throw new Error('world: entering far from the origin did not show the current cell (scrollLeft ' + wbox().scrollLeft + ')');
+      for (const choice of ['3', '1', 'fit']) {
+        document.querySelector('[data-world-scale="' + choice + '"]').click();
+        await frame();
+        covered('W11 (g) scale ' + choice);
+        if (!currentVisible()) throw new Error('world: after the scale change to ' + choice + ' the current cell is not visible');
+      }
+      // (d) return to the first window, and a screen edited while the box was away shows after the return
+      wbox().scrollLeft = 0;
+      await frame();
+      covered('W11 (d) back at the origin');
+      if (ds().worldWindow !== first) throw new Error('world: back at the origin the window is ' + ds().worldWindow + ', not ' + first);
+      wbox().scrollLeft = 6000;
+      await frame();
+      covered('W11 (d) away again');
+      const dTotal = wasAt('worldDrawnTotal');
+      editScreen(0, 3, 5);
+      editScreen(0, 5, 5);
+      await two();
+      if (wasAt('worldDrawnTotal') !== dTotal) throw new Error('world: an edit to a screen outside the window repainted ' + (wasAt('worldDrawnTotal') - dTotal) + ' cells');
+      wbox().scrollLeft = 0;
+      await frame();
+      covered('W11 (d) return');
+      if (ds().worldWindow !== first) throw new Error('world: the returned window is ' + ds().worldWindow + ', not ' + first);
+      const p3 = pixel(pic(), centre(cellBox(0, 3)).x, centre(cellBox(0, 3)).y).join();
+      const p5 = pixel(pic(), centre(cellBox(0, 5)).x, centre(cellBox(0, 5)).y).join();
+      const p4 = pixel(pic(), centre(cellBox(0, 4)).x, centre(cellBox(0, 4)).y).join();
+      if (p3 !== p5 || p3 === p4) throw new Error('world: a screen edited while the box was scrolled away is not drawn after the return (' + p3 + ' / ' + p4 + ' / ' + p5 + ')');
+      // the markers back on cells of the first window: drawn and named by a hover there too
+      s.commit('smoke world: start and title back at the origin', (project) => { project.project.startScreen = 1; project.project.titleScreen = 7; });
+      await two();
+      covered('W11 markers back at the origin');
+      for (const [kind, at] of [['start', 1], ['title', 7]]) {
+        const spot = markerPixel(kind, 0, at);
+        if (!spot) throw new Error('world: the ' + kind + ' marker of cell ' + at + ' is not drawn back at the origin');
+        moveWorld(spot.x, spot.y);
+        if (ds().worldHover !== 'marker:' + kind) throw new Error('world: back at the origin hovering the ' + kind + ' marker names ' + ds().worldHover);
+      }
+      surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      s.undo();
+      await two();
+      // (f) scroll with the pointer still: the cell under the unmoved pointer is the one named, and its frame is drawn
+      s.undo();
+      s.undo();
+      await two();
+      const g = geo(0);
+      const pitch = g.cellW + g.gap;
+      const over3 = cellBox(0, 3);
+      moveWorld(over3.x + 4, centre(over3).y);
+      if (ds().worldHover !== '0:3') throw new Error('world: hovering cell 3 names ' + ds().worldHover);
+      wbox().scrollLeft = Math.round(1.5 * pitch);
+      await frame();
+      const over4 = cellBox(0, 4);
+      if (ds().worldHover !== '0:4' || surf().title.indexOf('Screen 4 ') < 0) throw new Error('world: after scrolling under a still pointer the hover is ' + ds().worldHover + ' / ' + surf().title);
+      if (pixel(ovl(), over4.x - 1, centre(over4).y)[3] < 200) throw new Error('world: the hover frame is not drawn round the cell now under the pointer');
+      if (pixel(ovl(), over3.x - 1, centre(over3).y)[3] !== 0) throw new Error('world: the hover frame is still drawn round the cell the pointer left');
+      surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      wbox().scrollLeft = 0;
+      await frame();
+      // timings: hover over a cell, and one cell edited in the window
+      const h0 = performance.now();
+      for (let i = 0; i < 100; i++) moveWorld(over3.x + 4 + (i % 8), centre(over3).y);
+      measure('hover, 255x1, per pointermove (ms)', Math.round(((performance.now() - h0) / 100) * 100) / 100);
+      const e0 = performance.now();
+      editScreen(0, 3, 5);
+      measure('one-cell edit, 255x1, commit to flush returned (ms)', Math.round((performance.now() - e0) * 10) / 10);
+      s.undo();
+      await two();
+      s.undo(); // the start and the title put on the jumped window
+      await two();
+      surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      await leave('W11 255 x 1');
+    }
+    step('world 11a: window, scroll and coordinates on the 255 x 1 row', 'checked in the first animation frame after each scroll the test wrote: (a) a slow scroll inside the retained window is covered with the window and its move count unchanged; (b) a jump to 5000 is covered at the first frame with exactly one move; (e) a click at the new offset opens the cell under it by name; (g) entering far from the origin and changing the scale to 3, 1 and Fit keep the current cell visible and covered; the start and the title screen, put on cells of the jumped window and of the first window, are drawn (found as flat fills on the overlay), named by a hover and opened by a click at the new offset by the screen name; (d) back at the origin the window equals its first value and two screens edited while away are drawn after the return, with nothing repainted while they were out of the window; (f) a pointer left still while the box scrolls a cell and a half names, titles and frames the cell now under it');
+
+    // ---- W11 (c) and (h) on the mixed 127 x 1 + 1 x 128 world
+    setWorld('mixed 127 x 1 + 1 x 128', [['Row', 127, 1, true], ['Column', 1, 128, true]]);
+    await showMap();
+    {
+      const t0 = performance.now();
+      toggle().click();
+      const painted = performance.now() - t0;
+      await until('world: the mixed view', () => wbox() && surf().dataset.worldWindow);
+      measure('first paint, mixed 127x1 + 1x128, click to flush returned (ms)', Math.round(painted * 10) / 10);
+      measure('allocation, mixed, window px', winRect().slice(2).join('x') + ' = ' + (winRect()[2] * winRect()[3] * 8) + ' bytes; extent ' + ds().worldExtent);
+      if (!(wbox().scrollWidth > wbox().clientWidth && wbox().scrollHeight > wbox().clientHeight)) throw new Error('world: the mixed world does not scroll on both axes');
+      wbox().scrollLeft = 0;
+      wbox().scrollTop = 0;
+      await frame();
+      covered('W11 (c) start');
+      await shot('w11-mixed');
+      // (c) vertical-only and horizontal-only exits each move the window, a diagonal exit moves it once, inside moves do not
+      const steps = [[0, 150, 0], [0, 260, 1], [100, 260, 0], [260, 260, 1], [300, 300, 0], [700, 700, 1]];
+      for (const stepAt of steps) {
+        const m = num('worldMoves');
+        wbox().scrollLeft = stepAt[0];
+        wbox().scrollTop = stepAt[1];
+        await frame();
+        covered('W11 (c) at ' + stepAt[0] + ',' + stepAt[1]);
+        if (num('worldMoves') - m !== stepAt[2]) throw new Error('world: scrolling to ' + stepAt[0] + ',' + stepAt[1] + ' moved the window ' + (num('worldMoves') - m) + ' times, expected ' + stepAt[2]);
+      }
+      // (e) clicks with BOTH scroll offsets nonzero, by content: a cell of the row, then the start marker and a cell of the column
+      // (wrong: hit-testing that adds only one offset, or reads the other axis as zero)
+      const bothNonzero = () => {
+        if (!(wbox().scrollLeft > 0 && wbox().scrollTop > 0)) throw new Error('world: setup: the offsets are ' + wbox().scrollLeft + ',' + wbox().scrollTop + ', not both nonzero');
+      };
+      wbox().scrollLeft = 1500;
+      wbox().scrollTop = 20;
+      await frame();
+      bothNonzero();
+      covered('W11 (e) row');
+      {
+        const visible = visibleCells(0);
+        if (!visible.length) throw new Error('world: no cell of the row is in view at 1500,20');
+        const pick = visible[Math.floor(visible.length / 2)];
+        const c = centre(cellBox(0, pick));
+        clickWorld(c.x, c.y);
+        if (wbox() || nameValue() !== 'M0S' + pick || mapSelect().value !== '0') throw new Error('world: a click in the row at 1500,20 opened ' + nameValue() + ' in map ' + mapSelect().value);
+        await enter('W11 (e) row clicked');
+      }
+      wbox().scrollLeft = 8;
+      wbox().scrollTop = 1500;
+      await frame();
+      bothNonzero();
+      covered('W11 (e) column');
+      {
+        const visible = visibleCells(1);
+        if (!visible.length) throw new Error('world: no cell of the column is in view at 8,1500');
+        const startAt = visible[Math.floor(visible.length / 3)];
+        s.commit('smoke world: the start in the column', (project) => {
+          project.project.startMap = 1;
+          project.project.startScreen = startAt;
+          project.project.startX = 120;
+          project.project.startY = 112;
+        });
+        await two();
+        covered('W11 (e) start marker in the column');
+        const spot = markerPixel('start', 1, startAt);
+        if (!spot) throw new Error('world: the start marker of column cell ' + startAt + ' is not drawn');
+        moveWorld(spot.x, spot.y);
+        if (ds().worldHover !== 'marker:start') throw new Error('world: hovering the start marker in the column names ' + ds().worldHover);
+        clickWorld(spot.x, spot.y);
+        if (wbox() || nameValue() !== 'M1S' + startAt || mapSelect().value !== '1') throw new Error('world: a click on the start marker in the column opened ' + nameValue() + ' in map ' + mapSelect().value);
+        await enter('W11 (e) marker clicked');
+        s.undo();
+        await two();
+        wbox().scrollLeft = 8;
+        wbox().scrollTop = 1500;
+        await frame();
+        bothNonzero();
+        const again = visibleCells(1);
+        const pick = again[Math.floor(again.length / 2)];
+        const c = centre(cellBox(1, pick));
+        clickWorld(c.x, c.y);
+        if (wbox() || nameValue() !== 'M1S' + pick || mapSelect().value !== '1') throw new Error('world: a click in the column at 8,1500 opened ' + nameValue() + ' in map ' + mapSelect().value);
+      }
+      await enter('W11 mixed again');
+      covered('W11 re-entered');
+      {
+        const spot = cellBox(1, visibleCells(1)[0] ?? 0);
+        const hv0 = performance.now();
+        for (let i = 0; i < 100; i++) moveWorld(spot.x + 4 + (i % 8), spot.y + 8);
+        measure('hover, mixed, per pointermove (ms)', Math.round(((performance.now() - hv0) / 100) * 100) / 100);
+        surf().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        const mv0 = performance.now();
+        wbox().scrollTop = 3000;
+        await frame();
+        measure('window move after a 3000 px vertical jump, mixed, scroll write to first frame (ms)', Math.round((performance.now() - mv0) * 10) / 10);
+        covered('W11 mixed after the timed jump');
+        wbox().scrollTop = 0;
+        await frame();
+      }
+      const edit0 = performance.now();
+      editScreen(1, 3, 5);
+      measure('one-cell edit, mixed, commit to flush returned (ms)', Math.round((performance.now() - edit0) * 10) / 10);
+      s.undo();
+      await two();
+    }
+    step('world 11b: the mixed 127 x 1 + 1 x 128 world', 'a vertical-only exit and a horizontal-only exit each move the window once, scrolls inside the window and the diagonal walk between exits do not, and every stop is covered in the first frame; clicks with both scroll offsets nonzero open a row cell, the start marker (found on the overlay and named by a hover) and a column cell by name');
+
+    // W11 (g), a viewport that shrinks: the window left over from the larger viewport is recomputed in the resize flush, at the
+    // (width + 512) x (height + 512) bound, with both canvases repainted and the scroll offsets where they were
+    // (wrong: a retention test that checks coverage only, which keeps the large canvases for good once the box is smaller)
+    {
+      if (!wbox()) await enter('W11 shrink');
+      wbox().scrollLeft = 700;
+      wbox().scrollTop = 700;
+      await frame();
+      covered('W11 shrink: before');
+      const bigArea = pic().width * pic().height;
+      const at = { left: wbox().scrollLeft, top: wbox().scrollTop, moves: num('worldMoves') };
+      const hookLog = [];
+      globalThis.__worldAfterResize = () => {
+        try {
+          covered('W11 shrink flush');
+          hookLog.push({ ok: true, left: wbox().scrollLeft, top: wbox().scrollTop, area: pic().width * pic().height, bound: (wbox().clientWidth + 512) * (wbox().clientHeight + 512), moves: num('worldMoves') });
+        } catch (error) {
+          hookLog.push({ ok: false, message: error.message });
+        }
+      };
+      const natural = stageEl().offsetWidth;
+      const restore = await minimumWindow(Math.max(420, natural - 300), 300);
+      await until('world: the shrink flush ran', () => hookLog.length >= 1);
+      const bad = hookLog.find((entry) => !entry.ok);
+      if (bad) throw new Error('world: right after the shrink flush ' + bad.message);
+      const last = hookLog[hookLog.length - 1];
+      if (!(bigArea > last.bound)) throw new Error('world: setup: the window before the shrink (' + bigArea + ' px) is not larger than the bound after it (' + last.bound + ' px)');
+      if (last.area > last.bound) throw new Error('world: a viewport shrink left a window of ' + last.area + ' px, over the ' + last.bound + ' px bound');
+      if (last.left !== at.left || last.top !== at.top) throw new Error('world: a viewport shrink moved the scroll offsets from ' + at.left + ',' + at.top + ' to ' + last.left + ',' + last.top);
+      if (last.moves !== at.moves + 1) throw new Error('world: a viewport shrink moved the window ' + (last.moves - at.moves) + ' times, expected once');
+      globalThis.__worldAfterResize = undefined;
+      restore();
+      await until('world: the stage grows back', () => stageEl().offsetWidth === natural);
+      await two();
+      covered('W11 shrink: restored');
+      wbox().scrollLeft = 0;
+      wbox().scrollTop = 0;
+      await frame();
+    }
+    step('world 11d: a viewport that shrinks', 'on the mixed world scrolled to 700,700, a stage pinned smaller recomputes the window in the resize flush: the canvases are at most (box width + 512) x (box height + 512), the window moved once, both canvases are covered, and the scroll offsets did not change; restoring the stage keeps every cell covered');
+
+    // (h) scroll and then change or leave before the queued scroll event runs
+    {
+      if (!wbox()) await enter('W11 (h)');
+      const revisionH = s.revision;
+      // (i) a preceding map deleted in the same task as a far scroll, then undone
+      wbox().scrollTop = 3000;
+      s.commit('smoke world: delete the preceding map', (project) => {
+        deleteMapCore(project, 0);
+        project.maps.forEach((entry, position) => (entry.id = position));
+      });
+      await two();
+      if (!wbox()) throw new Error('world: deleting a preceding map in the scroll task left World mode');
+      if (blocks().length !== 1) throw new Error('world: the deletion left ' + blocks().length + ' blocks');
+      covered('W11 (h)(i) after the deletion');
+      {
+        const visible = visibleCells(0);
+        const pick = visible[0];
+        const c = centre(cellBox(0, pick));
+        clickWorld(c.x, c.y);
+        if (wbox() || nameValue() !== 'M1S' + pick) throw new Error('world: after the deletion a click opened ' + nameValue() + ', not the column screen ' + pick);
+      }
+      await enter('W11 (h)(i) again');
+      s.undo();
+      await until('world: undo of the preceding deletion', () => s.project.maps.length === 2 && blocks().length === 2);
+      covered('W11 (h)(i) after the undo');
+      // (ii) the toggle clicked off in the task that wrote the scroll
+      wbox().scrollTop = 2000;
+      toggle().click();
+      await two();
+      if (document.querySelectorAll('[data-world-box], [data-world-surface], [data-world-picture], [data-world-overlay], [data-world-block]').length) throw new Error('world: World elements remain after leaving in the scroll task');
+      if (!stageEl().querySelector('canvas')) throw new Error('world: the editing screen is not back after leaving in the scroll task');
+      if (s.revision !== revisionH + 2) throw new Error('world: the revision moved by ' + (s.revision - revisionH) + ', expected the two commits (delete, undo)');
+      await enter('W11 (h)(ii) re-entry');
+      covered('W11 (h)(ii) fresh window');
+      if (num('worldMoves') !== 1) throw new Error('world: re-entering did not start from a fresh window (moves ' + num('worldMoves') + ')');
+      // (iii) another project opened in the task that wrote the scroll
+      wbox().scrollTop = 2500;
+      s.open(s.dir, JSON.parse(JSON.stringify(s.project)));
+      await until('world: the project switch remounted the Forge', () => !wbox() && toggle());
+      await two();
+      if (document.querySelectorAll('[data-world-box], [data-world-surface], [data-world-picture], [data-world-overlay], [data-world-block]').length) throw new Error('world: World elements remain after opening another project');
+      await enter('W11 (h)(iii) re-entry');
+      covered('W11 (h)(iii) fresh window');
+      // (iv) a distinct project opened through the application's own Open button; the native picker is answered by the harness
+      // (main/smoke.js, the dialog:openProject override, reads globalThis.__smokePick)
+      {
+        const origDir = s.dir;
+        const other = ${JSON.stringify(sampleDir)};
+        const prior = JSON.stringify(s.project);
+        if (origDir === other) throw new Error('world: setup: the project to open is the open one');
+        wbox().scrollTop = 1200;
+        globalThis.__smokePick = other;
+        document.querySelector('[data-action="project:open"]').click();
+        for (let waited = 0; s.dir !== other && waited < 8000; waited += 25) {
+          const discard = [...document.querySelectorAll('#modalHost .modal-foot button.btn')].find((n) => n.textContent.trim() === 'Continue without saving');
+          if (discard) discard.click();
+          await wait(25);
+        }
+        if (s.dir !== other) throw new Error('world: the Open action did not open the other project (still ' + s.dir + ')');
+        await until('world: the Open action remounted the Forge', () => !wbox() && toggle());
+        await two();
+        if (document.querySelectorAll('[data-world-box], [data-world-surface], [data-world-picture], [data-world-overlay], [data-world-block]').length) throw new Error('world: World elements remain after the Open action');
+        if (JSON.stringify(s.project) === prior) throw new Error('world: the Open action left the same project open');
+        await enter('W11 (h)(iv) re-entry');
+        if (blocks().length !== s.project.maps.length) throw new Error('world: the other project has ' + s.project.maps.length + ' maps but the view drew ' + blocks().length + ' blocks');
+        covered('W11 (h)(iv) the other project');
+        if (num('worldMoves') !== 1) throw new Error('world: opening a project did not start from a fresh window (moves ' + num('worldMoves') + ')');
+        s.open(origDir, JSON.parse(prior));
+        await until('world: the original project reopened', () => !wbox() && toggle() && s.dir === origDir);
+        await two();
+      }
+      await leave('W11 (h)');
+    }
+    step('world 11c: scroll, then change or leave', 'a far scroll written in the same task as a preceding map deletion, as the toggle going off, and as another project opening: no console error; the deletion is drawn against the new layout and the clicked destination is right by name, and its undo is covered; leaving and opening a project leave no World element, canvas or listener, the editing screen intact (revision moved only by the two commits), and re-entering starts from a fresh window that is covered; a distinct project opened through the application Open button (the native picker answered by the harness) leaves no World element, and its World view is covered with one block per map');
+
+    // W7 lifetime: another Forge and back; a project opened while World is on (above); a resize
+    {
+      s.open(s.dir, JSON.parse(baselineJson));
+      setWorld('a 255 x 1 row for the lifetime checks', [['Long', 255, 1, true]]);
+      await showMap();
+      await enter('W7');
+      await window.__app.goTo('tile');
+      await window.__app.goTo('map');
+      await until('world: back in the Map Forge', () => toggle());
+      if (wbox()) throw new Error('world: another Forge and back left World mode on');
+      if (document.querySelectorAll('[data-world-box]').length || !stageEl().querySelector('canvas')) throw new Error('world: the editing stage is not back after another Forge');
+      // a resize: a whole-visible current cell stays visible; a deliberately scrolled-away box keeps its offsets
+      await enter('W7 resize');
+      wbox().scrollLeft = 3000;
+      await frame();
+      {
+        const visible = visibleCells(0);
+        const c = centre(cellBox(0, visible[Math.floor(visible.length / 2)]));
+        clickWorld(c.x, c.y);
+      }
+      toggle().click();
+      await frame();
+      if (!currentVisible()) throw new Error('world: setup: the current cell is not visible');
+      const hookLog = [];
+      globalThis.__worldAfterResize = () => {
+        try {
+          covered('W7 resize flush');
+          hookLog.push({ ok: true, left: wbox().scrollLeft, visible: currentVisible() });
+        } catch (error) {
+          hookLog.push({ ok: false, message: error.message });
+        }
+      };
+      const natural = stageEl().offsetWidth;
+      const restore = await minimumWindow(Math.max(420, natural - 260), stageEl().offsetHeight);
+      await until('world: the resize hook ran', () => hookLog.length >= 1);
+      if (!hookLog[0].ok) throw new Error('world: right after the resize flush ' + hookLog[0].message);
+      if (!hookLog[0].visible) throw new Error('world: a resize took the whole-visible current cell out of view');
+      // a scrolled-away box: put the box at the origin (the current cell is far) and resize again
+      wbox().scrollLeft = 0;
+      await frame();
+      const logged = hookLog.length;
+      restore();
+      await until('world: the second resize flush', () => hookLog.length > logged);
+      const last = hookLog[hookLog.length - 1];
+      if (!last.ok) throw new Error('world: right after the second resize flush ' + last.message);
+      if (last.left !== 0) throw new Error('world: a resize recentred a box the author had scrolled away (scrollLeft ' + last.left + ')');
+      globalThis.__worldAfterResize = undefined;
+      await leave('W7');
+    }
+    // W7, a resize that wraps the blocks: three 4 x 4 maps at an explicit scale in a box one row wide, then 60 px narrower, which wraps the
+    // third block under the others. The current cell (the third map's first screen) moves without its scale or its screen changing.
+    // (wrong: asking the new layout whether the cell fits the old viewport, which loses a cell that was whole; recentring a box the author scrolled away)
+    {
+      setWorld('three 4 x 4 maps for the wrap', [['A', 4, 4, false], ['B', 4, 4, false], ['C', 4, 4, false]]);
+      await showMap();
+      await enter('W7 wrap');
+      const stage = stageEl();
+      let scale = '';
+      for (const choice of ['4', '3']) {
+        document.querySelector('[data-world-scale="' + choice + '"]').click();
+        await frame();
+        if (geo(2).y === geo(0).y) { scale = choice; break; }
+      }
+      if (!scale) throw new Error('world: setup: three 4 x 4 maps do not share a row at scale 4 or 3 in a box ' + wbox().clientWidth + ' px wide');
+      const dw = stage.offsetWidth - wbox().clientWidth;
+      const dh = stage.offsetHeight - wbox().clientHeight;
+      const rowWidth = wbox().clientWidth;
+      const need = extent()[0];
+      const pinBox = (boxWidth, boxHeight) => minimumWindow(boxWidth + dw, boxHeight + dh);
+      const logged = [];
+      globalThis.__worldAfterResize = () => {
+        try {
+          covered('W7 wrap flush');
+          logged.push({ ok: true, wrapped: geo(2).y > geo(0).y, visible: currentVisible(), left: wbox().scrollLeft, top: wbox().scrollTop, scale: ds().worldScale });
+        } catch (error) {
+          logged.push({ ok: false, message: error.message });
+        }
+      };
+      const resizeTo = async (what, boxWidth, boxHeight) => {
+        const mark = logged.length;
+        const restore = await pinBox(boxWidth, boxHeight);
+        await until('world: the ' + what + ' flush ran', () => logged.length > mark);
+        const seen = logged.slice(mark);
+        const bad = seen.find((entry) => !entry.ok);
+        if (bad) throw new Error('world: right after the ' + what + ' flush ' + bad.message);
+        return { restore: restore, last: seen[seen.length - 1] };
+      };
+      // the current cell is the third map's first screen, whole in a box 120 px high
+      {
+        const at = centre(cellBox(2, 0));
+        clickWorld(at.x, at.y);
+        if (wbox() || nameValue() !== 'M2S0') throw new Error('world: setup: the third map first screen opened ' + nameValue());
+        await enter('W7 wrap, current set');
+      }
+      const short = await resizeTo('height pin', rowWidth, 120);
+      if (!currentVisible()) throw new Error('world: setup: the current cell is not whole in a 120 px box (the box is ' + wbox().clientHeight + ' px)');
+      const wrap = await resizeTo('wrap', need - 60, 120);
+      if (!wrap.last.wrapped) throw new Error('world: setup: the third block did not wrap in a box ' + (need - 60) + ' px wide');
+      if (!wrap.last.visible) throw new Error('world: a resize that wrapped the blocks took the whole-visible current cell out of view');
+      if (!(wrap.last.top > 0)) throw new Error('world: the wrapped current cell is in view with the box at the top; the wrap did not move it');
+      if (wrap.last.scale !== scale) throw new Error('world: the wrap changed the scale from ' + scale + ' to ' + wrap.last.scale);
+      wrap.restore();
+      await until('world: the row again', () => geo(2).y === geo(0).y);
+      await two();
+      // the same resize with the current cell scrolled away: the bottom-right screen of the third map, below the 120 px box
+      wbox().scrollTop = wbox().scrollHeight;
+      await frame();
+      {
+        const at = centre(cellBox(2, 15));
+        clickWorld(at.x, at.y);
+        if (wbox() || nameValue() !== 'M2S15') throw new Error('world: setup: the third map last screen opened ' + nameValue());
+        await enter('W7 wrap, bottom cell current');
+      }
+      wbox().scrollLeft = 0;
+      wbox().scrollTop = 40;
+      await frame();
+      if (currentVisible()) throw new Error('world: setup: the current cell is whole in view at scrollTop 40');
+      const kept = { left: wbox().scrollLeft, top: wbox().scrollTop };
+      const away = await resizeTo('wrap with the cell scrolled away', need - 60, 120);
+      if (!away.last.wrapped) throw new Error('world: setup: the third block did not wrap with the cell scrolled away');
+      if (away.last.left !== kept.left || away.last.top !== kept.top) throw new Error('world: a resize recentred a box the author had scrolled away (' + kept.left + ',' + kept.top + ' became ' + away.last.left + ',' + away.last.top + ')');
+      away.restore();
+      await two();
+      globalThis.__worldAfterResize = undefined;
+      const stray = logged.find((entry) => !entry.ok);
+      if (stray) throw new Error('world: a flush during the wrap checks: ' + stray.message);
+      short.restore();
+      await until('world: the stage grows back after the wrap checks', () => stage.offsetWidth === rowWidth + dw);
+      await leave('W7 wrap');
+      setWorld('a 255 x 1 row again', [['Long', 255, 1, true]]);
+      await showMap();
+    }
+    step('world 7: lifetime', 'another Forge and back returns to the editing stage with no World element left; (the project opened while World is on is world 11c); a resize keeps a whole-visible current cell visible and covered, checked right after the resize flush through a hook, and leaves a box the author scrolled away at its own offset; three 4 x 4 maps at an explicit scale in a box one row wide, then narrower so the third block wraps under the others: the current cell, whole before, is whole after (scrolled by the resize), and with the current cell scrolled away the offsets stay put, each checked right after the resize flush');
+
+    // W9 read-only: hover, click, scale change, scroll and leave change nothing the project or the store holds
+    {
+      const before = snapshot();
+      await enter('W9');
+      const g = geo(0);
+      moveWorld(g.gridX + g.pad + 4, g.gridY + g.pad + 4);
+      for (const choice of ['2', '4', '1', 'fit']) {
+        document.querySelector('[data-world-scale="' + choice + '"]').click();
+        await frame();
+      }
+      wbox().scrollLeft = 4000;
+      await frame();
+      const c = centre(cellBox(0, visibleCells(0)[0]));
+      moveWorld(c.x, c.y);
+      clickWorld(c.x, c.y);
+      await two();
+      if (wbox()) throw new Error('world: setup: the click did not open a screen');
+      unchanged(before, 'hover, scale changes, a scroll, a click and leaving');
+    }
+    step('world 9: read-only', 'hovering, the five scale buttons, a scroll, a click that opens a screen and leaving leave store.revision, the undo depth, the dirty flag and the project JSON exactly as they were');
+
+    // back to the baseline: this block's own commits undone (the project switch above cleared the stack, so the baseline is reopened)
+    while (depth() > 0) s.undo();
+    s.open(s.dir, JSON.parse(baselineJson));
+    await showMap();
+    if (JSON.stringify(s.project) !== baselineJson) throw new Error('world: the smoke block did not return to its baseline');
+    if (baseDepth !== 0 && depth() !== 0) throw new Error('world: the undo stack was not cleared by the baseline reopen');
+  }
+
   // --- Map Forge: Region copy/paste, through the real canvas (ROADMAP item
   // 7 phase 5, design-maporg.md §6.3/§12; code review round 1, findings 1-3
   // -- a chosen destination origin, a snapshot immune to a post-Copy edit
@@ -13777,6 +14845,19 @@ export async function runSmoke(window) {
     const text = `[renderer:${level}] ${message} (${sourceId}:${lineNumber})`;
     if (level === 'error' || level === 3) problems.push(text);
     console.log(text);
+    // The World view's screenshots: the scenario cannot capture its own window, so it logs a request and waits for the answer.
+    const shotRequest = /^SMOKE_SHOT ([0-9]+) (\S+)$/.exec(message);
+    if (shotRequest) {
+      (async () => {
+        if (process.env.FORGE_WORLD_SHOT_DIR) {
+          await new Promise((resolve) => setTimeout(resolve, 800)); // a capture taken at once misses the stage's paint
+          const image = await window.webContents.capturePage();
+          await fs.mkdir(process.env.FORGE_WORLD_SHOT_DIR, { recursive: true });
+          await fs.writeFile(path.join(process.env.FORGE_WORLD_SHOT_DIR, `${shotRequest[2]}.png`), image.toPNG());
+        }
+        await window.webContents.executeJavaScript(`window.__shotDone = ${shotRequest[1]}`);
+      })().catch((error) => problems.push(`screenshot ${shotRequest[2]}: ${error?.message ?? error}`));
+    }
   });
   window.webContents.on('render-process-gone', (_event, details) =>
     problems.push(`renderer gone: ${details.reason}`)
@@ -13835,7 +14916,12 @@ export async function runSmoke(window) {
       nextOpenProjectDir = null;
       return { ok: true, value };
     }
-    return { ok: true, value: null };
+    // A renderer scenario cannot reach the variable above: it leaves its pick on a global, read and cleared here, in the same
+    // one-shot way. The World view's Open check is the user of this (no pick queued still answers "the user cancelled").
+    const picked = await window.webContents.executeJavaScript(
+      '(() => { const dir = globalThis.__smokePick ?? null; globalThis.__smokePick = null; return dir; })()'
+    );
+    return { ok: true, value: picked };
   });
 
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-smoke-'));

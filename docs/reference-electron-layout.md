@@ -105,6 +105,27 @@ body, not two. `growOrShrinkMap` refuses a streamed map's resize that would brea
 for the full mechanism — the `translate` builders, the duplicated-map/screen self/external target
 split, `map.folder`, and the world overview.
 
+**The World view (ROADMAP item 7, `docs/design-world-overview.md`)** is a mode of the Map Forge, not a Forge: the
+`World` toggle in its toolbar (`createWorldView`, `renderer/forges/map/world.js`) swaps the stage's screen and navigator
+for one scroll box holding every map as a block of screen thumbnails, on the same stage element, so `observeSize`,
+`stageInner()` and `data-laid-out` keep working. Its place in `renderAll()`: when the mode is on, `renderAll()` renders
+the World view *instead of* `renderNavigator()` and `renderScreen()` (both return at once while it is on, so a stray
+direct call cannot put the legacy stage back over it), and runs `renderMapSettings()` either way -- the side panels stay
+live, so a rename or a metatile edit shows in the view. The mode is `state.world`, beside `state.mapIndex`, and resets
+with it: leaving the Forge, or opening another project (the store's `open` remounts the Forge), ends it.
+
+Its boundary is **local to it**, and not the general rule above: the World view is read-only and synchronous. `world.js`
+and the pure modules beside it (`worldlayout.js`, `worldmarkers.js`) hold no store handle -- `map.js` hands the view a
+`getProject` function and `openFromWorld`, the one thing a click may do -- and contain no `await` and no `import(`.
+`openFromWorld` sets the Forge's own `state.mapIndex` / `state.screenIndex`, leaves the mode and calls `renderAll()` once;
+it is not `app.goTo`, because nothing leaves the Map Forge, so there is no navigation context and no `selectionToken`
+window. The general rule is unchanged for every other handler: one that awaits re-reads `store.project`, compares the
+`store.revision` it took before the await and checks it is still mounted. Drawing is two canvases the size of a *window*
+of the world, not of the world (`worldWindow`, `windowRetains` in `worldlayout.js`), repainted by one synchronous
+`flushWorld` that is the only function to size, move, clear or paint either; hit-testing is in full-world pixels
+(`worldHit`, `worldCellRect`: exact inverses) and never sees the window. `test/unit/worldlayout.test.js` pins the
+geometry and the window, `test/unit/worldmarkers.test.js` the markers, and `test/unit/docclaims.test.js` the boundary.
+
 ### The build gate
 
 The renderer already refuses a second, reentrant `build()` call from the same Build Forge mount (a
