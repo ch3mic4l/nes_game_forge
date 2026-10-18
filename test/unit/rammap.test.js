@@ -35,6 +35,7 @@ import { createProject } from '../../shared/project.js';
 import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { scanEquates, resolveEquates } from '../lib/equates.js';
+import { equipProject, piece, WEAPON } from '../lib/equipharness.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
@@ -119,6 +120,13 @@ const KNOWN_MAX_SIZES = {
   pc_in_party: 'MAX_PARTY',
   pc_spells: 'MAX_PARTY',
   pc_status: 'MAX_PARTY',
+  // Equipment (docs/design-equipment.md section 3): pc_equip is slot-major, EQUIP_BYTES = equipSlots * MAX_PARTY
+  // (engine/battle.asm's equip_recalc walks it by `+MAX_PARTY` up to EQUIP_BYTES); each bonus array is one byte a member.
+  pc_equip: 'EQUIP_BYTES',
+  pc_eq_atk: 'MAX_PARTY',
+  pc_eq_def: 'MAX_PARTY',
+  pc_eq_mag: 'MAX_PARTY',
+  pc_eq_mdef: 'MAX_PARTY',
   // One entry per monster slot (the same routines, MAX_MONSTERS on the
   // monster side of the split).
   mon_slot_actor: 'MAX_MONSTERS',
@@ -250,14 +258,14 @@ function parseSizeAnnotations(text) {
  * The single call site for both the plain audit and the override-path proof
  * below, so the two cannot drift into reading the build differently.
  */
-async function buildAndRead(t, overrideConstantsText) {
+async function buildAndRead(t, overrideConstantsText, builtProject) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-rammap-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   // gameType is irrelevant to constants.asm itself -- it carries no `.if`
   // of its own, every address it defines exists in every build -- but an
   // RPG is what makes config.inc's NUM_VARIABLES (variables' own @size)
   // mean something rather than defaulting to a project with none.
-  const project = createProject('RAM Map', 'rpg');
+  const project = builtProject ?? createProject('RAM Map', 'rpg');
   if (overrideConstantsText !== undefined) {
     project.code.overrides = [{ name: 'constants.asm', text: overrideConstantsText }];
   }
@@ -266,7 +274,10 @@ async function buildAndRead(t, overrideConstantsText) {
 
   const constantsText = await fs.readFile(path.join(dir, 'build', 'constants.asm'), 'utf8');
   const configText = await fs.readFile(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
-  return { constantsText, configText };
+  // EQUIP_SAVE_SHIFT lives here, not in config.inc: main.asm includes cartridge.inc before constants.asm
+  // (docs/design-equipment.md section 5), and constants.asm's streamed-world block base reads it.
+  const cartridgeText = await fs.readFile(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8');
+  return { constantsText, configText, cartridgeText };
 }
 
 /**
@@ -275,10 +286,11 @@ async function buildAndRead(t, overrideConstantsText) {
  * without duplicating it. Throws (via `assert`) on the first problem found,
  * same as before this was extracted.
  */
-function auditRamMap(constantsText, configText) {
+function auditRamMap(constantsText, configText, cartridgeText) {
   const pending = new Map();
     scanEquates(constantsText, pending);
     scanEquates(configText, pending);
+    scanEquates(cartridgeText, pending);
     const symbols = new Map();
     // Both files' equates resolved together: a @size annotation in
     // constants.asm can name something only config.inc defines
@@ -416,8 +428,8 @@ test(
   'the RAM map has no duplicate addresses and no array overruns the next label',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    const { constantsText, configText } = await buildAndRead(t);
-    auditRamMap(constantsText, configText);
+    const { constantsText, configText, cartridgeText } = await buildAndRead(t);
+    auditRamMap(constantsText, configText, cartridgeText);
   }
 );
 
@@ -442,10 +454,10 @@ test(
     );
     assert.notEqual(collidingText, stockConstantsText, 'the cur_map line to replace was not found -- did constants.asm change shape?');
 
-    const { constantsText, configText } = await buildAndRead(t, collidingText);
+    const { constantsText, configText, cartridgeText } = await buildAndRead(t, collidingText);
     assert.match(constantsText, /TEST OVERRIDE/, 'build/constants.asm does not contain the override -- the Code Forge override was not applied');
     assert.throws(
-      () => auditRamMap(constantsText, configText),
+      () => auditRamMap(constantsText, configText, cartridgeText),
       /ent_spawn_rec .* overlaps cur_map|cur_map .* overlaps ent_spawn_rec/,
       'the guard should have caught cur_map colliding with ent_spawn_rec through the override text'
     );
@@ -468,10 +480,10 @@ test(
     );
     assert.notEqual(shrunkText, stockConstantsText, 'the attr_shadow line to replace was not found -- did constants.asm change shape?');
 
-    const { constantsText, configText } = await buildAndRead(t, shrunkText);
+    const { constantsText, configText, cartridgeText } = await buildAndRead(t, shrunkText);
     assert.match(constantsText, /TEST OVERRIDE/, 'build/constants.asm does not contain the override -- the Code Forge override was not applied');
     assert.throws(
-      () => auditRamMap(constantsText, configText),
+      () => auditRamMap(constantsText, configText, cartridgeText),
       /attr_shadow.*size is 128.*pins it at 256/,
       'the guard should have caught attr_shadow no longer matching KNOWN_PARTIAL_OVERLAPS\' own pinned containing size'
     );
@@ -487,12 +499,12 @@ test(
     const moved = stockConstantsText.replace(/^sw_dlgcr_sc\s*= sw_dlgw_mtrow.*$/m, 'sw_dlgcr_sc      = $EB ; TEST OVERRIDE (sw_dlgw_half\'s own byte)');
     assert.notEqual(moved, stockConstantsText, 'the sw_dlgcr_sc alias line was not found -- did constants.asm change shape?');
     let built = await buildAndRead(t, moved);
-    assert.throws(() => auditRamMap(built.constantsText, built.configText), /sw_dlgcr_sc.*sw_dlgw_half|sw_dlgw_half.*sw_dlgcr_sc/, 'an alias moved onto the wrong byte must be reported');
+    assert.throws(() => auditRamMap(built.constantsText, built.configText, built.cartridgeText), /sw_dlgcr_sc.*sw_dlgw_half|sw_dlgw_half.*sw_dlgcr_sc/, 'an alias moved onto the wrong byte must be reported');
     // (2) a brand-new overlap that is not a documented alias at all.
     const extra = stockConstantsText.replace(/^sw_dlgcr_lc\s*= sw_dlgw_fill.*$/m, 'sw_dlgcr_lc      = sw_dlgw_edge ; TEST OVERRIDE');
     assert.notEqual(extra, stockConstantsText, 'the sw_dlgcr_lc alias line was not found -- did constants.asm change shape?');
     built = await buildAndRead(t, extra);
-    assert.throws(() => auditRamMap(built.constantsText, built.configText), /sw_dlgcr_lc.*sw_dlgw_edge|sw_dlgw_edge.*sw_dlgcr_lc/, 'an undocumented alias must be reported');
+    assert.throws(() => auditRamMap(built.constantsText, built.configText, built.cartridgeText), /sw_dlgcr_lc.*sw_dlgw_edge|sw_dlgw_edge.*sw_dlgcr_lc/, 'an undocumented alias must be reported');
   }
 );
 
@@ -504,12 +516,13 @@ test(
     const pending = new Map();
     scanEquates(stock.constantsText, pending);
     scanEquates(stock.configText, pending);
+    scanEquates(stock.cartridgeText, pending);
     const symbols = new Map();
     resolveEquates(pending, symbols);
     assert.equal(symbols.has('sw_step_nocross'), false, 'sw_step_nocross is gone from the allocation map');
     assert.ok(![...symbols.entries()].some(([, v]) => v === 0x077f), '$077F is unallocated');
     assert.equal(symbols.get('sw_fc_wy_lo'), 0x0780, 'its former neighbour has not moved');
-    assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText));
+    assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText, stock.cartridgeText));
   }
 );
 
@@ -524,17 +537,88 @@ test(
     const pending = new Map();
     scanEquates(stock.constantsText, pending);
     scanEquates(stock.configText, pending);
+    scanEquates(stock.cartridgeText, pending);
     const symbols = new Map();
     resolveEquates(pending, symbols);
     const want = { sw_dlg17_move_close: 0x07f1, talk_rec: 0x07f2, talk_scr: 0x07f3, talk_crossed: 0x07f4, owed_enter_rec: 0x07f5, sw_dlg20_save_pending: 0x07f8 };
     for (const [name, addr] of Object.entries(want)) assert.equal(symbols.get(name), addr, `${name} must stay at $${addr.toString(16).toUpperCase().padStart(4, '0')}`);
-    assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText));
+    assert.doesNotThrow(() => auditRamMap(stock.constantsText, stock.configText, stock.cartridgeText));
 
     // negative control: owed_enter_rec moved onto sw_dlg20_save_pending is a collision the audit names
     const stockText = await fs.readFile(path.join(ROOT, 'engine', 'constants.asm'), 'utf8');
     const moved = stockText.replace(/^owed_enter_rec(\s*)= \$07F5/m, 'owed_enter_rec$1= $07F8 ; TEST OVERRIDE');
     assert.notEqual(moved, stockText, 'the owed_enter_rec line to replace was not found');
     const broken = await buildAndRead(t, moved);
-    assert.throws(() => auditRamMap(broken.constantsText, broken.configText), /owed_enter_rec.*sw_dlg20_save_pending|sw_dlg20_save_pending.*owed_enter_rec/, 'a collision with sw_dlg20_save_pending must be reported');
+    assert.throws(() => auditRamMap(broken.constantsText, broken.configText, broken.cartridgeText), /owed_enter_rec.*sw_dlg20_save_pending|sw_dlg20_save_pending.*owed_enter_rec/, 'a collision with sw_dlg20_save_pending must be reported');
+  }
+);
+
+// --- Equipment (docs/design-equipment.md section 5, ROADMAP item 5, build commit C3) ----------------------------------------
+//
+// An equipment project on a flash board with Save grows the save record by pc_equip's 12 bytes, and the flash driver's scratch
+// (save_flash_buf at $0700, SAVE_RECORD_LEN long) would then reach the streamed-world block at $0780. EQUIP_SAVE_SHIFT moves
+// that block up by exactly the growth. Everything else keeps the block at $0780 and shift 0.
+
+function symbolsOf(built) {
+  const pending = new Map();
+  scanEquates(built.constantsText, pending);
+  scanEquates(built.configText, pending);
+  scanEquates(built.cartridgeText, pending);
+  const symbols = new Map();
+  resolveEquates(pending, symbols);
+  return symbols;
+}
+
+test(
+  'equipment + Save + UNROM 512: the streamed-world scratch block is shifted by 12, SAVE_RECORD_LEN is 139, and nothing overlaps; every other build keeps $0780',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const sword = [piece(1, 'Sword', WEAPON, { atk: 5 })];
+    const cases = [
+      { label: 'UNROM 512 + equipment + Save', mapper: 30, save: true, items: sword, shift: 12, recordLen: 139 },
+      { label: 'UNROM 512 + Save, no equipment', mapper: 30, save: true, items: [], shift: 0, recordLen: 127 },
+      { label: 'UNROM 512 + equipment, no Save', mapper: 30, save: false, items: sword, shift: 0, recordLen: 127 },
+      { label: 'MMC1 + equipment + Save (SRAM: the record is never staged in RAM)', mapper: 1, save: true, items: sword, shift: 0, recordLen: 127 }
+    ];
+    for (const c of cases) {
+      const built = await buildAndRead(t, undefined, await equipProject({ mapper: c.mapper, save: c.save, items: c.items }));
+      const symbols = symbolsOf(built);
+      assert.equal(symbols.get('EQUIP_SAVE_SHIFT'), c.shift, `${c.label}: EQUIP_SAVE_SHIFT`);
+      assert.equal(symbols.get('sw_fc_wy_lo'), 0x0780 + c.shift, `${c.label}: the streamed-world block's base`);
+      assert.equal(symbols.get('SAVE_RECORD_LEN'), c.recordLen, `${c.label}: SAVE_RECORD_LEN`);
+      assert.doesNotThrow(() => auditRamMap(built.constantsText, built.configText, built.cartridgeText), c.label);
+    }
+  }
+);
+
+test(
+  'equipment RAM: pc_equip is 12 bytes and the four bonus columns are 4 each, at the pinned addresses, clear of the flash scratch even when shifted',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const built = await buildAndRead(t, undefined, await equipProject({ mapper: 30, save: true, items: [piece(1, 'Sword', WEAPON, { atk: 5 })] }));
+    const symbols = symbolsOf(built);
+    const want = { pc_equip: 0x07d4, pc_eq_atk: 0x07e0, pc_eq_def: 0x07e4, pc_eq_mag: 0x07e8, pc_eq_mdef: 0x07ec };
+    for (const [name, addr] of Object.entries(want)) assert.equal(symbols.get(name), addr, `${name}`);
+    assert.equal(symbols.get('EQUIP_BYTES'), 12);
+    // save_flash_buf [$0700, $0700 + 139) must stop below the shifted block's first byte.
+    assert.ok(symbols.get('save_flash_buf') + symbols.get('SAVE_RECORD_LEN') <= symbols.get('sw_fc_wy_lo'), 'the flash scratch reaches the streamed-world block');
+  }
+);
+
+test(
+  'equipment flash scratch control: with the shift removed, the audit names the overlap between save_flash_buf and the sw_fc_ block',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const stock = await fs.readFile(path.join(ROOT, 'engine', 'constants.asm'), 'utf8');
+    const unshifted = stock.replace(/^sw_fc_wy_lo(\s*)= SW_BLK_BASE\+EQUIP_SAVE_SHIFT/m, 'sw_fc_wy_lo$1= SW_BLK_BASE ; TEST OVERRIDE: the shift is dropped');
+    assert.notEqual(unshifted, stock, 'the sw_fc_wy_lo line to replace was not found -- did constants.asm change shape?');
+    const project = await equipProject({ mapper: 30, save: true, items: [piece(1, 'Sword', WEAPON, { atk: 5 })] });
+    const broken = await buildAndRead(t, unshifted, project);
+    assert.match(broken.constantsText, /TEST OVERRIDE/);
+    assert.throws(
+      () => auditRamMap(broken.constantsText, broken.configText, broken.cartridgeText),
+      /save_flash_buf.*overlaps sw_fc_|sw_fc_.*overlaps save_flash_buf/,
+      'an unshifted block must collide with the grown flash scratch, and the audit must say so'
+    );
   }
 );

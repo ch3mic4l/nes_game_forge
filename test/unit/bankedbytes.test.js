@@ -77,6 +77,9 @@ import {
   NAME_COPY_BATTLE_ALLOWANCE,
   MAGIC_POWER_BATTLE_ALLOWANCE,
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
+  EQUIP_BATTLE_ALLOWANCE,
+  EQUIP_MAG_BATTLE_ALLOWANCE,
+  EQUIP_MDEF_BATTLE_ALLOWANCE,
   MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
   BATTLE_ANIM_BATTLE_ALLOWANCE,
   PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE,
@@ -2834,3 +2837,212 @@ test('phase 2 slice 10b: battleRegionBytes charges the overlay only when told th
   );
   assert.ok(BATTLE_REGION_SOURCES.includes('streamdialog.asm'), 'a Code Forge override of streamdialog.asm must be treated as overriding the battle region');
 });
+
+// --- Equipment (docs/design-equipment.md sections 3 and 8, ROADMAP item 5, build commit C3) --------------------------------
+//
+// The equipment-core banked allowance and its two gated MAG / MDEF terms, each measured the way the magic-power terms above
+// are: an isolated delta on real assembled ROMs (emitted eq_* table bytes subtracted, so only code is compared), then the
+// absolute equality of the whole region against nesasm. Conditions measured: every RPG-capable board; Save on and off;
+// in-game naming on and off; hit feedback and miss on. NOT measured (no code of the feature depends on them -- the feature has
+// no .if on them -- but they are not asserted either): a streamed map, battle animation, the monster spell list.
+
+import { equipProject, buildEquip, piece, plain, WEAPON, ARMOR, ACCESSORY } from '../lib/equipharness.js';
+import { projectUsesEquipment, projectUsesEquipmentMag, projectUsesEquipmentMdef } from '../../shared/project.js';
+
+/** The banked region's real used bytes out of an already-built equipment variant's nesasm usage table. */
+function bankedUsed(built) {
+  const mapper = resolveMapper(built.project.cartridge.mapper);
+  const slot = codeRegions(mapper, built.project.tilesets.length, 1)[0];
+  const bankLine = built.lines.find((line) => new RegExp(`^BANK\\s+${slot.nesasmBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${slot.nesasmBank}`);
+  return Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)[1]);
+}
+
+/** Code bytes only: the region's used count less the tables the generator emitted into it. */
+const bankedCode = (built) => bankedUsed(built) - battleTableBytes(built.project);
+
+const EQUIP_CONDITIONS = [
+  { label: 'no Save, no naming', save: false, mutate: () => {} },
+  { label: 'Save on', save: true, mutate: () => {} },
+  { label: 'naming on', save: false, mutate: (p) => { for (const m of p.party) m.renamable = true; } },
+  { label: 'hit feedback + miss on', save: false, mutate: (p) => { p.rpg.hitFeedback = true; p.rpg.miss = true; } }
+];
+
+test('EQUIP_BATTLE_ALLOWANCE is exact on every RPG-capable board and every measured condition', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    for (const condition of EQUIP_CONDITIONS) {
+      const off = await buildEquip(t, await equipProject({ mapper: mapper.id, save: condition.save, mutate: condition.mutate }));
+      const on = await buildEquip(
+        t,
+        await equipProject({ mapper: mapper.id, save: condition.save, items: [piece(1, 'Sword', WEAPON, { atk: 5 })], mutate: condition.mutate })
+      );
+      assert.equal(projectUsesEquipment(off.project), false);
+      assert.equal(projectUsesEquipment(on.project), true);
+      assert.equal(
+        bankedCode(on) - bankedCode(off),
+        EQUIP_BATTLE_ALLOWANCE,
+        `${mapper.name} (${condition.label}): one ATK piece costs ${bankedCode(on) - bankedCode(off)} bytes of banked code, but EQUIP_BATTLE_ALLOWANCE reserves ${EQUIP_BATTLE_ALLOWANCE}`
+      );
+      // A DEF-only piece costs the same: ATK and DEF share one gate, the adds are unconditional inside it.
+      const def = await buildEquip(
+        t,
+        await equipProject({ mapper: mapper.id, save: condition.save, items: [piece(1, 'Mail', ARMOR, { def: 5 })], mutate: condition.mutate })
+      );
+      assert.equal(bankedCode(def) - bankedCode(off), EQUIP_BATTLE_ALLOWANCE, `${mapper.name} (${condition.label}): a DEF-only piece costs the same code`);
+    }
+  }
+});
+
+test('EQUIP_MAG_BATTLE_ALLOWANCE and EQUIP_MDEF_BATTLE_ALLOWANCE are exact, each with the magic-power / defence source already live', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  // The party's own baseMag / baseMdef keep magic power / defence on in BOTH builds, so the delta is the equipment term alone
+  // (a piece's MAG also turns magic power on -- MAGIC_POWER_BATTLE_ALLOWANCE -- and that is not what is isolated here).
+  const withSources = (p) => {
+    p.party[0].baseMag = 5;
+    p.party[0].magPerLevel = 1;
+    p.party[0].baseMdef = 5;
+    p.party[0].mdefPerLevel = 1;
+  };
+  for (const mapper of CAPABLE_MAPPERS) {
+    const build = (stats) =>
+      equipProject({ mapper: mapper.id, items: [piece(1, 'Sword', WEAPON, { atk: 5, ...stats })], mutate: withSources }).then((p) => buildEquip(t, p));
+    const core = await build({});
+    const mag = await build({ mag: 4 });
+    const mdef = await build({ mdef: 4 });
+    const both = await build({ mag: 4, mdef: 4 });
+    assert.equal(bankedCode(mag) - bankedCode(core), EQUIP_MAG_BATTLE_ALLOWANCE, `${mapper.name}: a MAG piece's code`);
+    assert.equal(bankedCode(mdef) - bankedCode(core), EQUIP_MDEF_BATTLE_ALLOWANCE, `${mapper.name}: an MDEF piece's code`);
+    assert.equal(
+      bankedCode(both) - bankedCode(core),
+      EQUIP_MAG_BATTLE_ALLOWANCE + EQUIP_MDEF_BATTLE_ALLOWANCE,
+      `${mapper.name}: the two terms are independent and additive`
+    );
+  }
+});
+
+// Section 10 row 3 (the emitted half): {neither, MAG only, MDEF only, both} equipment sources x {no other source, both other
+// sources}. There is no projectWithout* helper for magic power / defence, so each variant is BUILT with exactly the sources it
+// names and nothing else, and the flags, the columns, the allowances and the per-stat add are asserted together: a column
+// without its flag, a flag without the add, or an allowance that does not appear and disappear with them fails.
+test('magic isolation: the equipment MAG / MDEF source turns the flag, the eq_mag / eq_mdef column, the allowance and the per-stat add on and off together', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  const mapper = resolveMapper(1);
+  for (const otherSources of [false, true]) {
+    for (const eqMag of [false, true]) {
+      for (const eqMdef of [false, true]) {
+        const label = `equipment MAG ${eqMag}, MDEF ${eqMdef}, other sources ${otherSources}`;
+        const stats = { atk: 3, ...(eqMag ? { mag: 4 } : {}), ...(eqMdef ? { mdef: 4 } : {}) };
+        const project = await equipProject({
+          items: [piece(1, 'Sword', WEAPON, stats)],
+          mutate: (p) => {
+            // The existing sources are set to exactly the variant's value in both directions.
+            for (const m of p.party) {
+              m.baseMag = otherSources ? 5 : 0;
+              m.magPerLevel = 0;
+              m.baseMdef = otherSources ? 5 : 0;
+              m.mdefPerLevel = 0;
+            }
+            for (const a of p.sprites.actors) {
+              if (a.battle) a.battle = { ...a.battle, mag: 0, mdef: 0 };
+            }
+          }
+        });
+        assert.equal(projectUsesEquipmentMag(project), eqMag, label);
+        assert.equal(projectUsesEquipmentMdef(project), eqMdef, label);
+        const built = await buildEquip(t, project);
+        const config = fs.readFileSync(path.join(built.dir, 'build', 'assets', 'config.inc'), 'utf8');
+        const battleInc = fs.readFileSync(path.join(built.dir, 'build', 'assets', 'battle.inc'), 'utf8');
+        const flag = (name) => Number(config.match(new RegExp(`^${name}\\s*=\\s*(\\d+)`, 'm'))[1]);
+        // flags
+        assert.equal(flag('EQUIP_ENABLED'), 1, label);
+        assert.equal(flag('EQUIP_MAG_ENABLED'), eqMag ? 1 : 0, label);
+        assert.equal(flag('EQUIP_MDEF_ENABLED'), eqMdef ? 1 : 0, label);
+        assert.equal(flag('MAGIC_POWER_ENABLED'), eqMag || otherSources ? 1 : 0, label);
+        assert.equal(flag('MAGIC_DEFENCE_ENABLED'), eqMdef || otherSources ? 1 : 0, label);
+        // columns: always eq_slot/eq_who/eq_atk/eq_def, eq_mag / eq_mdef only with their stat
+        for (const column of ['eq_slot', 'eq_who', 'eq_atk', 'eq_def']) assert.match(battleInc, new RegExp(`^${column}:`, 'm'), `${label}: ${column}`);
+        assert.equal(/^eq_mag:/m.test(battleInc), eqMag, `${label}: the eq_mag column`);
+        assert.equal(/^eq_mdef:/m.test(battleInc), eqMdef, `${label}: the eq_mdef column`);
+        // the per-stat add assembled (its label exists) exactly when its flag is on
+        assert.equal('combatant_mag_eq' in built.symbols, eqMag, `${label}: combatant_mag's add`);
+        assert.equal('combatant_mdef_eq' in built.symbols, eqMdef, `${label}: combatant_mdef's add`);
+        assert.equal('combatant_atk_eq' in built.symbols && 'combatant_def_eq' in built.symbols, true, `${label}: the ATK / DEF adds`);
+        assert.equal('combatant_mag' in built.symbols, eqMag || otherSources, `${label}: combatant_mag itself`);
+        assert.equal('combatant_mdef' in built.symbols, eqMdef || otherSources, `${label}: combatant_mdef itself`);
+        // allowances: the predicted region equals nesasm's, term by term
+        const predicted = battleRegionBytes(project, mapper);
+        assert.equal(
+          bankedUsed(built),
+          predicted,
+          `${label}: nesasm used ${bankedUsed(built)} but the byte math predicts ${predicted} (EQUIP ${EQUIP_BATTLE_ALLOWANCE}, MAG ${eqMag ? EQUIP_MAG_BATTLE_ALLOWANCE : 0}, MDEF ${eqMdef ? EQUIP_MDEF_BATTLE_ALLOWANCE : 0}, power ${eqMag || otherSources ? MAGIC_POWER_BATTLE_ALLOWANCE : 0}, defence ${eqMdef || otherSources ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0})`
+        );
+      }
+    }
+  }
+});
+
+test('equipment: the whole banked region equals the byte math on every RPG-capable board, with columns NUM_ITEMS long and zero-filled', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    // A project whose last piece is NOT the last item: ids above the highest piece must still index inside every column.
+    const items = [piece(1, 'Sword', WEAPON, { atk: 5, mag: 1 }), piece(2, 'Mail', ARMOR, { def: 4, mdef: 1 }), plain(3, 'Tonic'), plain(4, 'Elixir')];
+    const project = await equipProject({ mapper: mapper.id, items });
+    const built = await buildEquip(t, project);
+    assert.equal(bankedUsed(built), battleRegionBytes(project, mapper), `${mapper.name}: nesasm vs byte math`);
+    const numItems = project.items.length;
+    const battleInc = fs.readFileSync(path.join(built.dir, 'build', 'assets', 'battle.inc'), 'utf8');
+    // Every eq_* column is exactly NUM_ITEMS long: count the .db operands between its label and the next label.
+    const column = (name) => {
+      const m = battleInc.match(new RegExp(`^${name}:\\n((?:\\s+\\.db[^\\n]*\\n)+)`, 'm'));
+      assert.ok(m, `${name} not emitted`);
+      return m[1].split('\n').flatMap((line) => (line.match(/\.db\s+(.*)/)?.[1] ?? '').split(',').map((v) => v.trim()).filter(Boolean));
+    };
+    for (const name of ['eq_slot', 'eq_who', 'eq_atk', 'eq_def', 'eq_mag', 'eq_mdef']) {
+      assert.equal(column(name).length, numItems, `${mapper.name}: ${name} must be NUM_ITEMS (${numItems}) long, not cut at the highest piece`);
+    }
+    // eq_slot is $FF for a non-piece and the slot index for a piece; the others are zero-filled.
+    assert.deepEqual(column('eq_slot'), project.items.map((item) => (item.equip ? `$${item.equip.slot.toString(16).toUpperCase().padStart(2, '0')}` : '$FF')));
+    assert.deepEqual(column('eq_atk').map((v) => parseInt(v.replace('$', ''), 16)), project.items.map((item) => item.equip?.atk ?? 0));
+  }
+});
+
+// --- Equipment conjunction cells (review R3 of the C3 round) ------------------------------------------------------------------
+//
+// The allowances above are charged on the feature predicates alone, so every supported game shape an equipment RPG can have pays
+// them. test/lib/equipcells.js holds the shapes; for each (board x cell) five real builds are made with the party's own MAG / MDEF
+// sources already live -- no piece, a core piece, +MAG, +MDEF, +both -- and two with no source at all (a core piece, a MAG-only
+// piece). Asserted in the SAME cell: the isolated code deltas (core 184, +25, +25, +50, table bytes subtracted) AND the absolute
+// model: nesasm's whole-region usage equals battleRegionBytes for all seven builds. The wrong implementation this catches: a term
+// that is flat in the cases measured but moves in a conjunction (a streamed-only or Save-only branch inside the equipment block), or
+// a byte model that agrees on the default shape only.
+import { BANKED_CELLS, CELL_BOARDS, shapeOf } from '../lib/equipcells.js';
+
+for (const cell of BANKED_CELLS) {
+  test(`equipment banked allowances in the cell "${cell.label}", on every RPG-capable board: isolated deltas and the whole-region model`, { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+    for (const mapperId of cell.boards ?? CELL_BOARDS) {
+      const mapper = resolveMapper(mapperId);
+      const label = `${mapper.name} / ${cell.label}`;
+      const build = async (stats, sources) => {
+        const items = stats ? [piece(1, 'Sword', WEAPON, stats)] : [];
+        const project = await cell.make({ mapper: mapperId, items, sources, save: cell.save });
+        if (cell.titleless) assert.equal(project.project.titleMap, null, `${label}: the cell is title-less`);
+        assert.deepEqual(shapeOf(project), cell.shape, `${label}: the project has exactly the shape the cell names`);
+        return buildEquip(t, project);
+      };
+      const none = await build(null, true);
+      const core = await build({ atk: 5 }, true);
+      const mag = await build({ atk: 5, mag: 4 }, true);
+      const mdef = await build({ atk: 5, mdef: 4 }, true);
+      const both = await build({ atk: 5, mag: 4, mdef: 4 }, true);
+      assert.equal(projectUsesEquipment(none.project), false, label);
+      assert.equal(projectUsesEquipment(core.project), true, label);
+      assert.equal(bankedCode(core) - bankedCode(none), EQUIP_BATTLE_ALLOWANCE, `${label}: the equipment core's banked code`);
+      assert.equal(bankedCode(mag) - bankedCode(core), EQUIP_MAG_BATTLE_ALLOWANCE, `${label}: the gated MAG term`);
+      assert.equal(bankedCode(mdef) - bankedCode(core), EQUIP_MDEF_BATTLE_ALLOWANCE, `${label}: the gated MDEF term`);
+      assert.equal(bankedCode(both) - bankedCode(core), EQUIP_MAG_BATTLE_ALLOWANCE + EQUIP_MDEF_BATTLE_ALLOWANCE, `${label}: the two terms add`);
+      // The absolute model, in this cell: all seven builds.
+      const noSourceCore = await build({ atk: 5 }, false);
+      const noSourceMag = await build({ atk: 5, mag: 4 }, false);
+      for (const [name, built] of Object.entries({ none, core, mag, mdef, both, noSourceCore, noSourceMag })) {
+        assert.equal(bankedUsed(built), battleRegionBytes(built.project, mapper), `${label} [${name}]: nesasm's whole region vs battleRegionBytes`);
+      }
+    }
+  });
+}

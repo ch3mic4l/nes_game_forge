@@ -102,6 +102,7 @@ async function buildForRamCheck(t) {
   const pending = new Map();
   scanEquates(constantsText, pending);
   scanEquates(configText, pending);
+  scanEquates(fs.readFileSync(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8'), pending);
   const symbols = new Map();
   resolveEquates(pending, symbols);
   const sizeAnnotations = new Map();

@@ -111,6 +111,7 @@ export async function buildCell({ tree, project, cell, gameType, label, provDir,
     const pending = new Map();
     scanEquates(constants, pending);
     scanEquates(config, pending);
+    scanEquates(fs.readFileSync(path.join(dir, 'build/assets/cartridge.inc'), 'utf8'), pending);
     const symbols = new Map();
     resolveEquates(pending, symbols);
     const fnsPath = built.symbolPath;

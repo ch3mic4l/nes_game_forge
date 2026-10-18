@@ -22,7 +22,7 @@ import { matrixScripts, NOFLAG_BASELINES, NOFLAG_HISTORY, S1B_R3_REAL, REQUIRED_
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { RING_ADDR, checkAddresses } from './ringaddr.mjs';
-import { scanEquates, resolveEquates } from '../../lib/equates.js';
+import { scanEquates, resolveEquates, STOCK_CARTRIDGE_EQUATES } from '../../lib/equates.js';
 import { MESEN, MESEN_ERROR, resolveMesen } from './ringrun_mesen.mjs';
 import { auditStamp, auditProvenance, auditTreeProvenance, isHistoricalStamp, HISTORICAL_KINDS } from './ringprovindex.mjs';
 import { jobs, runMatrix, judgeJob, matrixReport } from './run_matrix.mjs';
@@ -277,6 +277,7 @@ test('SABOTAGE of the required-input rule: a required input that is missing REFU
 test('RING_ADDR agrees with engine/constants.asm through scanEquates/resolveEquates, cur_map (= bt_owner_rec+1) and flat_screen included', () => {
   const pending = new Map();
   scanEquates(fs.readFileSync(path.join(REPO, 'engine/constants.asm'), 'utf8'), pending);
+  scanEquates(STOCK_CARTRIDGE_EQUATES, pending);
   const symbols = new Map();
   resolveEquates(pending, symbols);
   assert.deepEqual(checkAddresses(symbols), []);

@@ -905,6 +905,21 @@ STATUS_BURN   = 2           ; bit 1
 pc_status   = $03F0  ; @size=MAX_PARTY
 mon_slot_status = $03F4  ; @size=MAX_MONSTERS
 
+; Equipment (docs/design-equipment.md sections 2-3): what each party member wears, and the cached bonuses
+; that wearing adds to the level-derived stats. Claimed from the TOP of the free run $078E-$07EF (the
+; streamed-world block keeps growing up from below). The names exist in every build and cost nothing
+; unreferenced; the engine reads them only under EQUIP_ENABLED.
+;   pc_equip   slot-major: index = slot * MAX_PARTY + member, NO_ITEM = empty. Saved (twelve bytes, only
+;              for a project that uses equipment). Written by equip_init (party_init), equip_set and
+;              equip_recalc's sanitizer; EQUIP_BYTES is EQUIP_SLOTS.length * MAX_PARTY (config.inc).
+;   pc_eq_*    the sum of the three worn pieces' bonus per stat, saturating at 255; NOT saved, recomputed
+;              by equip_recalc at its three triggers (equip_set, equip_init, party_restore).
+pc_equip    = $07D4  ; @size=EQUIP_BYTES
+pc_eq_atk   = $07E0  ; @size=MAX_PARTY
+pc_eq_def   = $07E4  ; @size=MAX_PARTY
+pc_eq_mag   = $07E8  ; @size=MAX_PARTY
+pc_eq_mdef  = $07EC  ; @size=MAX_PARTY
+
 MSG_ROW     = 21            ; the message area and the lists share these rows
 LIST_ROWS   = 4
 
@@ -1339,18 +1354,26 @@ owed_enter_rec = $07F5
 ; on the kernel-lo hot path, so the extra byte per absolute-mode instruction costs nothing that
 ; matters. RAM byte count is free either way (only kernel PRG code size is budgeted); generous on
 ; purpose rather than fighting sw_tmp..sw_tmp6 for a second, unrelated live range.
-sw_fc_wy_lo   = $0780   ; worldY lo (sw_row*240+player_y), 16-bit
-sw_fc_wy_hi   = $0781
-sw_fc_px_lo   = $0782   ; camPx lo = clamp(worldX-120, 0, mapPxX-256), 16-bit
-sw_fc_px_hi   = $0783
-sw_fc_py_lo   = $0784   ; camPy = clamp(worldY-112, 0, mapPxY-240), 16-bit; kept intact (nothing reads it after the call)
-sw_fc_py_hi   = $0785
-sw_fc_scr     = $0786   ; camPy/240 (camScreenRow) == camera's own current screen row
-sw_fc_lpy     = $0787   ; camPy mod 240 (camLocalPxY) == cam_y_lo's own source value
-sw_fc_desc    = $0788   ; this frame's desired window screenCol
-sw_fc_desl    = $0789   ; this frame's desired window localCol
-sw_fc_desr    = $078A   ; this frame's desired window screenRow
-sw_fc_desrl   = $078B   ; this frame's desired window localRow
+; The block's base is SW_BLK_BASE plus EQUIP_SAVE_SHIFT (assets/cartridge.inc, NOT config.inc: this file is
+; included before config.inc, so an equate defined there is undefined here and nesasm reports an
+; internal error that still exits 0). The shift is 12 only on a flash-save board that also saves
+; equipment's twelve-byte pc_equip field, which grows save_flash_buf past $078A; it is 0 everywhere else,
+; so every other ROM keeps today's addresses. Growing the flash record moves this block with it
+; (docs/design-equipment.md section 5). SW_BLK_BASE is upper case on purpose: test/unit/rammap.test.js
+; treats a lower-case equate as a RAM name.
+SW_BLK_BASE   = $0780
+sw_fc_wy_lo   = SW_BLK_BASE+EQUIP_SAVE_SHIFT   ; worldY lo (sw_row*240+player_y), 16-bit
+sw_fc_wy_hi   = sw_fc_wy_lo+1
+sw_fc_px_lo   = sw_fc_wy_hi+1   ; camPx lo = clamp(worldX-120, 0, mapPxX-256), 16-bit
+sw_fc_px_hi   = sw_fc_px_lo+1
+sw_fc_py_lo   = sw_fc_px_hi+1   ; camPy = clamp(worldY-112, 0, mapPxY-240), 16-bit; kept intact (nothing reads it after the call)
+sw_fc_py_hi   = sw_fc_py_lo+1
+sw_fc_scr     = sw_fc_py_hi+1   ; camPy/240 (camScreenRow) == camera's own current screen row
+sw_fc_lpy     = sw_fc_scr+1     ; camPy mod 240 (camLocalPxY) == cam_y_lo's own source value
+sw_fc_desc    = sw_fc_lpy+1     ; this frame's desired window screenCol
+sw_fc_desl    = sw_fc_desc+1    ; this frame's desired window localCol
+sw_fc_desr    = sw_fc_desl+1    ; this frame's desired window screenRow
+sw_fc_desrl   = sw_fc_desr+1    ; this frame's desired window localRow
 
 ; Phase 2 slice 5's own claim: two bytes right after sw_fc_desrl, the confirmed-free run before
 ; the four named-but-unallocated slice 7b/8/9 bytes ($07F0 on, above) -- the streamed knockback's
@@ -1358,8 +1381,8 @@ sw_fc_desrl   = $078B   ; this frame's desired window localRow
 ; (engine/combat.asm's ordinary 8-frame/3px knockback). Not zero page: zero page is fully
 ; committed (mv_ent's own comment, above) -- absolute addressing, no `<` prefix, zeropage.test.js
 ; enforces it above $100.
-sw_kb_timer   = $078C   ; frames left in a streamed knockback (0 = none in flight)
-sw_kb_acc     = $078D   ; sw_walk_step_x/y's own WHOLE_STEP+overflow accumulator shape, this axis's own copy
+sw_kb_timer   = sw_fc_desrl+1   ; frames left in a streamed knockback (0 = none in flight)
+sw_kb_acc     = sw_kb_timer+1   ; sw_walk_step_x/y's own WHOLE_STEP+overflow accumulator shape, this axis's own copy
 
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0

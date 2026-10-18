@@ -42,6 +42,11 @@
 // party/spells and the Lua's copy of these numbers is visible here rather than
 // only as an opaque Mesen failure.
 //
+// --break=equip-omit (review R5) is the omitted-serialization control for the two equipment boards: the save record keeps its length,
+// identity and a valid checksum but pc_equip is stored as zeros (a Code Forge override of engine/save.asm in the mkdtemp variant --
+// no engine file is patched, no fixture touched), so Continue accepts the record and restores. The judge must then name the exact
+// worn id (exit 10, "pc_equip[N] restored as 255, expected ...").
+//
 // Optionally pass --break=mmc3-a001, --break=mmc1-disable,
 // --break=mmc1-restore-disable or --break=mmc3-no-write to build with one of
 // the register sequences this whole effort exists to verify deliberately
@@ -68,7 +73,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadProject } from '../../main/project-io.js';
+import os from 'node:os';
+import { omitEquipPayloadCode } from '../lib/equipharness.js';
+import { loadProject, saveProject } from '../../main/project-io.js';
+import { reconcileCartridge } from '../../shared/project.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { statAt } from '../../main/build/battletables.js';
 
@@ -100,11 +108,50 @@ const outDir = args.find((a) => !a.startsWith('--')) ?? '/tmp/nesforge-sram-roms
 const BOARDS = [
   { key: 'mmc1', dir: path.join(ROOT, 'sample-mmc1') },
   { key: 'mmc3', dir: path.join(ROOT, 'sample-mmc3') },
-  { key: 'rpg-mmc1', dir: path.join(ROOT, 'sample-rpg-mmc1') }
+  { key: 'rpg-mmc1', dir: path.join(ROOT, 'sample-rpg-mmc1') },
+  // Equipment (ROADMAP item 5, C3): sample-rpg-mmc1 copied to a mkdtemp directory with five pieces appended, on MMC1 and on MMC3.
+  // The checked-in fixture is never written to; save_sram.lua detects the variant by its pc_equip bytes and pokes the worn set itself.
+  { key: 'rpg-mmc1-equip', dir: path.join(ROOT, 'sample-rpg-mmc1'), equip: { mapper: 1 } },
+  { key: 'rpg-mmc3-equip', dir: path.join(ROOT, 'sample-rpg-mmc1'), equip: { mapper: 4 } }
 ];
 
+/**
+ * The equipment pieces save_sram.lua's EQUIP_* constants restate. Item ids follow the fixture's one item (the Gem, id 0):
+ * Sword 1 (weapon, ATK 7), Mail 2 (armor, DEF 5), Charm 3 (accessory, MAG 3 / MDEF 2), Ring 4 (accessory, ATK 4 / DEF 1).
+ */
+const EQUIP_PIECES = [
+  { name: 'Sword', slot: 0, atk: 7 },
+  { name: 'Mail', slot: 1, def: 5 },
+  { name: 'Charm', slot: 2, mag: 3, mdef: 2 },
+  { name: 'Ring', slot: 2, atk: 4, def: 1 }
+];
+
+/** A mkdtemp copy of the fixture with the pieces added; returns its directory (the caller removes it). */
+async function equipVariantDir(sourceDir, { mapper }, { omitPayload = false } = {}) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sram-equip-'));
+  await fs.promises.cp(sourceDir, dir, { recursive: true });
+  const project = await loadProject(dir);
+  if (project.items.length !== 1) throw new Error('sample-rpg-mmc1 no longer has exactly one item; update EQUIP_PIECES ids and save_sram.lua');
+  for (const piece of EQUIP_PIECES) {
+    project.items.push({
+      id: project.items.length,
+      name: piece.name,
+      actorId: null,
+      metaspriteId: null,
+      effect: { kind: 'none', amount: 0 },
+      equip: { slot: piece.slot, atk: piece.atk ?? 0, def: piece.def ?? 0, mag: piece.mag ?? 0, mdef: piece.mdef ?? 0, usableBy: 0b1111 }
+    });
+  }
+  project.cartridge.mapper = mapper;
+  reconcileCartridge(project);
+  if (omitPayload) project.code = await omitEquipPayloadCode(project.code ?? undefined);
+  await saveProject(dir, project);
+  return dir;
+}
+
 /** Build one fixture in place and copy its ROM out under a board-specific name. */
-async function buildBoard({ key, dir }, { copyOut }) {
+async function buildBoard({ key, dir: fixtureDir, equip }, { copyOut }) {
+  const dir = equip ? await equipVariantDir(fixtureDir, equip, { omitPayload: breakMode === 'equip-omit' }) : fixtureDir;
   const project = await loadProject(dir);
   const built = await buildProject({ dir, project, log: () => {} });
   const rom = await fs.promises.readFile(built.romPath);
@@ -114,6 +161,7 @@ async function buildBoard({ key, dir }, { copyOut }) {
     await fs.promises.writeFile(namedPath, rom);
   }
   let rpgLevel1 = null;
+  if (equip) await fs.promises.rm(dir, { recursive: true, force: true });
   if (key === 'rpg-mmc1') {
     rpgLevel1 = project.party.map((member) => ({
       name: member.name,
@@ -227,15 +275,18 @@ function applyBreak(source, mode) {
   throw new Error(`unknown --break mode: ${mode}`);
 }
 
+// --break=equip-omit patches no engine file: it builds the two equipment boards with a Code Forge override of save.asm instead.
+const patchesEngine = breakMode && breakMode !== 'equip-omit';
+
 try {
-  if (breakMode) {
+  if (patchesEngine) {
     const broken = applyBreak(originalBanks, breakMode);
     await fs.promises.writeFile(bankPath, broken);
     console.log(`[build_sram_roms] engine/banks.asm patched: --break=${breakMode}`);
   }
   await buildAll({ copyOut: true, label: breakMode ? ` BROKEN(${breakMode})` : '' });
 } finally {
-  if (breakMode) {
+  if (patchesEngine) {
     await fs.promises.writeFile(bankPath, originalBanks);
     const restored = await fs.promises.readFile(bankPath, 'utf8');
     if (restored !== originalBanks) throw new Error('engine/banks.asm failed to restore cleanly');

@@ -478,6 +478,7 @@ async function main() {
     const pending = new Map();
     scanEquates(constantsText, pending);
     scanEquates(configText, pending);
+    scanEquates(await fs.promises.readFile(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8'), pending);
     const ramSymbols = new Map();
     resolveEquates(pending, ramSymbols);
     // 'vram_len' (engine/constants.asm:97) -- the queue depth at nmi entry, read alongside the new

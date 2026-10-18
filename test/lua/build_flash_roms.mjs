@@ -23,6 +23,9 @@
 // machine, the SRAM fixtures' own leftover .sav files, which are a different
 // artifact but the same directory.
 //
+// --break=u512-equip-no-shift and --break=u512-equip-omit build the two equipment boards only (the no-shift control and the omitted-
+// serialization control, run_flash_check.sh's header says what each must show).
+//
 // --break=<mode> builds one of four variants, three real breaks and one
 // positive control -- "break" stays the flag name because all four reuse the
 // same machinery below (MODES, applyBreak, stripSaverGuard), not because all
@@ -70,6 +73,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
+import { equipProject, equipStreamedProject, omitEquipPayloadCode, piece, WEAPON, ARMOR, ACCESSORY } from '../lib/equipharness.js';
+import { scanEquates, resolveEquates } from '../lib/equates.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -78,7 +83,14 @@ const breakArg = args.find((a) => a.startsWith('--break='));
 const breakMode = breakArg ? breakArg.slice('--break='.length) : null;
 const outDir = args.find((a) => !a.startsWith('--')) ?? '/tmp/nesforge-flash-roms';
 
-const BOARDS = [{ key: 'u512', dir: path.join(ROOT, 'sample-u512') }];
+const BOARDS = [
+  { key: 'u512', dir: path.join(ROOT, 'sample-u512') },
+  // Equipment (ROADMAP item 5, C3): an RPG on UNROM 512 with Save and five pieces, built in a mkdtemp directory (no fixture is
+  // touched) and driven by save_flash_equip.lua. Only in an ordinary build: the --break modes target the action fixture.
+  { key: 'u512-equip', equip: true },
+  // Review R4: the same, on a streamed-world RPG (UNROM 512 four-screen torus), so the save happens while the streamed engine is live.
+  { key: 'u512-equip-streamed', equip: true, streamed: true }
+];
 
 // The single table describing every --break=<mode> value: whether it needs
 // the saver's guard relaxed (and so a mkdtemp build), and whether it patches
@@ -87,7 +99,14 @@ const MODES = {
   'u512-no-unlock': { stripsGuard: false, patchesEngine: true },
   'u512-bad-cmd-addr': { stripsGuard: false, patchesEngine: true },
   'u512-no-erase': { stripsGuard: true, patchesEngine: true },
-  'u512-second-commit-ok': { stripsGuard: true, patchesEngine: false }
+  'u512-second-commit-ok': { stripsGuard: true, patchesEngine: false },
+  // Equipment control (C3): the equipment board with EQUIP_SAVE_SHIFT forced to 0 by a constants.asm override. Builds the equipment
+  // board only; save_flash_equip.lua must then fail EXIT_SCRATCH_CLOBBERED (12) -- the staged record reaches the scratch block.
+  'u512-equip-no-shift': { stripsGuard: false, patchesEngine: false, equipOnly: true },
+  // Omitted-serialization control (review R5): both equipment boards with a save record that keeps its length, identity and a valid
+  // checksum but never serialized pc_equip (a Code Forge override of engine/save.asm). The judge must name the wrong worn id: run 1
+  // exit 7 (the chip's pc_equip[0] is 0, expected 1) and run 2 -- which still reaches restore -- exit 10 (restored as 255, expected 1).
+  'u512-equip-omit': { stripsGuard: false, patchesEngine: false, equipOnly: true }
 };
 
 function modeInfo(mode) {
@@ -117,7 +136,8 @@ function stripSaverGuard(project, mode) {
  * needed (MODES[mode].stripsGuard), in which case it builds in a throwaway
  * `mkdtemp` directory instead; see this file's own header for why.
  */
-async function buildBoard({ key, dir }, { copyOut, breakMode: mode }) {
+async function buildBoard({ key, dir, equip, streamed }, { copyOut, breakMode: mode }) {
+  if (equip) return buildEquipBoard(key, { copyOut, streamed, noShift: mode === 'u512-equip-no-shift', omitPayload: mode === 'u512-equip-omit' });
   const project = await loadProject(dir);
   let buildDir = dir;
   let tempDir = null;
@@ -145,9 +165,82 @@ async function buildBoard({ key, dir }, { copyOut, breakMode: mode }) {
   }
 }
 
+/** sample-rpg on UNROM 512 + Save + Sword 1, Mail 2, Charm 3, Ring 4 (the ids save_flash_equip.lua restates), in a mkdtemp directory. */
+async function buildEquipBoard(key, { copyOut, noShift = false, omitPayload = false, streamed = false }) {
+  const pieces = [
+    piece(1, 'Sword', WEAPON, { atk: 7 }),
+    piece(2, 'Mail', ARMOR, { def: 5 }),
+    piece(3, 'Charm', ACCESSORY, { mag: 3, mdef: 2 }),
+    piece(4, 'Ring', ACCESSORY, { atk: 4, def: 1 })
+  ];
+  // A streamed project ships no items, so a plain item 0 keeps the pieces at ids 1..4 as on the ordinary board (the Lua restates them).
+  const tonic = { id: 0, name: 'Tonic', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 20 } };
+  const project = streamed
+    ? equipStreamedProject({ mapper: 30, save: true, items: [tonic, ...pieces] })
+    : await equipProject({ mapper: 30, save: true, items: pieces });
+  if (noShift) {
+    const constants = await fs.promises.readFile(path.join(ROOT, 'engine/constants.asm'), 'utf8');
+    const unshifted = constants.replace(/^sw_fc_wy_lo(\s*)= SW_BLK_BASE\+EQUIP_SAVE_SHIFT/m, 'sw_fc_wy_lo$1= SW_BLK_BASE');
+    if (unshifted === constants) throw new Error('u512-equip-no-shift: the sw_fc_wy_lo line was not found in engine/constants.asm');
+    project.code = { overrides: [{ name: 'constants.asm', text: unshifted }], files: [] };
+  }
+  if (omitPayload) project.code = await omitEquipPayloadCode(project.code ?? undefined);
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-flash-equip-'));
+  try {
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    const rom = await fs.promises.readFile(built.romPath);
+    // The Lua is generated from its template with THIS build's own scratch-block addresses, read out of its RAM map.
+    const pending = new Map();
+    for (const file of ['constants.asm', 'assets/config.inc', 'assets/cartridge.inc']) {
+      scanEquates(await fs.promises.readFile(path.join(dir, 'build', file), 'utf8'), pending);
+    }
+    const symbols = new Map();
+    resolveEquates(pending, symbols);
+    const block = [...symbols].filter(([name]) => /^sw_(fc|kb)_/.test(name)).map(([, address]) => address).filter((a) => a >= 0x0780 && a < 0x07a0);
+    const template = await fs.promises.readFile(path.join(ROOT, 'test/lua/save_flash_equip.lua.template'), 'utf8');
+    const streamedMap = project.maps.find((m) => m.streamed);
+    const address = (name) => {
+      if (!Number.isFinite(symbols.get(name))) throw new Error(`${name} is not an equate of this build`);
+      return symbols.get(name);
+    };
+    const substitutions = {
+      __SCRATCH_FIRST__: Math.min(...block),
+      __SCRATCH_LAST__: Math.max(...block),
+      __STREAMED__: streamed ? 'true' : 'false',
+      __MAP_PX_X__: streamed ? streamedMap.gridW * 256 : 256,
+      __MAP_PX_Y__: streamed ? streamedMap.gridH * 240 : 240,
+      __SW_COL__: address('sw_col'),
+      __SW_ROW__: address('sw_row'),
+      __SW_FC_PX__: address('sw_fc_px_lo'),
+      __SW_FC_PY__: address('sw_fc_py_lo'),
+      __SW_FC_SCR__: address('sw_fc_scr'),
+      __SW_FC_LPY__: address('sw_fc_lpy')
+    };
+    let generated = template;
+    for (const [token, value] of Object.entries(substitutions)) {
+      if (generated.split(token).length - 1 < 1) throw new Error(`the template holds no ${token}`);
+      generated = generated.split(token).join(String(value));
+    }
+    await fs.promises.writeFile(path.join(outDir, `save_flash_${key}.lua`), generated);
+    console.log(`  scratch block at $${Math.min(...block).toString(16)}..$${Math.max(...block).toString(16)}${streamed ? ' (streamed board: observed live, not seeded)' : ' (seeded)'}${noShift ? ' (EQUIP_SAVE_SHIFT forced to 0)' : ''}`);
+    let namedPath = null;
+    if (copyOut) {
+      namedPath = path.join(outDir, `flash_${key}.nes`);
+      await fs.promises.writeFile(namedPath, rom);
+    }
+    return { key, namedPath, builtIn: 'a mkdtemp directory', headerByte6: rom[6], persists: (rom[6] & 0x02) !== 0 };
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function buildAll({ copyOut, label, breakMode: mode }) {
   await fs.promises.mkdir(outDir, { recursive: true });
   for (const board of BOARDS) {
+    // The driver-patching modes target the action fixture only; the equipment control targets the equipment board only.
+    if (board.equip && mode && !MODES[mode].equipOnly) continue;
+    if (!board.equip && mode && MODES[mode].equipOnly) continue;
     const result = await buildBoard(board, { copyOut, breakMode: mode });
     console.log(
       `${result.key}: built in ${result.builtIn} -> ${result.namedPath ?? '(not copied out)'} ` +

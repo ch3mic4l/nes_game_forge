@@ -440,6 +440,21 @@ save_check_party_next:
   bne save_check_party_loop
 save_check_party_done:
   .endif
+  .if EQUIP_ENABLED
+  ; Each worn id must be NO_ITEM or name an item this build has: equip_recalc's sanitizer indexes the
+  ; eq_* columns (NUM_ITEMS long) with it. A bound only -- a piece of the wrong slot, or an ordinary
+  ; item, is not refused here but emptied by equip_recalc (docs/design-equipment.md section 5).
+  ldy #EQUIP_BYTES-1
+save_check_equip_loop:
+  lda SAVE_PC_EQUIP,y
+  cmp #NO_ITEM
+  beq save_check_equip_next
+  cmp #NUM_ITEMS
+  bcs save_check_invalid
+save_check_equip_next:
+  dey
+  bpl save_check_equip_loop
+  .endif
   lda #0                     ; Z set: every gate passed
   rts
 save_check_invalid:

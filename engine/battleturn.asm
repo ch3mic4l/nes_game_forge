@@ -775,6 +775,14 @@ combatant_atk:
   txa
   jsr level_row
   lda pc_atk_at,y
+  .if EQUIP_ENABLED
+  ; Equipment's bonus (docs/design-equipment.md section 3): X is still the member (level_row preserves it).
+  clc
+  adc pc_eq_atk,x
+  bcc combatant_atk_eq
+  lda #$FF                  ; saturate, never wrap: a 250 + 20 stat is 255, not 14
+combatant_atk_eq:
+  .endif
   jmp combatant_atk_ret
 combatant_atk_mon:
   sec
@@ -798,6 +806,14 @@ combatant_def:
   txa
   jsr level_row
   lda pc_def_at,y
+  .if EQUIP_ENABLED
+  ; Equipment's bonus (docs/design-equipment.md section 3): X is still the member (level_row preserves it).
+  clc
+  adc pc_eq_def,x
+  bcc combatant_def_eq
+  lda #$FF                  ; saturate, never wrap: a 250 + 20 stat is 255, not 14
+combatant_def_eq:
+  .endif
   jmp combatant_def_ret
 combatant_def_mon:
   sec
@@ -827,6 +843,14 @@ combatant_mag:
   txa
   jsr level_row
   lda pc_mag_at,y
+  .if EQUIP_MAG_ENABLED
+  ; Equipment's bonus (docs/design-equipment.md section 3): X is still the member (level_row preserves it).
+  clc
+  adc pc_eq_mag,x
+  bcc combatant_mag_eq
+  lda #$FF                  ; saturate, never wrap: a 250 + 20 stat is 255, not 14
+combatant_mag_eq:
+  .endif
   jmp combatant_mag_ret
 combatant_mag_mon:
   sec
@@ -858,6 +882,14 @@ combatant_mdef:
   txa
   jsr level_row
   lda pc_mdef_at,y
+  .if EQUIP_MDEF_ENABLED
+  ; Equipment's bonus (docs/design-equipment.md section 3): X is still the member (level_row preserves it).
+  clc
+  adc pc_eq_mdef,x
+  bcc combatant_mdef_eq
+  lda #$FF                  ; saturate, never wrap: a 250 + 20 stat is 255, not 14
+combatant_mdef_eq:
+  .endif
   jmp combatant_mdef_ret
 combatant_mdef_mon:
   sec

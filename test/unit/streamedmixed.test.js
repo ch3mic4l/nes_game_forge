@@ -24,7 +24,7 @@ import { flattenScreens, ordinaryScreenView } from '../../main/build/generate.js
 import { createSong } from '../../shared/audio.js';
 import { createProject, createMap, createScreen, createTileset, validateProject } from '../../shared/project.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
-import { scanEquates, resolveEquates } from '../lib/equates.js';
+import { scanEquates, resolveEquates, STOCK_CARTRIDGE_EQUATES } from '../lib/equates.js';
 import { callRoutine } from '../lib/callroutine.js';
 import NES from '../../renderer/emulator/core/nes.js';
 
@@ -39,6 +39,7 @@ function ramAddrs() {
   const text = fs.readFileSync(new URL('../../engine/constants.asm', import.meta.url), 'utf8');
   const pending = new Map();
   scanEquates(text, pending);
+  scanEquates(STOCK_CARTRIDGE_EQUATES, pending);
   const symbols = new Map();
   resolveEquates(pending, symbols);
   return symbols;

@@ -83,6 +83,7 @@ export async function bootCameraRig() {
     const pending = new Map();
     scanEquates(fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8'), pending);
     scanEquates(fs.readFileSync(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8'), pending);
+    scanEquates(fs.readFileSync(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8'), pending);
     const resolved = new Map();
     resolveEquates(pending, resolved);
     const nes = new NES({ onFrame: () => {}, emulateSound: false });

@@ -42,6 +42,10 @@ import {
   projectUsesItems,
   projectUsesMagicPower,
   projectUsesMagicDefence,
+  projectUsesEquipment,
+  projectUsesEquipmentMag,
+  projectUsesEquipmentMdef,
+  EQUIP_SLOTS,
   projectUsesHeroNaming,
   projectUsesJoinNaming,
   projectUsesNameEntry,
@@ -311,6 +315,36 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
     chunks.push(
       `item_heal:\n${dbRows(items.map((item) => (item.effect?.kind === 'heal' ? item.effect.amount : 0)))}`
     );
+  }
+
+  // --- equipment (EQUIP_ENABLED only; docs/design-equipment.md section 3) -----
+  // Every column is one byte per ITEM ID -- NUM_ITEMS long, zero-filled (eq_slot $FF) for an id that is not a
+  // piece -- not cut at the highest piece: a checksum-valid stale save may wear any id below NUM_ITEMS
+  // (save_check_valid admits it), and equip_recalc's sanitizer indexes every column with it, so every admitted
+  // id must index inside every column and answer "not equipment". .db rows only, so emittedBytes counts them.
+  // eq_mag / eq_mdef only when some piece adds that stat (EQUIP_MAG_ENABLED / EQUIP_MDEF_ENABLED): the same
+  // stub-avoidance and flag-column agreement rule mon_mag / pc_mag_at follow above.
+  if (projectUsesEquipment(project)) {
+    const items = project.items ?? [];
+    const piece = (pick, none = 0) => items.map((item) => (item.equip ? pick(item.equip) : none));
+    chunks.push(`eq_slot:\n${dbRows(piece((equip) => equip.slot, 0xff))}`);
+    chunks.push(`eq_who:\n${dbRows(piece((equip) => equip.usableBy & 0xff))}`);
+    chunks.push(`eq_atk:\n${dbRows(piece((equip) => equip.atk))}`);
+    chunks.push(`eq_def:\n${dbRows(piece((equip) => equip.def))}`);
+    if (projectUsesEquipmentMag(project)) chunks.push(`eq_mag:\n${dbRows(piece((equip) => equip.mag))}`);
+    if (projectUsesEquipmentMdef(project)) chunks.push(`eq_mdef:\n${dbRows(piece((equip) => equip.mdef))}`);
+    // What each member wears at New Game, slot-major like pc_equip (index = slot * MAX_PARTY + member), for all
+    // MAX_PARTY members so a late Join needs no equipment code. Only an entry naming a piece of its own slot
+    // reaches the ROM; NO_ITEM otherwise (normalizeProject and validateProject already guarantee that, and
+    // equip_recalc would empty anything else on its first run).
+    const start = [];
+    for (let slot = 0; slot < EQUIP_SLOTS.length; slot++) {
+      for (let member = 0; member < RPG_LIMITS.party; member++) {
+        const id = party[member]?.startEquip?.[slot];
+        start.push(Number.isInteger(id) && items[id]?.equip?.slot === slot ? id : NO_ITEM);
+      }
+    }
+    chunks.push(`eq_start:\n${dbRows(start)}`);
   }
 
   // --- spells ---------------------------------------------------------------
@@ -746,6 +780,24 @@ export const MAGIC_POWER_BATTLE_ALLOWANCE = 62;
 // Re-measured for the zero-page kernel diet: 56 (down from 65).
 export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 56;
 
+// Equipment (docs/design-equipment.md sections 3 and 8), the banked half: equip_recalc (the sanitizer and
+// the saturating sums), equip_set, equip_init, the two glue jumps in party_init / party_restore and the
+// ATK / DEF bonus adds in combatant_atk / combatant_def -- everything the stock engine assembles when
+// EQUIP_ENABLED, with no MAG or MDEF term in it. Measured as an isolated delta (a one-piece sample-rpg
+// against the same project with no equipment, emitted eq_* table bytes subtracted) on MMC1, MMC3 and
+// UNROM 512: 184 on all three, with Save and naming each on and off (test/unit/bankedbytes.test.js).
+// Flat rather than per-mapper because nothing in it branches on a board. The opener's own screen and
+// the Equip action (docs/design-equipment.md section 11, C4) add their own terms later.
+export const EQUIP_BATTLE_ALLOWANCE = 184;
+// The MAG (resp. MDEF) subset: the extra sum in equip_recalc and the add in combatant_mag (combatant_mdef),
+// assembled only when some piece adds that stat (EQUIP_MAG_ENABLED / EQUIP_MDEF_ENABLED). Gated on its own
+// predicate, independently of MAGIC_POWER_BATTLE_ALLOWANCE / MAGIC_DEFENCE_BATTLE_ALLOWANCE, which a piece's
+// MAG / MDEF also turns on (projectUsesMagicPower / Defence). The eq_mag / eq_mdef column is a table, counted
+// by battleTableBytes. Measured 25 and 25 on the same three boards, with the magic-power / magic-defence
+// source already live so the delta isolates this term.
+export const EQUIP_MAG_BATTLE_ALLOWANCE = 25;
+export const EQUIP_MDEF_BATTLE_ALLOWANCE = 25;
+
 // In-game party-member naming (docs/design-name-entry.md §5/§11) -- the
 // banked half. Two independently-gated terms, not one: NAME_ENTRY_BATTLE_
 // ALLOWANCE is the naming grid's own body (engine/nameentry.asm) plus
@@ -1146,6 +1198,9 @@ export function battleRegionBytes(project, mapper, { streamDialogueBanked = fals
     (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
+    (projectUsesEquipment(project) ? EQUIP_BATTLE_ALLOWANCE : 0) +
+    (projectUsesEquipmentMag(project) ? EQUIP_MAG_BATTLE_ALLOWANCE : 0) +
+    (projectUsesEquipmentMdef(project) ? EQUIP_MDEF_BATTLE_ALLOWANCE : 0) +
     (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0) +
     (projectUsesAnyBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
     (projectUsesPartyAttackAnim(project) ? PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE : 0) +

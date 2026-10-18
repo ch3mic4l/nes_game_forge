@@ -81,6 +81,9 @@ import {
   projectUsesItems,
   projectUsesMagicPower,
   projectUsesMagicDefence,
+  projectUsesEquipment,
+  projectUsesEquipmentMag,
+  projectUsesEquipmentMdef,
   projectUsesMonsterSpellList,
   projectUsesAnyBattleAnimation,
   projectUsesPartyAttackAnim,
@@ -191,7 +194,7 @@ export {
   battleEnabledFor,
   streamworldDialogueBanked
 } from './streamplacement.js';
-import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
+import { saveFields, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
   CHR_BANK_BYTES,
   NESASM_BANK_BYTES,
@@ -886,6 +889,28 @@ export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 470, 4: 475, 30: 640 };
 // range-check block measures identically before and after (observed, not
 // yet traced to a specific reason why it has no eligible bare operand).
 export const SAVE_BATTLE_KERNEL_ALLOWANCE = 41;
+
+/**
+ * How far equipment moves the streamed-world scratch block ($0780..$078D, engine/constants.asm SW_BLK_BASE) up:
+ * the size of `pc_equip`, the record's extra field, when the board stages the save record in RAM (the flash
+ * medium's `save_flash_buf` at $0700) AND Save is live AND the project uses equipment; 0 otherwise, so every other
+ * ROM keeps today's addresses. The condition is the same three facts that make the record grow into the block, so
+ * a flash record that grows moves the block with it and nothing else does. Emitted as `EQUIP_SAVE_SHIFT` into
+ * assets/cartridge.inc (docs/design-equipment.md section 5).
+ */
+export function equipSaveShift(project, mapper) {
+  const stagesInRam = flashSaveCapable(mapper) && projectUsesSave(project);
+  return stagesInRam && projectUsesEquipment(project) ? RPG_LIMITS.equipSlots * RPG_LIMITS.party : 0;
+}
+
+/**
+ * Save's equipment supplement: `save_check_valid`'s twelve-byte `pc_equip` bound (16 bytes) plus the
+ * `pc_equip` entry in each of the three descriptor tables (3 bytes, `assets/save.inc`, assembled after `reset`
+ * inside `.if SAVE_ENABLED`). Charged on Save AND equipment, so an equipment project with no Save pays nothing
+ * for it. Measured 19 on MMC1, MMC3 and UNROM 512, Save on, naming on and off (test/unit/kernelbytes.test.js):
+ * equal to the design's 16 + 3, and flat because nothing in it branches on a board.
+ */
+export const EQUIP_SAVE_KERNEL_ALLOWANCE = 19;
 // move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
 // move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
 // Turn/Wait first slice), so this dropped from the 395 bytes it measured
@@ -2133,6 +2158,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesSaveBattle ? SAVE_BATTLE_KERNEL_ALLOWANCE : 0) +
+    (usesSave && projectUsesEquipment(project) ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
     (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +
@@ -3776,6 +3802,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       `  .ineschr ${chrBanks}`,
       `  .inesmap ${mapper.id}`,
       `  .inesmir ${mirroringValue(project.cartridge.mirroring)}`,
+      // Equipment's twelve-byte pc_equip field grows the flash save record past $078A, into the streamed-world
+      // scratch block that starts at $0780; the block moves up by the same twelve (engine/constants.asm's
+      // SW_BLK_BASE). Here and not in config.inc: main.asm includes this file before constants.asm, and an
+      // equate defined later is an undefined symbol that nesasm reports as an internal error and still exits 0
+      // (docs/design-equipment.md section 5). Zero -- every address unchanged -- unless a flash-save board
+      // saves an equipment project.
+      `EQUIP_SAVE_SHIFT = ${equipSaveShift(project, mapper)}`,
       ''
     ].join('\n')
   );
@@ -3869,6 +3902,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // code (§8's own delta-measurement trap).
   const magicPowerEnabled = projectUsesMagicPower(project);
   const magicDefenceEnabled = projectUsesMagicDefence(project);
+  const equipEnabled = projectUsesEquipment(project);
   // monster_turn's pick-first rewrite (docs/design-monster-spell-list.md
   // §6/§7) -- true iff some actor's battle.spellIds has two or more entries.
   const monsterSpellListEnabled = projectUsesMonsterSpellList(project);
@@ -4404,7 +4438,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // of SAVE_ENABLED so test/unit/rammap.test.js can always audit it) has
     // nothing else to size itself against. engine/flash.asm's own copy loop
     // uses this too, rather than re-deriving SAVE_BODY_LEN+7 by hand.
-    `SAVE_RECORD_LEN = ${saveBodySize() + 7}`,
+    // Only a flash board with Save live ever stages the record in save_flash_buf, so only there does the equate carry
+    // the equipment field; elsewhere it keeps the equipment-free length. The RAM audit sizes save_flash_buf by it, and
+    // EQUIP_SAVE_SHIFT (equipSaveShift) makes room for exactly the records that are staged.
+    `SAVE_RECORD_LEN = ${saveBodySize(flashSaveCapable(mapper) && projectUsesSave(project) ? project : undefined) + 7}`,
     `SAVE_IDENTITY_0 = ${saveIdentityValue & 0xff}`,
     `SAVE_IDENTITY_1 = ${(saveIdentityValue >> 8) & 0xff}`,
     `SAVE_IDENTITY_2 = ${(saveIdentityValue >> 16) & 0xff}`,
@@ -4528,6 +4565,15 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // independent flags: a project can author one stat without the other.
     `MAGIC_POWER_ENABLED = ${magicPowerEnabled ? 1 : 0}`,
     `MAGIC_DEFENCE_ENABLED = ${magicDefenceEnabled ? 1 : 0}`,
+    // The equipment engine (engine/battle.asm's equip_recalc/equip_set/equip_init, combatant_*'s bonus add,
+    // save_check_valid's pc_equip bound) and its two per-stat subsets: the eq_mag / eq_mdef column and add
+    // exist only when some piece adds that stat, a subset of MAGIC_POWER_ENABLED / MAGIC_DEFENCE_ENABLED
+    // (a caster's own baseMag turns those on with no piece involved). EQUIP_BYTES is the pc_equip span, the
+    // single writer for its @size and the save field's size (RPG_LIMITS.equipSlots * RPG_LIMITS.party).
+    `EQUIP_ENABLED = ${equipEnabled ? 1 : 0}`,
+    `EQUIP_MAG_ENABLED = ${equipEnabled && projectUsesEquipmentMag(project) ? 1 : 0}`,
+    `EQUIP_MDEF_ENABLED = ${equipEnabled && projectUsesEquipmentMdef(project) ? 1 : 0}`,
+    `EQUIP_BYTES = ${RPG_LIMITS.equipSlots * RPG_LIMITS.party}`,
     // monster_turn's pick-first rewrite and its two gated helpers
     // (mod_monster_len, monster_pick_limit) -- see projectUsesMonsterSpellList
     // (shared/project.js) and docs/design-monster-spell-list.md §6/§7.
@@ -4609,12 +4655,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // sites), so this is genuinely the only place the address itself matters.
   const SAVE_BASE = flashSaveCapable(mapper) ? 0x0700 : 0x6000;
   let saveOffset = SAVE_BASE;
-  const saveFieldLines = SAVE_FIELDS.map((field) => {
+  const projectSaveFields = saveFields(project);
+  const saveFieldLines = projectSaveFields.map((field) => {
     const line = `SAVE_${field.ram.toUpperCase()} = $${saveOffset.toString(16).toUpperCase()}`;
     saveOffset += field.size;
     return line;
   });
-  const saveBodyLen = saveBodySize();
+  const saveBodyLen = saveBodySize(project);
   // Three parallel tables, one entry per SAVE_FIELDS field, in the same order
   // — the table-driven form of the same layout the equates above spell out.
   // engine/save.asm's one generic copy routine walks these in both
@@ -4649,13 +4696,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `SAVE_IDENTITY_2_ADDR = $${(SAVE_BASE + saveBodyLen + 4).toString(16).toUpperCase()}`,
     `SAVE_IDENTITY_3_ADDR = $${(SAVE_BASE + saveBodyLen + 5).toString(16).toUpperCase()}`,
     `SAVE_MARKER = $${(SAVE_BASE + saveBodyLen + 6).toString(16).toUpperCase()}`,
-    `SAVE_FIELD_COUNT = ${SAVE_FIELDS.length}`,
+    `SAVE_FIELD_COUNT = ${projectSaveFields.length}`,
     'save_field_lo:',
-    chunkedDb(SAVE_FIELDS.map((field) => `LOW(${field.ram})`)),
+    chunkedDb(projectSaveFields.map((field) => `LOW(${field.ram})`)),
     'save_field_hi:',
-    chunkedDb(SAVE_FIELDS.map((field) => `HIGH(${field.ram})`)),
+    chunkedDb(projectSaveFields.map((field) => `HIGH(${field.ram})`)),
     'save_field_len:',
-    chunkedDb(SAVE_FIELDS.map((field) => field.size)),
+    chunkedDb(projectSaveFields.map((field) => field.size)),
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'save.inc'), saveInc);

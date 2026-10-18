@@ -41,6 +41,7 @@ import {
   KERNEL_SLACK,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   SAVE_BATTLE_KERNEL_ALLOWANCE,
+  EQUIP_SAVE_KERNEL_ALLOWANCE,
   MOVE_KERNEL_ALLOWANCE,
   FACE_KERNEL_ALLOWANCE,
   TURN_KERNEL_ALLOWANCE,
@@ -8165,3 +8166,105 @@ test(
     }
   }
 );
+
+// --- Equipment (docs/design-equipment.md section 8, ROADMAP item 5, build commit C3) ---------------------------------------
+//
+// EQUIP_SAVE_KERNEL_ALLOWANCE: the save_check_valid worn-id loop plus the three pc_equip descriptor bytes. Charged only with
+// Save on (the descriptors live in assets/save.inc under .if SAVE_ENABLED). The opener's EQUIP_KERNEL_ALLOWANCE waits for C4.
+// Cells measured: MMC1, MMC3, UNROM 512 x Save on/off x in-game naming on/off. NOT measured: a streamed map, a Move command,
+// a title-less Save build (Save needs a title in the editor, so every Save cell has one).
+
+import { equipProject, piece as equipPiece, WEAPON as EQUIP_WEAPON } from '../lib/equipharness.js';
+
+test('EQUIP_SAVE_KERNEL_ALLOWANCE equals the real kernel-lo growth of an equipment build, on every RPG-capable board; it is 0 without Save', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    for (const save of [false, true]) {
+      for (const naming of [false, true]) {
+        const mutate = (p) => {
+          if (naming) for (const m of p.party) m.renamable = true;
+        };
+        const off = await equipProject({ mapper: mapper.id, save, mutate });
+        const on = await equipProject({ mapper: mapper.id, save, mutate, items: [equipPiece(1, 'Sword', EQUIP_WEAPON, { atk: 5 })] });
+        // Code only: a piece's item-table rows differ from the default item's, so the emitted table bytes are subtracted.
+        const codeUsed = async (project) => {
+          const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
+          return (await measureKernelLoBank(t, mapper, project)) - fixedBytes - tableBytes;
+        };
+        const delta = (await codeUsed(on)) - (await codeUsed(off));
+        const expected = save ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0;
+        assert.equal(delta, expected, `${mapper.name} (save ${save}, naming ${naming}): real kernel-lo growth ${delta} != allowance ${expected}`);
+        // The byte math charges exactly that, and nothing else, for the equipment piece.
+        assert.equal(kernelCodeBytes(on, mapper) - kernelCodeBytes(off, mapper), expected, `${mapper.name}: kernelCodeBytes charge`);
+        // The whole bank stays inside the usual [KERNEL_SLACK, 2*KERNEL_SLACK] reservation band against nesasm.
+        const margin = await measureWholeBank(t, mapper, on);
+        assert.ok(margin >= KERNEL_SLACK && margin <= KERNEL_SLACK * 2, `${mapper.name} (save ${save}, naming ${naming}): whole-bank margin ${margin} outside [KERNEL_SLACK, 2*KERNEL_SLACK]`);
+      }
+    }
+  }
+});
+
+// --- Equipment conjunction cells for the kernel-lo ledger (review R3 of the C3 round, R3a/R3b of round 2) ------------------------
+//
+// EQUIP_SAVE_KERNEL_ALLOWANCE in the shapes a Save-using equipment RPG really has beyond the default: a streamed map, a live Move
+// command, naming, the streamed + Move shape with no Save (where the term must be 0), and the two tight streamed conjunctions in
+// their compact form (test/lib/equipcells.js `compact`: no unused trailing map, a one-screen title map): MMC1 streamed + Save + Move,
+// and streamed + Save + animation + spell list + hit feedback + miss on all three boards.
+// In each cell, on each board, with equipment off and on: the code-only kernel-lo delta (a piece's item-table rows subtracted) equals
+// the allowance, the byte math (kernelCodeBytes) charges exactly the same, and the absolute whole-bank model holds on BOTH builds:
+// nesasm's real usage leaves a margin inside [KERNEL_SLACK, 2*KERNEL_SLACK] -- a common overcharge in one conjunction (the model
+// reserving 100 bytes too many) cancels out of the delta and the off/on equality, and only this bound sees it. The one recorded
+// exception is a cell's `pinnedMargin`: the pre-existing 50-byte margin of a streamed Save RPG on MMC1/MMC3, measured here with no
+// equipment and pinned EXACTLY (not a widened range), so it can neither grow nor silently shrink; the off/on equality is kept for
+// every cell. The wrong implementation this catches: a Save supplement that costs more (or less) beside a streamed world or a Move, or a
+// model that is exact on the default shape and loose in a conjunction.
+// Where a project truly exceeds the capacity, the refusal is asserted for THAT project (cell.refusedOn), below.
+import { KERNEL_CELLS, CELL_BOARDS as KERNEL_CELL_BOARDS, shapeOf as kernelShapeOf } from '../lib/equipcells.js';
+
+for (const cell of KERNEL_CELLS) {
+  test(`EQUIP_SAVE_KERNEL_ALLOWANCE in the cell "${cell.label}", on every board it fits: isolated delta and the whole-bank model`, { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+    for (const mapperId of cell.refusedOn ?? []) {
+      // THIS project does not fit this board at all, equipment or not: the capacity check refuses the equipment-FREE build too.
+      const label = `${resolveMapper(mapperId).name} / ${cell.label}`;
+      const bare = await cell.make({ mapper: mapperId, items: [], save: cell.save });
+      await assert.rejects(() => measureKernelLoBank(t, resolveMapper(mapperId), bare), /lookup tables need/, `${label}: this project, with no equipment, is refused by the capacity check`);
+    }
+    for (const mapperId of cell.boards ?? KERNEL_CELL_BOARDS) {
+      const mapper = resolveMapper(mapperId);
+      const label = `${mapper.name} / ${cell.label}`;
+      const off = await cell.make({ mapper: mapperId, items: [], save: cell.save });
+      const on = await cell.make({ mapper: mapperId, items: [equipPiece(1, 'Sword', EQUIP_WEAPON, { atk: 5 })], save: cell.save });
+      assert.deepEqual(kernelShapeOf(off), cell.shape, `${label}: the equipment-free project has exactly the shape the cell names`);
+      assert.deepEqual(kernelShapeOf(on), cell.shape, `${label}: the project has exactly the shape the cell names`);
+      const codeUsed = async (project) => {
+        const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
+        return (await measureKernelLoBank(t, mapper, project)) - fixedBytes - tableBytes;
+      };
+      const expected = cell.save ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0;
+      assert.equal((await codeUsed(on)) - (await codeUsed(off)), expected, `${label}: real kernel-lo code growth`);
+      assert.equal(kernelCodeBytes(on, mapper) - kernelCodeBytes(off, mapper), expected, `${label}: kernelCodeBytes charges exactly that`);
+      const marginOff = await measureWholeBank(t, mapper, off);
+      const marginOn = await measureWholeBank(t, mapper, on);
+      assert.equal(marginOn, marginOff, `${label}: a piece moves the whole-bank margin (${marginOff} -> ${marginOn}): the byte model and nesasm disagree about the equipment term here`);
+      const pinned = cell.pinnedMargin?.[mapperId];
+      for (const [name, margin] of [['without equipment', marginOff], ['with equipment', marginOn]]) {
+        if (pinned !== undefined) {
+          assert.equal(margin, pinned, `${label}: the recorded pre-existing whole-bank margin (${name}) is pinned at exactly ${pinned}`);
+        } else {
+          assert.ok(margin >= KERNEL_SLACK && margin <= KERNEL_SLACK * 2, `${label}: whole-bank margin ${margin} (${name}) outside [KERNEL_SLACK, 2*KERNEL_SLACK]`);
+        }
+      }
+    }
+  });
+}
+
+// The larger projects the compact cells replace: a streamed world with Save AND a live Move, carrying the helper's unused trailing
+// "After" map and two-by-two ordinary title map, overflows kernel-lo on every board with no equipment at all. This is a statement about
+// THAT project (the compact form fits on MMC1, see the cells above), kept so the 100 table bytes the compaction saves stay a checked fact.
+test('the uncompacted streamed + Save + Move helper project (After map and 2x2 title map kept) is refused by the kernel-lo capacity check on every board, with no equipment', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  const { equipStreamedProject } = await import('../lib/equipharness.js');
+  for (const mapperId of KERNEL_CELL_BOARDS) {
+    const mapper = resolveMapper(mapperId);
+    const bare = equipStreamedProject({ mapper: mapperId, save: true, move: true, items: [{ id: 0, name: 'Tonic', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 20 } }] });
+    await assert.rejects(() => measureKernelLoBank(t, mapper, bare), /lookup tables need/, `${mapper.name}: refused without any equipment`);
+  }
+});

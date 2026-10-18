@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { SUPPORTED_MAPPERS } from '../../shared/cartridge.js';
+import { SUPPORTED_MAPPERS, saveMediaImplemented } from '../../shared/cartridge.js';
 import {
   normalizeProject,
   projectUsesEquipment,
@@ -90,17 +90,55 @@ test('(3) sample-rpg with equip: null on every item and the section 1 fields pre
 });
 
 // (4) Dormant equipment on an action game.
+//
+// The ROM comparison is the load-bearing half and runs FIRST, before any predicate assertion: a predicate that ignored gameType would
+// otherwise be caught by the cheap `projectUsesEquipment` check alone and the byte comparison would never have been shown to catch
+// it. Two shapes, because a flag emitted without code changes no byte by itself: the plain action game, and one with Save live (the
+// save record's field list, the descriptor tables and the Save kernel allowance all read the predicate -- C3 -- so a predicate that
+// leaks a pc_equip field into an action game's record changes the ROM).
+async function saveActionVariant(mapper) {
+  const project = await actionVariant({ mapper });
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  return project;
+}
+
+function addDormantEquipment(project) {
+  assert.ok(project.items.length > 0);
+  project.items[0].equip = { slot: 1, atk: 255, def: 255, mag: 255, mdef: 255, usableBy: 0b1111 };
+  project.party[0].startEquip = [null, 0, null];
+}
+
 test('(4) an action game whose items carry equip data builds byte-identical to the stripped project, on every board', { skip }, async () => {
-  // Catches a predicate or generator that ignores gameType (equipment tables, magic power or defence assembled for an action game), and a dormant
-  // field that leaks into an emitted byte. The data is deliberately maximal: every stat, MAG and MDEF included (the two that would turn magic on).
+  // Catches a predicate or generator that ignores gameType (equipment tables, magic power or defence assembled for an action game, a pc_equip
+  // field in an action game's save record), and a dormant field that leaks into an emitted byte. The data is deliberately maximal: every
+  // stat, MAG and MDEF included (the two that would turn magic on).
+  const verdicts = [];
   for (const mapper of SUPPORTED_MAPPERS) {
     const stripped = await buildHash(await actionVariant({ mapper: mapper.id }));
     assert.deepEqual(stripped, ACTION_HASHES[mapper.name], `${mapper.name}: the stripped project is the post-C1b ROM`);
-
     const dormant = await actionVariant({ mapper: mapper.id });
-    assert.ok(dormant.items.length > 0);
-    dormant.items[0].equip = { slot: 1, atk: 255, def: 255, mag: 255, mdef: 255, usableBy: 0b1111 };
-    dormant.party[0].startEquip = [null, 0, null];
+    addDormantEquipment(dormant);
+    verdicts.push([`${mapper.name}`, await buildHash(dormant), stripped]);
+
+    if (!saveMediaImplemented(mapper)) continue;
+    const savedStripped = await buildHash(await saveActionVariant(mapper.id));
+    const savedDormant = await saveActionVariant(mapper.id);
+    addDormantEquipment(savedDormant);
+    verdicts.push([`${mapper.name} + Save`, await buildHash(savedDormant), savedStripped]);
+  }
+  for (const [label, built, expected] of verdicts) assert.deepEqual(built, expected, `${label}: dormant equipment changes no byte`);
+
+  // Then the predicate half, and the control that "identical" is not "absent".
+  for (const mapper of SUPPORTED_MAPPERS) {
+    const dormant = await actionVariant({ mapper: mapper.id });
+    addDormantEquipment(dormant);
     assert.equal(projectUsesEquipment(dormant), false, `${mapper.name}: the predicate is off for an action game`);
     assert.equal(projectUsesMagicPower(dormant), false);
     assert.equal(projectUsesMagicDefence(dormant), false);
@@ -108,7 +146,6 @@ test('(4) an action game whose items carry equip data builds byte-identical to t
       validateProject(dormant).some((problem) => problem.rule === 'equip-ignored-action-game'),
       `${mapper.name}: the dormant data really is in the project (the control for "identical because absent")`
     );
-    assert.deepEqual(await buildHash(dormant), stripped, `${mapper.name}: dormant equipment changes no byte`);
   }
 });
 

@@ -20,6 +20,7 @@ export function buildSymbols(dir) {
   const pending = new Map();
   scanEquates(fs.readFileSync(`${dir}/build/constants.asm`, 'utf8'), pending);
   scanEquates(fs.readFileSync(`${dir}/build/assets/config.inc`, 'utf8'), pending);
+  scanEquates(fs.readFileSync(`${dir}/build/assets/cartridge.inc`, 'utf8'), pending);
   const symbols = new Map();
   resolveEquates(pending, symbols);
   return symbols;

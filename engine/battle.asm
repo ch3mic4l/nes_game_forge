@@ -115,7 +115,11 @@ party_init_next:
   inx
   cpx #MAX_PARTY
   bne party_init_slot
+  .if EQUIP_ENABLED
+  jmp equip_init            ; every member's starting pieces, then the bonus cache
+  .else
   rts
+  .endif
 
 ; X = member index. Recruit them at their current level and fill them up.
 party_join:
@@ -212,7 +216,155 @@ party_restore_slot:
   inx
   cpx #PARTY_SIZE
   bne party_restore_slot
+  .if EQUIP_ENABLED
+  ; Continue's restore: pc_equip was just loaded from the record (the bonuses are never saved), so
+  ; rebuild them, and drop any worn id the sanitizer finds stale.
+  jmp equip_recalc
+  .else
   rts
+  .endif
+
+  .if EQUIP_ENABLED
+; ------------------------------------------------------------------ equipment (docs/design-equipment.md)
+; pc_equip is slot-major: index = slot * MAX_PARTY + member, NO_ITEM = empty. A worn piece has left the
+; bag (equip_set), so Carrying and Take never see it. pc_eq_* are the per-member bonus caches that
+; combatant_* adds after its level-derived stat; they are recomputed at exactly three triggers --
+; equip_set, equip_init (party_init) and party_restore (Continue) -- and never saved.
+
+; Recompute every member's bonus from the worn ids. Also the ONE place a stale worn id is dealt with: an
+; id whose eq_slot entry is not this byte's slot (an ordinary item, a piece of another slot, or a
+; non-equipment id whose zero-filled column says $FF) is emptied and contributes nothing. The piece is
+; then neither worn nor in the bag -- the documented outcome for a stale or hand-edited save. usableBy is
+; not re-validated here. Every sum saturates at 255. Clobbers A, X, Y and bt_tmp.
+equip_recalc:
+  ldx #0
+equip_rc_member:
+  lda #0
+  sta pc_eq_atk,x
+  sta pc_eq_def,x
+  .if EQUIP_MAG_ENABLED
+  sta pc_eq_mag,x
+  .endif
+  .if EQUIP_MDEF_ENABLED
+  sta pc_eq_mdef,x
+  .endif
+  stx <bt_tmp                 ; the pc_equip index: member, member+MAX_PARTY, member+2*MAX_PARTY
+equip_rc_slot:
+  ldy <bt_tmp
+  lda pc_equip,y
+  cmp #NO_ITEM
+  beq equip_rc_next
+  tay                         ; Y = the worn item id
+  lda <bt_tmp
+  lsr a
+  lsr a                       ; the slot this index belongs to (MAX_PARTY = 4)
+  cmp eq_slot,y
+  beq equip_rc_add
+  ldy <bt_tmp
+  lda #NO_ITEM
+  sta pc_equip,y              ; stale: not a piece of this slot -> empty
+  jmp equip_rc_next
+equip_rc_add:
+  lda pc_eq_atk,x
+  clc
+  adc eq_atk,y
+  bcc equip_rc_a
+  lda #$FF
+equip_rc_a:
+  sta pc_eq_atk,x
+  lda pc_eq_def,x
+  clc
+  adc eq_def,y
+  bcc equip_rc_d
+  lda #$FF
+equip_rc_d:
+  sta pc_eq_def,x
+  .if EQUIP_MAG_ENABLED
+  lda pc_eq_mag,x
+  clc
+  adc eq_mag,y
+  bcc equip_rc_m
+  lda #$FF
+equip_rc_m:
+  sta pc_eq_mag,x
+  .endif
+  .if EQUIP_MDEF_ENABLED
+  lda pc_eq_mdef,x
+  clc
+  adc eq_mdef,y
+  bcc equip_rc_md
+  lda #$FF
+equip_rc_md:
+  sta pc_eq_mdef,x
+  .endif
+equip_rc_next:
+  lda <bt_tmp
+  clc
+  adc #MAX_PARTY
+  sta <bt_tmp
+  cmp #EQUIP_BYTES
+  bcc equip_rc_slot
+  inx
+  cpx #MAX_PARTY
+  bne equip_rc_member
+  rts
+
+; X = member, Y = slot, A = the piece to wear (it must be in the bag) or NO_ITEM. Carry set = refused
+; (taking off at a full bag); the bag and the slot are then untouched. Putting a piece on over a worn one
+; is net zero for the bag: the new piece leaves the bag first, which frees the slot the old piece returns
+; to. Wearing what is already worn, and taking off an empty slot, are no-ops with carry clear.
+; Clobbers A, X, Y, bt_arg, bt_x, bt_y, script_tmp and bt_tmp.
+equip_set:
+  sta <bt_arg
+  stx <bt_x
+  tya
+  asl a
+  asl a
+  clc
+  adc <bt_x
+  sta <bt_y                   ; the pc_equip index
+  tax
+  lda pc_equip,x
+  cmp <bt_arg
+  beq equip_set_same
+  lda <bt_arg
+  cmp #NO_ITEM
+  bne equip_set_wear
+  lda <inv_count
+  cmp #MAX_ITEMS
+  bcs equip_set_refuse
+  jmp equip_set_old
+equip_set_wear:
+  jsr remove_item             ; frees the bag slot the old piece goes back into
+equip_set_old:
+  ldx <bt_y
+  lda pc_equip,x
+  cmp #NO_ITEM
+  beq equip_set_store
+  jsr add_item
+equip_set_store:
+  ldx <bt_y
+  lda <bt_arg
+  sta pc_equip,x
+  jsr equip_recalc
+equip_set_same:
+  clc
+  rts
+equip_set_refuse:
+  sec
+  rts
+
+; New game and Game Over (party_init): every member's starting pieces -- all four, joined or not, so a
+; later Join needs no equipment code -- then the cache. eq_start is the generator's, already sanitized.
+equip_init:
+  ldx #EQUIP_BYTES-1
+equip_init_loop:
+  lda eq_start,x
+  sta pc_equip,x
+  dex
+  bpl equip_init_loop
+  jmp equip_recalc
+  .endif
 
 ; A = member index; returns Y = that member's row for their current level.
 level_row:

@@ -228,7 +228,32 @@ local EXIT_NO_CROSS_BACK                 = 12
 local EXIT_WRAM_LOST_AFTER_RESTORE       = 13 -- the SRAM marker did not survive continue_game's own BE_RESTORE bank switch
 local EXIT_DETECTOR_AMBIGUOUS            = 14 -- pc_level slot 0 was neither 0 (action) nor 1 (RPG) at boot
 local EXIT_NAMING_NEVER_READY             = 15 -- the rpg-mmc1 fixture's own Join-naming grid (Iris) never reached the state a bounded wait expected next
+local EXIT_EQUIP_DETECTOR_AMBIGUOUS       = 16 -- pc_equip slot 0 was neither 0 (no equipment) nor $FF (equipment) at boot
 local EXIT_RUN1_OK                       = 1 -- not a failure; see header comment
+
+-- Equipment (ROADMAP item 5, build commit C3). The rpg-mmc1-equip and rpg-mmc3-equip boards are sample-rpg-mmc1 with five
+-- pieces appended (build_sram_roms.mjs: Sword 1 weapon ATK 7, Mail 2 armor DEF 5, Charm 3 accessory MAG 3 / MDEF 2,
+-- Ring 4 accessory ATK 4 / DEF 1). Detected the way RPG is, before any input: engine/constants.asm pc_equip is $07D4, twelve
+-- bytes slot-major (weapon x4, armor x4, accessory x4); an equipment build's equip_init fills it with $FF at boot, every other
+-- build leaves the boot-time RAM clear's 0. The record then carries those twelve bytes as its last body field, so the
+-- checksum, identity and marker sit 12 bytes further on (marker 0x7E -> 0x8A).
+local PC_EQUIP      = 0x07D4
+local PC_EQ_ATK     = 0x07E0
+local PC_EQ_DEF     = 0x07E4
+local PC_EQ_MAG     = 0x07E8
+local PC_EQ_MDEF    = 0x07EC
+local EQUIP_MARKER_OFFSET = 0x8A
+local NO_ITEM       = 0xFF
+-- Non-default gear, poked into a new game by run 1: member 0 weapon; member 2 armor + accessory; member 3 a piece in all three.
+-- (Members 2 and 3 are dormant on this two-member fixture: their gear is saved and restored all the same.)
+local EQUIP_WORN = { [0] = 1, [3] = 1, [6] = 2, [7] = 2, [10] = 3, [11] = 4 } -- pc_equip index -> item id
+local EQUIP_BONUS = {
+  atk  = { [0] = 7, 0, 0, 11 },
+  def  = { [0] = 0, 0, 5, 6 },
+  mag  = { [0] = 0, 0, 3, 0 },
+  mdef = { [0] = 0, 0, 2, 0 },
+}
+local EQUIP_STALE_CACHE = 99 -- run 1 leaves the live cache wrong; a restore that trusted it would show 99
 
 local frame = 0
 local phase = 1
@@ -236,6 +261,8 @@ local mark = 0
 local held = {}
 local hasSave = false -- was a save already on the chip when this run booted?
 local isRpg = false   -- decided in phase 1, before any input -- see the header comment
+local isEquip = false -- decided in phase 1 the same way, from pc_equip slot 0 -- see the equipment constants above
+local markerOffset = SAVE_MARKER_OFFSET -- moves to EQUIP_MARKER_OFFSET on an equipment build
 local restored = nil  -- run 2's snapshot of the loaded state, taken at the edge
 
 local function read(address) return emu.read(address, emu.memType.nesMemory) end
@@ -257,7 +284,7 @@ end
 
 local function onInput() emu.setInput(held, 0) end
 
-local function saveWritten() return read(SRAM_BASE + SAVE_MARKER_OFFSET) == SAVE_MARKER_VALID end
+local function saveWritten() return read(SRAM_BASE + markerOffset) == SAVE_MARKER_VALID end
 
 local function onFrame()
   frame = frame + 1
@@ -272,6 +299,14 @@ local function onFrame()
     if frame < 20 then return end
     if read(FRAME_CNT) == 0 then fail(EXIT_NO_BOOT, "frame_cnt never advanced"); return end
     if read(GAME_STATE) ~= ST_TITLE then fail(EXIT_NO_TITLE, "did not boot to the title"); return end
+    local equipDetector = read(PC_EQUIP)
+    if equipDetector ~= 0 and equipDetector ~= NO_ITEM then
+      fail(EXIT_EQUIP_DETECTOR_AMBIGUOUS, "pc_equip slot 0 read " .. equipDetector .. ", neither 0 nor $FF")
+      return
+    end
+    isEquip = equipDetector == NO_ITEM
+    if isEquip then markerOffset = EQUIP_MARKER_OFFSET end
+    log(isEquip and "equipment build detected (pc_equip slot 0 is $FF)" or "no equipment (pc_equip slot 0 is 0)")
     hasSave = saveWritten()
     log(hasSave and "a save is on the chip" or "no save on the chip")
     local detector = read(PC_LEVEL)
@@ -280,6 +315,9 @@ local function onFrame()
       return
     end
     isRpg = detector == 1
+    if isEquip and not isRpg then
+      fail(EXIT_EQUIP_DETECTOR_AMBIGUOUS, "an equipment build that is not an RPG"); return
+    end
     log(isRpg and "RPG build detected (pc_level slot 0 is 1)" or "action build detected (pc_level slot 0 is 0)")
     held = { select = true }
     mark = frame
@@ -331,7 +369,7 @@ local function onFrame()
         -- load_apply_body had already copied the record into *before*
         -- BE_RESTORE ever ran, so none of them could have caught a BE_RESTORE
         -- that took WRAM away.
-        sramMarker = read(SRAM_BASE + SAVE_MARKER_OFFSET),
+        sramMarker = read(SRAM_BASE + markerOffset),
         -- RPG-only fields -- see phase 6's own assertions. Snapshotted here
         -- for the identical reason every other field is: the saver page's
         -- guard keeps it from re-running, but the snapshot is belt and
@@ -359,6 +397,12 @@ local function onFrame()
       for i = 0, NAME_LEN - 1 do
         restored.pcName1[i] = read(PC_NAME_RAM + NAME_LEN + i) -- slot 1 (Iris)
       end
+      restored.equip, restored.atk, restored.def, restored.mag, restored.mdef = {}, {}, {}, {}, {}
+      for i = 0, 11 do restored.equip[i] = read(PC_EQUIP + i) end
+      for m = 0, 3 do
+        restored.atk[m], restored.def[m] = read(PC_EQ_ATK + m), read(PC_EQ_DEF + m)
+        restored.mag[m], restored.mdef[m] = read(PC_EQ_MAG + m), read(PC_EQ_MDEF + m)
+      end
       log("run 2: Continue loaded a save")
       phase = 6
       return
@@ -381,6 +425,18 @@ local function onFrame()
     held = {}
     if frame - mark < 20 then return end
     if read(GAME_STATE) ~= ST_GAMEPLAY then fail(EXIT_NO_TITLE, "Start did not begin a new game"); return end
+    if isEquip then
+      -- Wear the non-default set, with a deliberately WRONG bonus cache: the cache is not part of the record, so a restore that
+      -- trusted a cached byte (saved, or left in RAM) would come back with 99s instead of the sums of the worn pieces.
+      for i = 0, 11 do emu.write(PC_EQUIP + i, EQUIP_WORN[i] or NO_ITEM, emu.memType.nesMemory) end
+      for m = 0, 3 do
+        emu.write(PC_EQ_ATK + m, EQUIP_STALE_CACHE, emu.memType.nesMemory)
+        emu.write(PC_EQ_DEF + m, EQUIP_STALE_CACHE, emu.memType.nesMemory)
+        emu.write(PC_EQ_MAG + m, EQUIP_STALE_CACHE, emu.memType.nesMemory)
+        emu.write(PC_EQ_MDEF + m, EQUIP_STALE_CACHE, emu.memType.nesMemory)
+      end
+      log("run 1: non-default gear worn, bonus cache poisoned with 99s")
+    end
     -- 3a: east through the doorway onto the saver's screen. Crossing a screen
     -- edge is a real switch_prg_bank call, which is what has to happen between
     -- here and the Save for an MMC1 build to be proving anything: bit 4 of
@@ -715,6 +771,16 @@ local function onFrame()
         fail(EXIT_STATE_WRONG_BEFORE_CYCLE, "pc_level slot 1 is " .. read(PC_LEVEL + 1) .. ", not 1"); return
       end
     end
+    if isEquip then
+      -- The record on the chip carries the twelve worn ids in its last body field (body offset 120), written by the real Save.
+      for i = 0, 11 do
+        local onChip = readRaw(120 + i)
+        local want = EQUIP_WORN[i] or NO_ITEM
+        if onChip ~= want then
+          fail(EXIT_STATE_WRONG_BEFORE_CYCLE, string.format("pc_equip[%d] on the chip is %d, expected %d", i, onChip, want)); return
+        end
+      end
+    end
     -- Cross back west -- a second real switch_prg_bank call, this time with
     -- the save already sitting in the chip -- to prove the marker written
     -- moments ago is still there through the mapper's own gated view after
@@ -739,7 +805,7 @@ local function onFrame()
       -- ever disagreed it would mean the checks above were reading around
       -- the mapper rather than through it, which would make them prove
       -- nothing about real hardware.
-      if readRaw(SAVE_MARKER_OFFSET) ~= SAVE_MARKER_VALID then
+      if readRaw(markerOffset) ~= SAVE_MARKER_VALID then
         fail(EXIT_MARKER_LOST_AFTER_BANK_SWITCH, "raw chip and mapped view disagree"); return
       end
       log("run 1 complete: save survived a round trip across the screen edge")
@@ -859,6 +925,21 @@ local function onFrame()
             string.format("pc_name_ram slot 1 byte %d restored as 0x%02X, expected 0x%02X", i, restored.pcName1[i], expectedName1[i + 1])
           )
           return
+        end
+      end
+    end
+    if isEquip then
+      for i = 0, 11 do
+        local want = EQUIP_WORN[i] or NO_ITEM
+        if restored.equip[i] ~= want then
+          fail(EXIT_RESTORED_STATE_WRONG, string.format("pc_equip[%d] restored as %d, expected %d", i, restored.equip[i], want)); return
+        end
+      end
+      for m = 0, 3 do
+        for name, expected in pairs({ atk = EQUIP_BONUS.atk, def = EQUIP_BONUS.def, mag = EQUIP_BONUS.mag, mdef = EQUIP_BONUS.mdef }) do
+          if restored[name][m] ~= expected[m] then
+            fail(EXIT_RESTORED_STATE_WRONG, string.format("pc_eq_%s[%d] restored as %d, expected %d (the cache must be recomputed, never carried over)", name, m, restored[name][m], expected[m])); return
+          end
         end
       end
     end

@@ -6818,6 +6818,18 @@ function equipmentAddsStat(project, stat) {
 }
 
 /**
+ * Whether some piece adds MAG (resp. MDEF): the narrower gate for the equipment engine's own `eq_mag` / `eq_mdef`
+ * column and its per-stat add (EQUIP_MAG_ENABLED / EQUIP_MDEF_ENABLED). A subset of projectUsesMagicPower / Defence:
+ * a party member's own `baseMag` turns magic power on without this, and then no column or add is emitted.
+ */
+export function projectUsesEquipmentMag(project) {
+  return equipmentAddsStat(project, 'mag');
+}
+export function projectUsesEquipmentMdef(project) {
+  return equipmentAddsStat(project, 'mdef');
+}
+
+/**
  * Whether magic power -- a caster's `baseMag`/`magPerLevel`/`battle.mag`
  * adding into a spell's own rolled amount -- is worth assembling at all.
  * Drives the generated `MAGIC_POWER_ENABLED` flag the same shape

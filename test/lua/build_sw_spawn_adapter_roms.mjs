@@ -136,6 +136,7 @@ async function main() {
     const pending = new Map();
     scanEquates(constantsText, pending);
     scanEquates(configText, pending);
+    scanEquates(await fs.promises.readFile(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8'), pending);
     const ramSymbols = new Map();
     resolveEquates(pending, ramSymbols);
     for (const name of ['ent_active', 'ent_actor', 'ent_x', 'ent_y', 'ent_trigger', 'TRIG_INTERACT', 'TRIG_ENTER']) {

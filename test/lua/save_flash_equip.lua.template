@@ -1,0 +1,259 @@
+-- save_flash_equip.lua -- Equipment (ROADMAP item 5, build commit C3) on UNROM 512's flash save, against Mesen2's real JEDEC
+-- flash model. save_flash.lua proves the flash driver itself on an action fixture; this proves what equipment adds to it, on an
+-- RPG built by build_flash_roms.mjs's `u512-equip` board (sample-rpg on UNROM 512 with naming off, a title, a touch-triggered
+-- Save NPC at (64, 96) and five pieces: Sword 1 weapon ATK 7, Mail 2 armor DEF 5, Charm 3 accessory MAG 3 / MDEF 2, Ring 4
+-- accessory ATK 4 / DEF 1):
+--
+--   * the record grows by pc_equip's twelve bytes (body 132, record 139), so it now reaches $078A of the RAM staging buffer
+--     (save_flash_buf, $0700); EQUIP_SAVE_SHIFT moves the streamed-world scratch block ($0780 -> $078C..$0799) clear of it.
+--     Run 1 seeds all fourteen of those bytes with known values BEFORE the save and re-reads them after it completes.
+--   * non-default gear (member 0 weapon; member 2 armor + accessory; member 3 a piece in all three) is poked into a new game
+--     with a deliberately wrong bonus cache (99s), saved through the real driver, and checked ON THE CHIP (body offset 120..131).
+--   * run 2 (a fresh Mesen process: the flash image comes back from the .ips) presses Continue and checks the twelve ids and
+--     all sixteen bonuses exactly: recomputed from the ids, never restored.
+--
+-- The same script drives a second board, `u512-equip-streamed` (STREAMED = true below): a streamed-world RPG on UNROM 512 with
+-- equipment and Save, so the save happens while the streamed-world engine is live. There the scratch block is not seeded (the
+-- streamed engine rewrites it every frame, so a seed is not an invariant -- review R4); instead the live streamed-field state is
+-- recomputed from first principles (player position, sw_col/sw_row, the map's pixel size) and compared with sw_fc_* before the
+-- save, just after it and after Continue, and the restored position must be the saver's.
+--
+-- Mesen passes no arguments and a script cannot write a file, so, like save_sram.lua, the script decides which half of the power
+-- cycle it is by reading the record's marker off the chip on the title screen before it touches a button.
+--
+--   Mesen --testRunner <outDir>/save_flash_equip.lua <rom>   (the generated copy of this template; run_flash_check.sh drives both invocations)
+
+-- engine/constants.asm
+local PLAYER_X, PLAYER_Y, FRAME_CNT, GAME_STATE = 0x10, 0x11, 0x1B, 0x25
+local ST_GAMEPLAY, ST_TITLE = 0, 3
+local PC_EQUIP, PC_EQ_ATK, PC_EQ_DEF, PC_EQ_MAG, PC_EQ_MDEF = 0x07D4, 0x07E0, 0x07E4, 0x07E8, 0x07EC
+local NO_ITEM = 0xFF
+-- The streamed-world scratch block (sw_fc_* .. sw_kb_*), read by build_flash_roms.mjs out of THIS build's own RAM map and
+-- substituted in: $078C..$0799 when EQUIP_SAVE_SHIFT is 12, $0780..$078D when it is not (the u512-equip-no-shift control).
+local SCRATCH_FIRST, SCRATCH_LAST = __SCRATCH_FIRST__, __SCRATCH_LAST__
+-- The streamed board (all substituted from the build): the world's pixel size and the live streamed-field addresses.
+local STREAMED = __STREAMED__
+local MAP_PX_X, MAP_PX_Y = __MAP_PX_X__, __MAP_PX_Y__
+local SW_COL, SW_ROW = __SW_COL__, __SW_ROW__
+local SW_FC_PX, SW_FC_PY, SW_FC_SCR, SW_FC_LPY = __SW_FC_PX__, __SW_FC_PY__, __SW_FC_SCR__, __SW_FC_LPY__
+
+-- The flash sector (shared/cartridge.js flashSaveSectorBank): bank 30, offset $3000. Record = body 132 + checksum 2 + identity 4
+-- + marker 1 = 139; the marker is its last byte.
+local SAVE_BANK, SECTOR_OFFSET = 30, 0x3000
+local PC_EQUIP_BODY_OFFSET = 120
+local MARKER_OFFSET = 138
+local MARKER_VALID = 0xA5
+
+local EQUIP_WORN = { [0] = 1, [3] = 1, [6] = 2, [7] = 2, [10] = 3, [11] = 4 } -- pc_equip index -> item id
+local EQUIP_BONUS = {
+  atk  = { [0] = 7, 0, 0, 11 },
+  def  = { [0] = 0, 0, 5, 6 },
+  mag  = { [0] = 0, 0, 3, 0 },
+  mdef = { [0] = 0, 0, 2, 0 },
+}
+local STALE_CACHE = 99
+
+local EXIT_TIMEOUT = 99
+local EXIT_NO_BOOT = 2
+local EXIT_NO_TITLE = 3
+local EXIT_SAVE_NEVER_WROTE = 5
+local EXIT_STATE_WRONG_BEFORE_CYCLE = 7
+local EXIT_CONTINUE_MISSING_WITH_SAVE = 8
+local EXIT_CONTINUE_PRESENT_WITHOUT_SAVE = 9
+local EXIT_RESTORED_STATE_WRONG = 10
+local EXIT_NO_ALIGN = 11
+local EXIT_SCRATCH_CLOBBERED = 12
+local EXIT_STREAM_STATE = 17
+local EXIT_NOT_EQUIPMENT = 16
+local EXIT_RUN1_OK = 1
+
+local frame, phase, mark, held = 0, 1, 0, {}
+local hasSave, restored = false, nil
+
+local function read(address) return emu.read(address, emu.memType.nesMemory) end
+local function write(address, value) emu.write(address, value, emu.memType.nesMemory) end
+local function readPrg(offset) return emu.read(SAVE_BANK * 16384 + SECTOR_OFFSET + offset, emu.memType.nesPrgRom) end
+local function log(message) emu.log(string.format("[%5d] %s", frame, message)) end
+local function fail(code, message) log("FAIL(" .. code .. "): " .. message); emu.stop(code) end
+local function onInput() emu.setInput(held, 0) end
+local function saveWritten() return readPrg(MARKER_OFFSET) == MARKER_VALID end
+local function seedOf(address) return 0xA0 + (address - SCRATCH_FIRST) end
+local function read16(address) return read(address) + 256 * read(address + 1) end
+local function clamp(v, lo, hi) if v < lo then return lo elseif v > hi then return hi else return v end end
+
+-- The live streamed-field state, recomputed independently: the camera is the player's world position less (120, 112) clamped to the
+-- world, and its screen row / local row are that camera Y divided by 240. sw_fc_wy is NOT compared: sw_pjg_check reuses it as a
+-- per-frame stash, so its end-of-frame value is a flag, not the world Y. nil when it all agrees.
+local function streamedStateProblem()
+  local col, row = read(SW_COL), read(SW_ROW)
+  local wy = row * 240 + read(PLAYER_Y)
+  local wx = col * 256 + read(PLAYER_X)
+  local px = clamp(wx - 120, 0, MAP_PX_X - 256)
+  local py = clamp(wy - 112, 0, MAP_PX_Y - 240)
+  local got = { px = read16(SW_FC_PX), py = read16(SW_FC_PY), scr = read(SW_FC_SCR), lpy = read(SW_FC_LPY) }
+  local want = { px = px, py = py, scr = math.floor(py / 240), lpy = py % 240 }
+  for _, key in ipairs({ "px", "py", "scr", "lpy" }) do
+    if got[key] ~= want[key] then
+      return string.format("sw_fc_%s is %d, expected %d (col %d row %d player (%d,%d))", key, got[key], want[key], col, row, read(PLAYER_X), read(PLAYER_Y))
+    end
+  end
+  return nil
+end
+
+local function onFrame()
+  frame = frame + 1
+  if frame > 4000 then fail(EXIT_TIMEOUT, "timed out in phase " .. phase); return end
+
+  if phase == 1 then
+    if frame < 20 then return end
+    if read(FRAME_CNT) == 0 then fail(EXIT_NO_BOOT, "frame_cnt never advanced"); return end
+    if read(GAME_STATE) ~= ST_TITLE then fail(EXIT_NO_TITLE, "did not boot to the title"); return end
+    if read(PC_EQUIP) ~= NO_ITEM then fail(EXIT_NOT_EQUIPMENT, "pc_equip slot 0 is not $FF -- not an equipment build"); return end
+    hasSave = saveWritten()
+    log(hasSave and "a save is on the chip" or "no save on the chip")
+    held = { select = true }
+    mark = frame
+    phase = 2
+    return
+  end
+
+  if phase == 2 then
+    if frame - mark < 8 then return end
+    held = {}
+    if read(GAME_STATE) ~= ST_TITLE then
+      if not hasSave then fail(EXIT_CONTINUE_PRESENT_WITHOUT_SAVE, "Continue left the title with no save on the chip"); return end
+      restored = { state = read(GAME_STATE), equip = {}, atk = {}, def = {}, mag = {}, mdef = {} }
+      for i = 0, 11 do restored.equip[i] = read(PC_EQUIP + i) end
+      for m = 0, 3 do
+        restored.atk[m], restored.def[m] = read(PC_EQ_ATK + m), read(PC_EQ_DEF + m)
+        restored.mag[m], restored.mdef[m] = read(PC_EQ_MAG + m), read(PC_EQ_MDEF + m)
+      end
+      phase = 6
+      return
+    end
+    if frame - mark < 60 then return end
+    if hasSave then fail(EXIT_CONTINUE_MISSING_WITH_SAVE, "Continue did nothing with a save on the chip"); return end
+    log("run 1: no save present, Continue correctly did nothing")
+    held = { start = true }
+    mark = frame
+    phase = 3
+    return
+  end
+
+  -- 3: a new game; wear the non-default set with a wrong cache, and seed the shifted scratch block.
+  if phase == 3 then
+    if frame - mark < 6 then return end
+    held = {}
+    if frame - mark < 20 then return end
+    if read(GAME_STATE) ~= ST_GAMEPLAY then fail(EXIT_NO_TITLE, "Start did not begin a new game"); return end
+    for i = 0, 11 do write(PC_EQUIP + i, EQUIP_WORN[i] or NO_ITEM) end
+    for m = 0, 3 do
+      write(PC_EQ_ATK + m, STALE_CACHE); write(PC_EQ_DEF + m, STALE_CACHE)
+      write(PC_EQ_MAG + m, STALE_CACHE); write(PC_EQ_MDEF + m, STALE_CACHE)
+    end
+    if not STREAMED then
+      for address = SCRATCH_FIRST, SCRATCH_LAST do write(address, seedOf(address)) end
+    end
+    log("run 1: gear worn, cache poisoned" .. (STREAMED and "" or ", scratch block seeded") .. "; walking to the saver")
+    mark = frame
+    phase = 4
+    return
+  end
+
+  -- 4: walk onto the Save NPC at (64, 96) by position feedback, and stop pressing the instant the marker validates.
+  if phase == 4 then
+    if saveWritten() then
+      -- The flash record is still staged in RAM at this very frame (the main loop has not run its next recompute), which is exactly
+      -- when a record that overlaps the streamed scratch block would show: the live fields must still be the engine's own.
+      if STREAMED then
+        local problem = streamedStateProblem()
+        if problem then fail(EXIT_STREAM_STATE, "at the flash commit: " .. problem); return end
+      end
+      held = {}
+      mark = frame
+      phase = 5
+      return
+    end
+    if frame - mark > 1500 then fail(EXIT_SAVE_NEVER_WROTE, "the flash save never completed"); return end
+    if STREAMED and frame - mark > 20 then
+      local problem = streamedStateProblem()
+      if problem then fail(EXIT_STREAM_STATE, "before the save: " .. problem); return end
+    end
+    local dx, dy = 64 - read(PLAYER_X), 96 - read(PLAYER_Y)
+    held = {}
+    if dx > 1 then held = { right = true }
+    elseif dx < -1 then held = { left = true }
+    elseif dy > 1 then held = { down = true }
+    elseif dy < -1 then held = { up = true }
+    elseif frame - mark > 600 then fail(EXIT_NO_ALIGN, "reached the saver but no save happened") return end
+    return
+  end
+
+  -- 5: the save is complete. The chip holds the ids; the shifted scratch block is exactly as seeded.
+  if phase == 5 then
+    if frame - mark < 30 then return end
+    for i = 0, 11 do
+      local want = EQUIP_WORN[i] or NO_ITEM
+      local onChip = readPrg(PC_EQUIP_BODY_OFFSET + i)
+      if onChip ~= want then
+        fail(EXIT_STATE_WRONG_BEFORE_CYCLE, string.format("pc_equip[%d] on the chip is %d, expected %d", i, onChip, want)); return
+      end
+    end
+    if STREAMED then
+      local problem = streamedStateProblem()
+      if problem then fail(EXIT_STREAM_STATE, "after the save: " .. problem); return end
+      if read(SW_COL) ~= 0 or read(SW_ROW) ~= 0 then fail(EXIT_STREAM_STATE, "the saver is on streamed screen (0,0)"); return end
+    end
+    for address = SCRATCH_FIRST, SCRATCH_LAST do
+      if STREAMED then break end
+      if read(address) ~= seedOf(address) then
+        fail(EXIT_SCRATCH_CLOBBERED, string.format("scratch byte $%04X is %02X, seeded %02X -- the flash record reached the shifted block", address, read(address), seedOf(address))); return
+      end
+    end
+    log(STREAMED and "run 1 complete: ids on the chip, streamed-field state consistent" or "run 1 complete: ids on the chip, scratch block intact")
+    emu.stop(EXIT_RUN1_OK)
+    return
+  end
+
+  -- 6 (run 2): Continue worked; exact ids, exact recomputed bonuses.
+  if phase == 6 then
+    if restored.state ~= ST_GAMEPLAY then fail(EXIT_RESTORED_STATE_WRONG, "loaded into state " .. restored.state); return end
+    for i = 0, 11 do
+      local want = EQUIP_WORN[i] or NO_ITEM
+      if restored.equip[i] ~= want then
+        fail(EXIT_RESTORED_STATE_WRONG, string.format("pc_equip[%d] restored as %d, expected %d", i, restored.equip[i], want)); return
+      end
+    end
+    for m = 0, 3 do
+      for name, expected in pairs(EQUIP_BONUS) do
+        if restored[name][m] ~= expected[m] then
+          fail(EXIT_RESTORED_STATE_WRONG, string.format("pc_eq_%s[%d] restored as %d, expected %d", name, m, restored[name][m], expected[m])); return
+        end
+      end
+    end
+    log("run 2: every worn id and every bonus came back")
+    if not STREAMED then emu.stop(0); return end
+    mark = frame
+    phase = 7
+    return
+  end
+
+  -- 7 (run 2, streamed board only): let the restored world settle, then the streamed-field state must be live and consistent, and
+  -- the restored position is the one the save was made at: on streamed screen (0, 0), overlapping the saver at (64, 96) (a touch
+  -- trigger fires on the first overlapping frame, so the walker is up to 15 px short of the centre when the save runs).
+  if phase == 7 then
+    if frame - mark < 90 then return end
+    if read(GAME_STATE) ~= ST_GAMEPLAY then fail(EXIT_RESTORED_STATE_WRONG, "left gameplay after Continue"); return end
+    local problem = streamedStateProblem()
+    if problem then fail(EXIT_STREAM_STATE, "after Continue: " .. problem); return end
+    local x, y = read(PLAYER_X), read(PLAYER_Y)
+    if read(SW_COL) ~= 0 or read(SW_ROW) ~= 0 or math.abs(x - 64) > 15 or math.abs(y - 96) > 15 then
+      fail(EXIT_STREAM_STATE, string.format("restored at screen (%d,%d) pos (%d,%d), expected the saver's (0,0) (64,96)", read(SW_COL), read(SW_ROW), x, y)); return
+    end
+    log("run 2 complete: ids, bonuses and the live streamed-field state came back")
+    emu.stop(0)
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)

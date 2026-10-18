@@ -43,6 +43,7 @@ for (const scene of SCENES) {
   const pending = new Map();
   scanEquates(fs.readFileSync(path.join(dir, 'build/constants.asm'), 'utf8'), pending);
   scanEquates(fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8'), pending);
+  scanEquates(fs.readFileSync(path.join(dir, 'build/assets/cartridge.inc'), 'utf8'), pending);
   resolveEquates(pending, symbols);
   const sym = (name) => {
     if (!symbols.has(name)) throw new Error(`${name} did not resolve out of this build's constants.asm`);

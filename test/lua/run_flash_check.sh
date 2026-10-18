@@ -89,6 +89,14 @@
 # one a future engine change made harmless, or the harness itself silently
 # not asserting anything, as a passing run.
 #
+# Equipment (ROADMAP item 5, build commit C3): an ordinary run also builds the `u512-equip` board (an RPG on UNROM 512 with Save and
+# four equipment pieces, in a mkdtemp directory) and drives it through its own power cycle with save_flash_u512-equip.lua, generated
+# from save_flash_equip.lua.template with that build's own scratch-block addresses; and the `u512-equip-streamed` board (the same on a
+# streamed-world map, save_flash_u512-equip-streamed.lua) whose live streamed-field state is recomputed and checked before and after
+# the save and after Continue. `--break=u512-equip-no-shift` is the negative control for both: the same boards with EQUIP_SAVE_SHIFT
+# forced to 0 by a constants.asm override, which must fail with exit 12 on the ordinary board (the staged record overwrote the seeded
+# scratch block) and exit 17 on the streamed one (it corrupted the live sw_fc_* state).
+#
 # Exit code: 0 if the observed result matches the expected signature for the
 # given mode (no mode = a clean pass); 1 otherwise.
 
@@ -133,6 +141,8 @@ case "$MODE" in
   u512-second-commit-ok) EXPECT_KIND="success-run1-only"; EXPECT_RUN1=18 ;;
   u512-no-unlock|u512-bad-cmd-addr) EXPECT_KIND="fail-no-ips"; EXPECT_RUN1=5 ;;
   u512-no-erase) EXPECT_KIND="fail-with-ips"; EXPECT_RUN1=13 ;;
+  u512-equip-no-shift) EXPECT_KIND="equip-clobbered"; EXPECT_RUN1=12 ;;
+  u512-equip-omit) EXPECT_KIND="equip-omitted"; EXPECT_RUN1=7 ;;
   *)
     echo "[run_flash_check] unknown --break mode: $MODE"
     exit 1
@@ -141,6 +151,51 @@ esac
 
 echo "[run_flash_check] building fixture${MODE:+ (--break=$MODE)}..."
 node "$ROOT/test/lua/build_flash_roms.mjs" "$OUT_DIR" ${MODE:+--break=$MODE} || exit 1
+
+# Equipment control (C3, review R4): EQUIP_SAVE_SHIFT forced to 0. Only the equipment boards are built. On the ordinary RPG board the
+# staged 139-byte record must overwrite the seeded scratch block (exit 12, EXIT_SCRATCH_CLOBBERED); on the streamed-world board it must
+# corrupt the live sw_fc_* streamed state (exit 17, EXIT_STREAM_STATE). BOTH verdicts must flip.
+if [ "$MODE" = "u512-equip-no-shift" ]; then
+  ok=yes
+  for board in u512-equip:12:EXIT_SCRATCH_CLOBBERED u512-equip-streamed:17:EXIT_STREAM_STATE; do
+    key=${board%%:*}; rest=${board#*:}; want=${rest%%:*}; name=${rest#*:}
+    rm -f "$SAVES_DIR/flash_$key.ips"
+    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes" >/dev/null 2>&1
+    erun1=$?
+    if [ "$erun1" = "$want" ]; then
+      echo "$key ($MODE): PASS -- matched expected signature (run1=$erun1, $name)"
+    else
+      echo "$key ($MODE): FAIL -- expected run1=$want, got $erun1"
+      ok=no
+    fi
+  done
+  [ "$ok" = "yes" ] && exit 0
+  exit 1
+fi
+
+# Omitted-serialization control (review R5): both equipment boards are built with a save record that keeps its length, identity and a
+# valid checksum but never serialized pc_equip. Each is power-cycled twice: run 1 reads the record off the chip (exit 7,
+# EXIT_STATE_WRONG_BEFORE_CYCLE, "pc_equip[0] on the chip is 0, expected 1") and run 2 -- Continue accepts the record, so it reaches
+# restore -- must report exit 10 (EXIT_RESTORED_STATE_WRONG, "pc_equip[0] restored as 255, expected 1"). The exact worn ids are the
+# oracle; a layout or marker timeout would be a different exit and fail this.
+if [ "$MODE" = "u512-equip-omit" ]; then
+  ok=yes
+  for key in u512-equip u512-equip-streamed; do
+    rm -f "$SAVES_DIR/flash_$key.ips"
+    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes" >/dev/null 2>&1
+    erun1=$?
+    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes" >/dev/null 2>&1
+    erun2=$?
+    if [ "$erun1" = "7" ] && [ "$erun2" = "10" ]; then
+      echo "$key ($MODE): PASS -- the omitted equipment payload was caught (run1=$erun1 EXIT_STATE_WRONG_BEFORE_CYCLE, run2=$erun2 EXIT_RESTORED_STATE_WRONG)"
+    else
+      echo "$key ($MODE): FAIL -- expected run1=7 run2=10, got run1=$erun1 run2=$erun2"
+      ok=no
+    fi
+  done
+  [ "$ok" = "yes" ] && exit 0
+  exit 1
+fi
 
 rom="$OUT_DIR/flash_u512.nes"
 ips="$SAVES_DIR/flash_u512.ips"
@@ -179,6 +234,26 @@ case "$EXPECT_KIND" in
     [ "$ips_present" = "yes" ] && [ "$run1" = "$EXPECT_RUN1" ] && matched="yes"
     ;;
 esac
+
+# Equipment (ROADMAP item 5, C3; streamed board R4): in an ordinary run, also drive the two RPG equipment boards (the ordinary map and
+# the streamed world) through their own two-invocation power cycles. Run 1 expects EXIT_RUN1_OK (1); run 2 expects 0.
+if [ "$matched" = "yes" ] && [ -z "$MODE" ]; then
+  for key in u512-equip u512-equip-streamed; do
+    erom="$OUT_DIR/flash_$key.nes"
+    eips="$SAVES_DIR/flash_$key.ips"
+    rm -f "$eips"
+    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$erom" >/dev/null 2>&1
+    erun1=$?
+    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$erom" >/dev/null 2>&1
+    erun2=$?
+    if [ -f "$eips" ] && [ "$erun1" = "1" ] && [ "$erun2" = "0" ]; then
+      echo "$key: PASS (ips=yes run1=$erun1 run2=$erun2)"
+    else
+      echo "$key: FAIL (ips=$([ -f "$eips" ] && echo yes || echo no) run1=$erun1 run2=$erun2) -- see save_flash_equip.lua.template's EXIT_* constants"
+      matched="no"
+    fi
+  done
+fi
 
 label="${MODE:-<no mode>}"
 if [ "$matched" = "yes" ]; then

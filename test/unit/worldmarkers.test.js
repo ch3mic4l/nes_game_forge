@@ -419,8 +419,11 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // the item/party normalizers, three predicates, startEquip/usableBy handling in renumberItemDeletion/renumberPartyMemberDeletion, grantNewMember,
 // releaseEquipment and five validateProject rules. remapScreenReferences, projectEvents and allCommands are untouched and no new stored
 // screen reference exists, so referenceInventory needs no change.
+// Re-pinned for equipment C3: audited -- the diff to shared/project.js adds only the two exported predicates projectUsesEquipmentMag /
+// projectUsesEquipmentMdef (a read of item.equip.mag / .mdef); nothing stores a screen reference and remapScreenReferences, projectEvents
+// and allCommands are untouched.
 const PINNED_DIGESTS = {
-  'shared/project.js': '8f2bf38c4166d839b8e507d540ebd055eb8b59bbfccaec82bc578eea02f8ce3f',
+  'shared/project.js': '12889d7acd480c67bcee0c5732099d74ad251d95382d1196e1bd6e8e6166d268',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

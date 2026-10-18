@@ -18,7 +18,7 @@
 // which is exactly the point: a reordered or resized record must not be read
 // as an old one's.
 
-import { RPG_LIMITS, projectUsesItems, MAX_ITEMS } from './project.js';
+import { RPG_LIMITS, projectUsesItems, projectUsesEquipment, MAX_ITEMS } from './project.js';
 
 /**
  * `inv_items`' size (engine/constants.asm's `MAX_ITEMS`). Hardcoded there,
@@ -131,9 +131,21 @@ export const SAVE_FIELDS = [
   { ram: 'pc_name_ram', size: RPG_LIMITS.party * RPG_LIMITS.nameLength }
 ];
 
+/**
+ * The record's fields for one project: `SAVE_FIELDS` plus, only for a project that uses equipment, `pc_equip`
+ * (every member's worn pieces, slot-major) last (docs/design-equipment.md section 5). Called with no project it
+ * is the base list, so every existing caller keeps today's layout. The bonus arrays are not saved: `party_restore`
+ * recomputes them. No `SAVE_LAYOUT_VERSION` bump -- a project that does not use equipment has the identical record,
+ * and an equipment project's `saveIdentity` already differs (below).
+ */
+export function saveFields(project) {
+  if (!project || !projectUsesEquipment(project)) return SAVE_FIELDS;
+  return [...SAVE_FIELDS, { ram: 'pc_equip', size: RPG_LIMITS.equipSlots * RPG_LIMITS.party }];
+}
+
 /** Total body size in bytes — everything above, before the checksum and identity. */
-export function saveBodySize() {
-  return SAVE_FIELDS.reduce((total, field) => total + field.size, 0);
+export function saveBodySize(project) {
+  return saveFields(project).reduce((total, field) => total + field.size, 0);
 }
 
 /**
@@ -267,6 +279,10 @@ export function saveIdentity(project) {
     itemCount
   ];
   if (saveCompatToken) values.push(saveCompatToken);
+  // Equipment (docs/design-equipment.md section 5): folded only when true, the pattern saveCompatToken just used, so
+  // every existing project's identity is byte-identical, and an equipment project's save is refused by a build of the
+  // same project without equipment (whose record is 12 bytes shorter) and vice versa.
+  if (project && projectUsesEquipment(project)) values.push(1);
   let hashLo = SAVE_LAYOUT_VERSION;
   let hashHi = SAVE_LAYOUT_VERSION;
   for (const value of values) {

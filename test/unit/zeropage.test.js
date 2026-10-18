@@ -27,7 +27,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scanEquates, resolveEquates, ZP_MODE_TABLE, scanZeroPageInstruction } from '../lib/equates.js';
+import { scanEquates, resolveEquates, STOCK_CARTRIDGE_EQUATES, ZP_MODE_TABLE, scanZeroPageInstruction } from '../lib/equates.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ENGINE_DIR = path.join(ROOT, 'engine');
@@ -38,6 +38,7 @@ function resolveConstants() {
   const text = fs.readFileSync(CONST_PATH, 'utf8');
   const pending = new Map();
   scanEquates(text, pending);
+  scanEquates(STOCK_CARTRIDGE_EQUATES, pending);
   const symbols = new Map();
   resolveEquates(pending, symbols);
   return symbols;

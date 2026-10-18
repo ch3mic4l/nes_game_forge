@@ -85,6 +85,7 @@ async function buildShape({ key, opts }) {
     const pending = new Map();
     scanEquates(constantsText, pending);
     scanEquates(configText, pending);
+    scanEquates(await fs.promises.readFile(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8'), pending);
     const symbols = new Map();
     resolveEquates(pending, symbols);
     for (const name of ['frame_cnt', 'game_state', 'ST_GAMEPLAY']) {
