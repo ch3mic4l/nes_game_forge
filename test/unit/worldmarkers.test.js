@@ -415,8 +415,12 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // screen reference need a link? -- extend the oracle fixture above if so, THEN update the digests. A harmless edit raising this
 // alarm is accepted; a missed change is not. (No comment/whitespace normalisation and no short hash: both were shown to miss
 // real changes, handoff-next/worldview/d2-review2.md, finding 2.)
+// Re-pinned for equipment C2 (docs/design-equipment.md): audited -- the diff to shared/project.js adds EQUIP_SLOTS, the equipment fields in
+// the item/party normalizers, three predicates, startEquip/usableBy handling in renumberItemDeletion/renumberPartyMemberDeletion, grantNewMember,
+// releaseEquipment and five validateProject rules. remapScreenReferences, projectEvents and allCommands are untouched and no new stored
+// screen reference exists, so referenceInventory needs no change.
 const PINNED_DIGESTS = {
-  'shared/project.js': 'e0427f50f9f41720d45fc8764ba4f2ba62a8d780af81f119a4cce20329faadba',
+  'shared/project.js': '8f2bf38c4166d839b8e507d540ebd055eb8b59bbfccaec82bc578eea02f8ce3f',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

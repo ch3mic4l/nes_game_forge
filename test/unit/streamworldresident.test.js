@@ -790,9 +790,13 @@ const CANONICAL_HASHES = {
   // cartridge.camera flipped from false to true (Part D item 8 refuses camera-off on any project
   // with a streamed map; the prototype's own project.json this shape used to mirror predates that
   // refusal). Nothing else about the generator's own shape changed this slice.
-  action: '775ea1794be3bcc9eb8f75dd98b49a4a041e6ecc380800ca00f8dec30315c440',
-  rpg: 'e4b99f663281712ca90fb124669c09415b9b999db25251ae994a7782de3a52d6',
-  'action-mixed': '27933007e23f5db4d9486c9fd356f74e558c9eb0da7a79fd1dc568931303ac47'
+  //
+  // Re-pinned again (equipment C2, docs/design-equipment.md section 1): createPartyMember gained `startEquip: [null, null, null]`,
+  // so every shape's party carries it. That is the whole change -- the canonical JSON of each shape with that one key deleted from
+  // its party hashes to the previous three values (action 775ea179..., rpg e4b99f66..., action-mixed 27933007...).
+  action: '720aa40aca6cb942180280222f278150731543d6eed500c73199208277c219c9',
+  rpg: '134c82661ca7dec2d186d0a3f7c4a921fa47a3b6e8175cac583ad5c063bf9c6e',
+  'action-mixed': '51165bea673608dbc6ba67022c5778edfbb1e313fa3db54d390c5b3754290420'
 };
 
 test('test/lib/streamedproject.js: the canonical JSON of each generator shape hashes to a pinned SHA-256', () => {

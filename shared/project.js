@@ -436,6 +436,16 @@ export const ITEM_EFFECT_KINDS = [
 ];
 
 /**
+ * The equipment slots, in wire order: `items[i].equip.slot` is an index into
+ * this list, and so will the engine's `eq_slot` column and the `pc_equip`
+ * byte layout be (docs/design-equipment.md section 1). Append-only, like
+ * `ACTIONS` and `SPELL_KINDS`: a new slot goes on the end, never in the
+ * middle. Its length is `RPG_LIMITS.equipSlots`, the one number the RAM
+ * size, the save field and the menu all derive from; a test pins the pair.
+ */
+export const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
+
+/**
  * The animation an actor draws, chosen by which way it is facing. Every one of
  * these is read by the engine (`actor_anim_dir`, four entries per actor, with
  * left and right sharing `walkSide`); an unset slot falls back to `idle`.
@@ -1156,6 +1166,10 @@ export const RPG_LIMITS = {
   // this — engine/constants.asm allocates the block but does not size it.
   variables: 16,
   spells: 32,
+  // Equipment slots per party member (EQUIP_SLOTS.length; docs/design-equipment.md
+  // section 1). Three because each slot costs 4 bytes of RAM, 4 of save record
+  // and a row of the Equip menu.
+  equipSlots: 3,
   maxLevel: 15,
   encounterActors: 4,
   battleArtTiles: 12, // the widest/tallest monster block, in 8x8 tiles
@@ -1167,6 +1181,11 @@ export const RPG_LIMITS = {
   // would create), so this direction is the one that stays import-legal.
   nameLength: NAME_LENGTH
 };
+
+// A party-member bitmask with every member's bit set (0b1111): the domain of `items[].equip.usableBy`, and
+// its default when a piece does not say -- everyone, as a literal. A normalizer that defaulted it to 0 would
+// make every hand-built piece unwearable.
+const EVERYONE_MASK = (1 << RPG_LIMITS.party) - 1;
 
 /**
  * The up-to-RPG_LIMITS.monstersPerBattle monster ids a Start a battle
@@ -2560,6 +2579,15 @@ export function renumberItemDeletion(project, index) {
       }
     }
   }
+  // A party member's starting equipment (docs/design-equipment.md section 6): this helper owns every id
+  // reference, `startEquip` included. The deleted piece becomes `null`; a higher id shifts down.
+  for (const member of project.party ?? []) {
+    if (!Array.isArray(member.startEquip)) continue;
+    member.startEquip.forEach((id, slot) => {
+      if (typeof id !== 'number' || id === NO_ITEM) return; // null, or already "nothing"
+      member.startEquip[slot] = id === index ? null : shift(id);
+    });
+  }
   return project;
 }
 
@@ -2650,6 +2678,59 @@ export function renumberPartyMemberDeletion(project, index) {
         command.member = command.member === index ? null : shift(command.member);
       }
     }
+  }
+  // The other reference to a party member by position: bit `index` of every equipment piece's `usableBy`
+  // (docs/design-equipment.md section 6). The deleted member's bit is removed and the higher bits shift down
+  // one, so a mask that covered every member still covers every remaining one (0b1111 -> 0b0111). An index
+  // outside 0-7 -- or not an integer -- leaves every mask unchanged: a JS `1 << index` wraps at 32 and would
+  // corrupt it. `party[index].startEquip` goes with the member and needs nothing here.
+  if (Number.isInteger(index) && index >= 0 && index < 8) {
+    const low = (1 << index) - 1;
+    for (const item of project.items ?? []) {
+      const mask = item.equip?.usableBy;
+      if (!Number.isInteger(mask)) continue;
+      item.equip.usableBy = ((mask >> (index + 1)) << index) | (mask & low);
+    }
+  }
+  return project;
+}
+
+/**
+ * Adding the party member at `index` (the Character Forge's Add, in the same `store.commit`): every piece
+ * whose `usableBy` covered all the previous members gains the newcomer's bit, so "everyone" keeps meaning
+ * everyone. A piece limited to some members does not. The masks are literals with no "everyone" sentinel, so
+ * this is the only place a newcomer is ever granted anything; an undo restores the pre-commit snapshot.
+ * An `index` outside 1..RPG_LIMITS.party-1 changes nothing: index 0 has no previous members to have covered,
+ * and a mask holds only the party's bits.
+ *
+ * Mutates `project` and returns it.
+ */
+export function grantNewMember(project, index) {
+  if (!Number.isInteger(index) || index < 1 || index >= RPG_LIMITS.party) return project;
+  const previous = (1 << index) - 1;
+  for (const item of project.items ?? []) {
+    const mask = item.equip?.usableBy;
+    if (!Number.isInteger(mask) || (mask & previous) !== previous) continue;
+    item.equip.usableBy = mask | (1 << index);
+  }
+  return project;
+}
+
+/**
+ * Item `itemId` stops being a piece of its current slot -- it became an ordinary item (`newSlot` omitted), or
+ * moved to the slot `newSlot` -- so every starting-equipment entry that named it in any other slot is cleared
+ * (docs/design-equipment.md section 6). Called by the Items Forge in the same `store.commit` as the edit,
+ * because `commit()` never runs `normalizeProject`; `validateProject` reports a leftover as an error.
+ * Does not touch the item itself.
+ *
+ * Mutates `project` and returns it.
+ */
+export function releaseEquipment(project, itemId, newSlot = null) {
+  for (const member of project.party ?? []) {
+    if (!Array.isArray(member.startEquip)) continue;
+    member.startEquip.forEach((id, slot) => {
+      if (id === itemId && slot !== newSlot) member.startEquip[slot] = null;
+    });
   }
   return project;
 }
@@ -4468,7 +4549,10 @@ export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
     acc: 200,
     eva: 8,
     attackAnim: null, // this member's flipbook on a physical attack (§16)
-    spells: [] // { spellId, level } — learned on reaching that level
+    spells: [], // { spellId, level } — learned on reaching that level
+    // What the member wears at New Game, one entry per EQUIP_SLOTS slot: an item id
+    // (an equipment piece of that slot) or null. Not in the bag.
+    startEquip: new Array(RPG_LIMITS.equipSlots).fill(null)
   };
 }
 
@@ -5793,7 +5877,13 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
       .map((entry) => ({
         spellId: clamp(entry?.spellId, 0, Math.max(0, spellCount - 1), 0),
         level: clamp(entry?.level, 1, maxLevel, 1)
-      }))
+      })),
+    // An id or null per slot. Whether the id names a piece of that slot is the
+    // post-pass in normalizeProject's question: this function does not see `items`.
+    startEquip: Array.from({ length: RPG_LIMITS.equipSlots }, (_, slot) => {
+      const id = Array.isArray(raw?.startEquip) ? raw.startEquip[slot] : null;
+      return Number.isInteger(id) && id >= 0 && id < NO_ITEM ? id : null;
+    })
   };
 }
 
@@ -5977,7 +6067,30 @@ function normalizeItem(raw, id, rawActors) {
     effect:
       raw?.effect && typeof raw.effect === 'object'
         ? { kind: normalizeEffectKind(raw.effect.kind), amount: damageAmount(raw.effect.amount) }
-        : deriveItemEffect(rawActors, actorId)
+        : deriveItemEffect(rawActors, actorId),
+    equip: normalizeEquip(raw?.equip)
+  };
+}
+
+/**
+ * An item's equipment record (docs/design-equipment.md section 1): `null` for an ordinary item, else
+ * `{ slot, atk, def, mag, mdef, usableBy }`. A `slot` that is not an index into EQUIP_SLOTS makes the whole
+ * record `null` -- an unusable piece becomes an ordinary item rather than a piece in a slot that does not
+ * exist. Each stat is an integer 0-255; `usableBy` is masked to the party's bits. Not gated on the game type:
+ * switching a project to an action game must not lose the data (the engine and the UI ignore it there).
+ */
+function normalizeEquip(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (!Number.isInteger(raw.slot) || raw.slot < 0 || raw.slot >= EQUIP_SLOTS.length) return null;
+  return {
+    slot: raw.slot,
+    atk: clamp(raw.atk, 0, 255, 0),
+    def: clamp(raw.def, 0, 255, 0),
+    mag: clamp(raw.mag, 0, 255, 0),
+    mdef: clamp(raw.mdef, 0, 255, 0),
+    // The party mask applies straight to a supplied integer (two's-complement `&`, so -1 is 0b1111 and 256 is 0): no byte clamp first,
+    // which would turn 0x101 into everyone. Anything that is not an integer (missing, 1.5, NaN, a string) is "did not say": everyone.
+    usableBy: Number.isInteger(raw.usableBy) ? raw.usableBy & EVERYONE_MASK : EVERYONE_MASK
   };
 }
 
@@ -6087,7 +6200,8 @@ function migrateItemsFromActors(raw) {
     // is the same one-time derivation `normalizeItem`'s own "not set yet"
     // branch falls back to, applied at the moment the item itself is first
     // created rather than on a later load.
-    effect: deriveItemEffect(rawActors, actorId)
+    effect: deriveItemEffect(rawActors, actorId),
+    equip: null // a migrated item is an ordinary item, not a piece of equipment
   }));
   return { items, itemCtx: { migrating: true, actorToItem } };
 }
@@ -6214,6 +6328,11 @@ export function normalizeProject(raw) {
     .map((member, index) => normalizePartyMember(member, index, spells.length, rpg.maxLevel));
   // Every project always has someone to play as.
   if (!party.length) party.push(createPartyMember(0, 'Hero'));
+  // A starting piece has to name an equipment piece of its slot. Done here, after both lists exist, because
+  // normalizePartyMember does not see `items`. Every game type: the data is kept on an action game too.
+  for (const member of party) {
+    member.startEquip = member.startEquip.map((id, slot) => (items[id]?.equip?.slot === slot ? id : null));
+  }
 
   const { commonEvents, commonEventSeq } = normalizeCommonEvents(raw.commonEvents, raw.commonEventSeq, itemCtx);
 
@@ -6681,6 +6800,24 @@ export function projectUsesItems(project) {
 }
 
 /**
+ * Whether the RPG has any equipment piece (an item with a non-null `equip`): the one predicate everything
+ * new in the equipment feature is gated on (docs/design-equipment.md section 1). False for an action game
+ * whatever its items carry -- the data is kept there, but the engine and the UI ignore it.
+ */
+export function projectUsesEquipment(project) {
+  if (project.project?.gameType !== 'rpg') return false;
+  return (project.items ?? []).some((item) => item.equip);
+}
+
+// Whether some piece adds to `stat` ('mag' or 'mdef'): equipment's contribution to the two magic predicates
+// below, a third source beside a member's own growth and an actor's `battle` stat. RPG only, like
+// projectUsesEquipment.
+function equipmentAddsStat(project, stat) {
+  if (project.project?.gameType !== 'rpg') return false;
+  return (project.items ?? []).some((item) => (item.equip?.[stat] ?? 0) > 0);
+}
+
+/**
  * Whether magic power -- a caster's `baseMag`/`magPerLevel`/`battle.mag`
  * adding into a spell's own rolled amount -- is worth assembling at all.
  * Drives the generated `MAGIC_POWER_ENABLED` flag the same shape
@@ -6695,7 +6832,9 @@ export function projectUsesMagicPower(project) {
   if ((project.party ?? []).some((member) => member.baseMag > 0 || member.magPerLevel > 0)) {
     return true;
   }
-  return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.mag ?? 0) > 0);
+  if ((project.sprites?.actors ?? []).some((actor) => (actor.battle?.mag ?? 0) > 0)) return true;
+  // An equipment piece's MAG is the third source: an authored choice taken at face value, as the two above are.
+  return equipmentAddsStat(project, 'mag');
 }
 
 /**
@@ -6709,7 +6848,8 @@ export function projectUsesMagicDefence(project) {
   if ((project.party ?? []).some((member) => member.baseMdef > 0 || member.mdefPerLevel > 0)) {
     return true;
   }
-  return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.mdef ?? 0) > 0);
+  if ((project.sprites?.actors ?? []).some((actor) => (actor.battle?.mdef ?? 0) > 0)) return true;
+  return equipmentAddsStat(project, 'mdef');
 }
 
 /**
@@ -7866,6 +8006,67 @@ export function validateProject(project) {
         'compile — close and reopen the project so it can be normalized again; re-saving alone will not fix it.',
       'item-effect-malformed', {}, [malformedEffects]
     );
+  }
+
+  // Equipment (docs/design-equipment.md section 6). Subjects are indices, so a rename never looks like a new
+  // problem. On an action game a piece is data the engine and the UI ignore -- kept, because switching the game
+  // type must not lose it, and labelled rather than silent; the RPG-only errors below do not apply to it.
+  const equipItems = project.items.filter((item) => item.equip);
+  if (project.project?.gameType !== 'rpg') {
+    if (equipItems.length) {
+      add(
+        'warning',
+        'Items Forge',
+        `${equipItems.length} item${equipItems.length === 1 ? ' has' : 's have'} equipment data, which is ` +
+          'ignored in action games. It is kept, and takes effect if this project becomes an RPG.',
+        'equip-ignored-action-game', {}, [equipItems.length]
+      );
+    }
+  } else {
+    project.items.forEach((item, itemIndex) => {
+      // A piece with an effect is two features at once (a heal that also wears); `none` is how the bag keeps it.
+      if (item.equip && item.effect && item.effect.kind !== 'none') {
+        add(
+          'error',
+          'Items Forge',
+          `${item.name} can be worn but also has an effect (${item.effect.kind}). A piece of equipment has no ` +
+            'effect: set its effect to "No effect", or turn off "Can be worn".',
+          'equip-piece-has-effect', { item: itemIndex }, []
+        );
+      }
+    });
+    project.party.forEach((member, memberIndex) => {
+      (member.startEquip ?? []).slice(0, RPG_LIMITS.equipSlots).forEach((id, slot) => {
+        if (id === null || id === undefined) return;
+        const piece = project.items[id];
+        const subject = { member: memberIndex, slot };
+        if (!piece?.equip) {
+          add(
+            'error',
+            'Character Forge',
+            `${member.name} starts wearing item ${id} in the ${EQUIP_SLOTS[slot]} slot, which is not a piece of ` +
+              'equipment. Choose a piece in the Items Forge, or clear the slot.',
+            'start-equip-not-a-piece', subject, []
+          );
+        } else if (piece.equip.slot !== slot) {
+          add(
+            'error',
+            'Character Forge',
+            `${member.name} starts wearing ${piece.name} in the ${EQUIP_SLOTS[slot]} slot, but it is a ` +
+              `${EQUIP_SLOTS[piece.equip.slot]} piece. Choose a ${EQUIP_SLOTS[slot]} or clear the slot.`,
+            'start-equip-wrong-slot', subject, []
+          );
+        } else if (((piece.equip.usableBy >> memberIndex) & 1) === 0) {
+          add(
+            'error',
+            'Character Forge',
+            `${member.name} starts wearing ${piece.name}, which ${member.name} is not allowed to wear. Allow ` +
+              'the piece to this character in the Items Forge, or choose another.',
+            'start-equip-not-allowed', subject, []
+          );
+        }
+      });
+    });
   }
 
   // Give item / Take item is a base-engine command (engine/ui.asm's

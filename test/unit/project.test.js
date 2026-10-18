@@ -7014,7 +7014,9 @@ test('items.json is always written, including when empty, so a missing file and 
   await saveProject(dir, migrated);
   assert.deepEqual(
     JSON.parse(await fs.readFile(itemsPath, 'utf8')),
-    [{ id: 0, name: 'Torch', actorId: 0, metaspriteId: null, effect: { kind: 'none', amount: 0 } }],
+    // `equip: null` is the equipment feature's normalized default (docs/design-equipment.md section 1): the key
+    // appears the next time an editor saves.
+    [{ id: 0, name: 'Torch', actorId: 0, metaspriteId: null, effect: { kind: 'none', amount: 0 }, equip: null }],
     'a real item survives being written to items.json'
   );
   const reloaded = await loadProject(dir);

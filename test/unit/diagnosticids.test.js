@@ -327,7 +327,7 @@ test('a rule never embeds a count: raising or lowering a number leaves the rule 
 // ----------------------------------------------------------------------------------------------- (7) the source scan
 
 const PRODUCER_FILES = {
-  'shared/project.js': { add: 54, addFrom: 7, push: 4, return: 7 },
+  'shared/project.js': { add: 59, addFrom: 7, push: 4, return: 7 },
   'main/build/generate.js': { push: 14, 'return-array': 2 },
   'main/build/battletables.js': { push: 5 },
   'main/build/textcompile.js': { push: 4 }
@@ -337,7 +337,8 @@ test('(7) every diagnostic producer carries rule, subject and counts, in every f
   // Catches a producer added (or left) without an id: the legacy fallbacks stay unreachable only while this holds. The expected shape of the
   // inventory is pinned too, so a scan that quietly found nothing (a renamed closure) fails here instead of passing vacuously.
   // project.js: 64 original sites = 2 streamedGridProblems + 2 closures + 6 streamedBoardProblems + 4 validateStreamedMaps + 50 validateProject (43 add + 7 addFrom),
-  // plus the 7 diagnose* builders' return objects and addFrom's own `add` forward. generate.js 14 pushed (checkCode 4 + checkCapacity 10) + 2 returned in arrays by streamedCapacityProblems (fix round 1, F3), battletables.js 5,
+  // plus the 7 diagnose* builders' return objects and addFrom's own `add` forward. Equipment C2 (docs/design-equipment.md section 6) added 5 validateProject
+  // `add` sites: equip-ignored-action-game, equip-piece-has-effect, start-equip-not-a-piece, start-equip-wrong-slot, start-equip-not-allowed (54 -> 59). generate.js 14 pushed (checkCode 4 + checkCapacity 10) + 2 returned in arrays by streamedCapacityProblems (fix round 1, F3), battletables.js 5,
   // and textcompile.js's 4, which the D2 inventory missed (compileText feeds checkCapacity).
   for (const [file, expected] of Object.entries(PRODUCER_FILES)) {
     const sites = diagnosticProducers(fs.readFileSync(path.join(ROOT, file), 'utf8'));
