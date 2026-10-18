@@ -7,7 +7,18 @@
 
 import { store } from '../../store.js';
 import { el, fill, field, confirmModal, toast } from '../../ui.js';
-import { LIMITS, ITEM_EFFECT_KINDS, itemActorOptions, renumberItemDeletion } from '../../../shared/project.js';
+import { LIMITS, ITEM_EFFECT_KINDS, EQUIP_SLOTS, itemActorOptions, renumberItemDeletion } from '../../../shared/project.js';
+import {
+  EQUIP_STATS,
+  commitCanBeWorn,
+  commitEquipSlot,
+  commitEquipStat,
+  commitSelectBinding,
+  commitWornBy,
+  equipmentVisible,
+  selectHelperOffered,
+  slotLabel
+} from './equipui.js';
 
 /**
  * What actually happens today if this effect is spent, honestly stated.
@@ -51,6 +62,125 @@ export function mount(container, app) {
     const index = state.selected;
     store.commit(label, (project) => mutate(project.items[index]));
     render();
+  }
+
+  // The Equipment section (docs/design-equipment.md section 7): an RPG only. An action game keeps whatever `equip` data its items
+  // carry, and the validate warning says so; the UI never shows a piece there.
+  function equipmentSection(current, index) {
+    const piece = current.equip;
+    return el(
+      'div',
+      { style: { marginTop: '16px' } },
+      el('div.field-label', null, 'Equipment'),
+      el(
+        'label.check',
+        { title: 'Lets a party member wear this from the Equip screen. A piece has no effect of its own.' },
+        el('input', {
+          type: 'checkbox',
+          checked: Boolean(piece),
+          onchange: (event) => {
+            commitCanBeWorn(store, index, event.target.checked);
+            render();
+          }
+        }),
+        ' Can be worn'
+      ),
+      piece
+        ? el(
+            'div',
+            { style: { marginTop: '8px' } },
+            field(
+              'Slot',
+              el(
+                'select',
+                {
+                  onchange: (event) => {
+                    commitEquipSlot(store, index, Number(event.target.value));
+                    render();
+                  }
+                },
+                EQUIP_SLOTS.map((_, slot) => el('option', { value: slot, selected: slot === piece.slot }, slotLabel(slot)))
+              )
+            ),
+            el(
+              'div.field-row',
+              { style: { gap: '8px' } },
+              EQUIP_STATS.map((stat) =>
+                field(
+                  stat.label,
+                  el('input', {
+                    type: 'number',
+                    min: 0,
+                    max: 255,
+                    value: piece[stat.key],
+                    title: `Added to the wearer’s ${stat.label.toLowerCase()} in battle (0-255)`,
+                    onchange: (event) => {
+                      commitEquipStat(store, index, stat.key, event.target.value);
+                      render();
+                    }
+                  })
+                )
+              )
+            ),
+            el(
+              'p.hint',
+              { style: { marginTop: '4px', maxWidth: '640px' } },
+              'A Magic or Magic defence bonus above 0 turns Magic power or Magic defence on for the whole game, ' +
+                'which costs program space; Attack and Defence bonuses switch nothing else on.'
+            ),
+            el('span.field-label', null, 'Worn by'),
+            el(
+              'div.field-row',
+              { style: { gap: '12px', flexWrap: 'wrap' } },
+              store.project.party.map((member, memberIndex) =>
+                el(
+                  'label.check',
+                  null,
+                  el('input', {
+                    type: 'checkbox',
+                    checked: ((piece.usableBy >> memberIndex) & 1) === 1,
+                    onchange: (event) => {
+                      commitWornBy(store, index, memberIndex, event.target.checked);
+                      render();
+                    }
+                  }),
+                  ` ${member.name}`
+                )
+              )
+            ),
+            current.effect && current.effect.kind !== 'none'
+              ? el(
+                  'p.hint',
+                  { style: { marginTop: '8px', color: 'var(--danger, #e66)' } },
+                  'A piece of equipment has no effect: set Effect to “No effect” above, or turn off “Can be worn”.'
+                )
+              : null,
+            selectHelperOffered(store.project)
+              ? el(
+                  'div',
+                  { style: { marginTop: '8px' } },
+                  el(
+                    'button.btn.btn-sm',
+                    {
+                      title: 'Binds Select in the inventory to the Equip screen. Other bindings are left alone.',
+                      onclick: () => {
+                        commitSelectBinding(store);
+                        render();
+                      }
+                    },
+                    'Open Equip from the bag with Select'
+                  ),
+                  el(
+                    'p.hint',
+                    { style: { marginTop: '4px', maxWidth: '640px' } },
+                    'Nothing opens the Equip screen yet. Select does nothing in the inventory, so this binds it there; ' +
+                      'or choose any button in the Controller Forge.'
+                  )
+                )
+              : null
+          )
+        : null
+    );
   }
 
   function render() {
@@ -109,7 +239,8 @@ export function mount(container, app) {
                     name: `Item ${id}`,
                     actorId: null,
                     metaspriteId: null,
-                    effect: { kind: 'none', amount: 0 }
+                    effect: { kind: 'none', amount: 0 },
+                    equip: null
                   });
                 });
                 state.selected = items().length - 1;
@@ -252,7 +383,8 @@ export function mount(container, app) {
             // destroyed. See effectHint's own header for what is still
             // worth a hint after round 3's battle-list filter closed the
             // field/battle inconsistencies round 2 review found.
-            effectHint(current.effect?.kind, store.project.project.gameType)
+            effectHint(current.effect?.kind, store.project.project.gameType),
+            equipmentVisible(store.project) ? equipmentSection(current, state.selected) : null
           )
         : null
     );

@@ -16,11 +16,13 @@ import {
   characterCap,
   normalizeCharacterName,
   renumberPartyMemberDeletion,
+  EQUIP_SLOTS,
   tilesetAt,
   storageIndex
 } from '../../../shared/project.js';
 import { drawMetaspritePreview } from '../../widgets/metasprite.js';
 import { mountBattleFxPreview, animationSelect } from '../../widgets/battlefxpreview.js';
+import { commitAddMember, commitStartEquip, slotLabel, wearableCount, wearablePieces } from '../items/equipui.js';
 
 const number = (value, min, max, onChange, title = null) =>
   el('input', {
@@ -120,9 +122,8 @@ export function mount(container, app) {
     // already keeps ordinary access away from this, but a no-op commit would
     // still record an undo entry and mark the project dirty for nothing.
     if (store.project.party.length >= characterCap(store.project.project.gameType)) return;
-    store.commit('Add character', (project) => {
-      project.party.push(createPartyMember(project.party.length));
-    });
+    // One commit: the new member and every "everyone" piece's grant of them (grantNewMember), so one undo takes both back.
+    commitAddMember(store);
     state.selected = store.project.party.length - 1;
     render();
   }
@@ -265,7 +266,49 @@ export function mount(container, app) {
             })
           : el('p.hint', null, 'No spells defined yet.')
       ),
-      row(el('button.btn.btn-sm', { onclick: () => app.goTo('magic') }, 'Manage spells in the Magic Forge →'))
+      row(el('button.btn.btn-sm', { onclick: () => app.goTo('magic') }, 'Manage spells in the Magic Forge →')),
+      renderStartEquip(member, index)
+    );
+  }
+
+  // Starting equipment (docs/design-equipment.md section 7): worn at New Game, not in the bag. Each slot lists only the pieces of
+  // that slot this member may wear. A value the list no longer offers (a hand-edited project) is kept visible and marked, so the
+  // select never shows None while the project says otherwise; validateProject names it as an error.
+  function renderStartEquip(member, index) {
+    const project = store.project;
+    const count = wearableCount(project, index);
+    return el(
+      'div',
+      { style: { marginTop: '12px' } },
+      el('span.field-label', null, 'Starting equipment'),
+      row(
+        EQUIP_SLOTS.map((_, slot) => {
+          const choices = wearablePieces(project, index, slot);
+          const current = member.startEquip?.[slot] ?? null;
+          const stale = current !== null && !choices.some((choice) => choice.id === current);
+          return field(
+            slotLabel(slot),
+            el(
+              'select',
+              {
+                onchange: (event) => {
+                  commitStartEquip(store, index, slot, event.target.value === '' ? null : Number(event.target.value));
+                  render();
+                }
+              },
+              el('option', { value: '', selected: current === null }, 'None'),
+              stale
+                ? el('option', { value: current, selected: true }, `${project.items[current]?.name ?? `Item ${current}`} (not allowed)`)
+                : null,
+              choices.map((choice) => el('option', { value: choice.id, selected: choice.id === current }, choice.name))
+            )
+          );
+        })
+      ),
+      row(
+        el('span.hint', null, `Can wear ${count} piece${count === 1 ? '' : 's'}`),
+        el('button.btn.btn-sm', { onclick: () => app.goTo('items') }, 'Manage equipment in the Items Forge →')
+      )
     );
   }
 

@@ -43,7 +43,7 @@ function fakeChrPayload(name, digits) {
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const scenario = (dir, sampleDir, sampleRpgDir) => `
+const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
 (async () => {
   const report = { steps: [] };
   const step = (name, detail) => report.steps.push({ name, detail });
@@ -556,6 +556,37 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     return forgeIds;
   };
   await visitEveryForge('all forges mount');
+
+  // --- Equipment authoring (ROADMAP item 5, C5): an action game never shows a piece. The item below carries equip data on purpose --
+  // the data is kept when a project changes game type -- so the section being absent is the UI's own doing, not an empty item's.
+  {
+    const equipActionStore = window.__app.store;
+    const beforeEquipActionJson = JSON.stringify(equipActionStore.project);
+    window.__app.goTo('items');
+    await wait(200);
+    const equipAddItem = [...document.querySelectorAll('#stage button')].find((b) => b.title === 'Add an item');
+    if (!equipAddItem) throw new Error('equipment (action): the Items Forge has no Add button');
+    equipAddItem.click();
+    await wait(80);
+    equipActionStore.commit('smoke: give the new action item equip data', (project) => {
+      project.items[project.items.length - 1].equip = { slot: 0, atk: 3, def: 0, mag: 0, mdef: 0, usableBy: 15 };
+    });
+    await wait(150);
+    const equipLabels = () => [...document.querySelectorAll('#stage .field-label, #stage label.check')].map((n) => n.textContent.trim());
+    if (!equipLabels().includes('Collected from')) throw new Error('equipment (action): the Items Forge detail did not render for the new item');
+    if (equipLabels().some((t) => t === 'Equipment' || t.indexOf('Can be worn') !== -1 || t === 'Worn by')) {
+      throw new Error('equipment (action): the Items Forge rendered its Equipment section for an action game: ' + JSON.stringify(equipLabels()));
+    }
+    window.__app.goTo('character');
+    await wait(200);
+    if (equipLabels().some((t) => t === 'Starting equipment')) {
+      throw new Error('equipment (action): the Character Forge rendered Starting equipment for an action game');
+    }
+    equipActionStore.undo();
+    equipActionStore.undo();
+    if (JSON.stringify(equipActionStore.project) !== beforeEquipActionJson) throw new Error('equipment (action): undoing the probe did not restore the project');
+    step('equipment authoring: action game', 'an action item carrying equip data shows no Equipment section and no Starting equipment row');
+  }
 
   // --- Map Forge ---------------------------------------------------------
   window.__app.goTo('map');
@@ -14567,6 +14598,185 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
 
   step('encounters-off toggle on an RPG build', 'enabled with the RPG copy, clicks reach Emulator state');
 
+  // --- Equipment authoring (ROADMAP item 5, C5; docs/design-equipment.md section 10, Smoke): Items Forge -> new item -> Can be worn,
+  // Weapon, ATK 5 -> Character Forge lists it under Starting equipment, select it -> Controller Forge offers Equip screen; bound here by
+  // the Items Forge's Select-in-bag helper -> undo/redo each step -> build -> run -> press Select twice (play -> bag -> Equip) -> the Equip
+  // screen is up -> screenshot -> Back leaves. It runs on its own copy of sample-rpg (a build writes into its directory), and the pristine copy is reopened after.
+  {
+    const equipRpg = await window.forge.project.open(${JSON.stringify(sampleRpgEquipDir)});
+    if (!equipRpg.ok) throw new Error('open sample-rpg (equipment copy): ' + equipRpg.error);
+    window.__app.store.open(equipRpg.value.dir, equipRpg.value.project);
+    await wait(200);
+    const eqStore = window.__app.store;
+    const eqLabels = () => [...document.querySelectorAll('#stage .field-label, #stage label.check')].map((n) => n.textContent.trim());
+    const eqField = (label) => [...document.querySelectorAll('#stage .field')].find((f) => f.querySelector('.field-label')?.textContent.trim() === label);
+    const change = (node, value) => {
+      node.value = value;
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const click = (node) => node.click();
+    // One authoring step and its undo/redo: the action, then undo restores the project exactly, redo reapplies it exactly.
+    const undoRedo = async (name, action, reselect) => {
+      const before = JSON.stringify(eqStore.project);
+      await action();
+      await wait(120);
+      const after = JSON.stringify(eqStore.project);
+      if (before === after) throw new Error('equipment: ' + name + ' changed nothing');
+      eqStore.undo();
+      await wait(80);
+      if (JSON.stringify(eqStore.project) !== before) throw new Error('equipment: undo of ' + name + ' did not restore the project');
+      eqStore.redo();
+      await wait(80);
+      if (JSON.stringify(eqStore.project) !== after) throw new Error('equipment: redo of ' + name + ' did not reapply it');
+      if (reselect) await reselect();
+    };
+    const itemCount = () => eqStore.project.items.length;
+    const newIndex = itemCount(); // the item this walk adds
+    const selectNewItem = async () => {
+      const list = document.querySelector('#stage select[size]');
+      if (!list) throw new Error('equipment: the Items Forge item list is missing');
+      change(list, String(newIndex));
+      await wait(100);
+    };
+
+    window.__app.goTo('items');
+    await wait(250);
+    if (!eqStore.project.project.gameType || eqStore.project.project.gameType !== 'rpg') throw new Error('equipment: expected the RPG project');
+    await undoRedo('Add item', async () => {
+      click([...document.querySelectorAll('#stage button')].find((b) => b.title === 'Add an item'));
+    }, selectNewItem);
+    if (itemCount() !== newIndex + 1) throw new Error('equipment: Add item left ' + itemCount() + ' items');
+    if (eqStore.project.items[newIndex].equip !== null) throw new Error('equipment: a new item must start with equip: null');
+    if (eqLabels().includes('Worn by')) throw new Error('equipment: an ordinary item showed the Worn by row');
+    if (!eqLabels().includes('Equipment')) throw new Error('equipment: an RPG item shows no Equipment section');
+
+    const canBeWorn = () => [...document.querySelectorAll('#stage label.check')].find((l) => l.textContent.indexOf('Can be worn') !== -1).querySelector('input');
+    await undoRedo('Can be worn', async () => click(canBeWorn()), selectNewItem);
+    const worn = eqStore.project.items[newIndex].equip;
+    if (!worn || worn.slot !== 0 || worn.atk !== 0 || worn.def !== 0 || worn.mag !== 0 || worn.mdef !== 0 || worn.usableBy !== 15) {
+      throw new Error('equipment: Can be worn did not set the default weapon: ' + JSON.stringify(worn));
+    }
+    for (const label of ['Slot', 'Attack', 'Defence', 'Magic', 'Magic defence']) {
+      if (!eqField(label)) throw new Error('equipment: the Equipment section has no ' + label + ' control (the shortfall messages name Magic / Magic defence)');
+    }
+    if ([...document.querySelectorAll('#stage label.check')].filter((l) => /Rian|Iris/.test(l.textContent)).length < 2) {
+      throw new Error('equipment: Worn by should list every party member');
+    }
+    await undoRedo('Attack 5', async () => change(eqField('Attack').querySelector('input'), '5'), selectNewItem);
+    if (eqStore.project.items[newIndex].equip.atk !== 5) throw new Error('equipment: Attack 5 was not stored');
+    change(eqField('Attack').querySelector('input'), '999');
+    await wait(80);
+    if (eqStore.project.items[newIndex].equip.atk !== 255) throw new Error('equipment: Attack was not clamped to 255');
+    change(eqField('Attack').querySelector('input'), '5');
+    await wait(80);
+
+    // The Character Forge lists the piece under Starting equipment, only in the Weapon select.
+    window.__app.goTo('character');
+    await wait(250);
+    if (!eqLabels().includes('Starting equipment')) throw new Error('equipment: the Character Forge has no Starting equipment row on an RPG');
+    const weaponOptions = [...eqField('Weapon').querySelectorAll('option')].map((o) => o.textContent);
+    const armorOptions = [...eqField('Armor').querySelectorAll('option')].map((o) => o.textContent);
+    const newName = eqStore.project.items[newIndex].name;
+    if (weaponOptions[0] !== 'None' || !weaponOptions.includes(newName)) throw new Error('equipment: the Weapon select does not list the new piece: ' + JSON.stringify(weaponOptions));
+    if (armorOptions.includes(newName)) throw new Error('equipment: the Armor select lists a weapon');
+    if (!/Can wear 1 piece/.test(document.querySelector('#stage').textContent)) throw new Error('equipment: expected "Can wear 1 piece" for Rian');
+    // Adding a member: a piece limited to the two members that exist ("everyone" so far) gains the newcomer, in the SAME undo entry as
+    // the Add (grantNewMember in the Add commit). The mask is narrowed first because a fresh piece already allows all four bits.
+    eqStore.commit('smoke: narrow the piece to the two existing members', (project) => {
+      project.items[newIndex].equip.usableBy = 3;
+    });
+    await wait(100);
+    const eqPartyBefore = eqStore.project.party.length;
+    const eqUndoBefore = eqStore.undoStack.length;
+    click([...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '+ Character'));
+    await wait(150);
+    if (eqStore.project.party.length !== eqPartyBefore + 1) throw new Error('equipment: + Character did not add a member');
+    if (eqStore.undoStack.length !== eqUndoBefore + 1) throw new Error('equipment: + Character took ' + (eqStore.undoStack.length - eqUndoBefore) + ' undo entries, expected 1');
+    if (eqStore.project.items[newIndex].equip.usableBy !== 7) {
+      throw new Error('equipment: an everyone piece did not gain the new member, mask ' + eqStore.project.items[newIndex].equip.usableBy);
+    }
+    eqStore.undo();
+    await wait(80);
+    if (eqStore.project.party.length !== eqPartyBefore || eqStore.project.items[newIndex].equip.usableBy !== 3) {
+      throw new Error('equipment: one undo did not take back both the new member and the grant');
+    }
+    eqStore.undo(); // the narrowing
+    await wait(80);
+    if (eqStore.project.items[newIndex].equip.usableBy !== 15) throw new Error('equipment: undoing the narrowing did not restore the mask');
+    change(document.querySelector('#stage select[size]'), '0'); // back to Rian: the Add selected the newcomer
+    await wait(100);
+    await undoRedo('Starting equipment', async () => change(eqField('Weapon').querySelector('select'), String(newIndex)));
+    if (eqStore.project.party[0].startEquip[0] !== newIndex) throw new Error('equipment: Rian’s starting weapon was not stored');
+
+    // The Controller Forge offers the action; the helper (Items Forge) binds it.
+    window.__app.goTo('controller');
+    await wait(250);
+    if (![...document.querySelectorAll('#stage option')].some((o) => o.textContent.trim() === 'Equip screen')) {
+      throw new Error('equipment: the Controller Forge does not offer the Equip screen action');
+    }
+    const { validateProject: eqValidate } = await import('../shared/project.js');
+    if (!eqValidate(eqStore.project).some((p) => p.rule === 'equip-unbound')) throw new Error('equipment: expected the unbound-equip warning before binding');
+    window.__app.goTo('items');
+    await wait(250);
+    await selectNewItem();
+    const helperButton = () => [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === 'Open Equip from the bag with Select');
+    if (!helperButton()) throw new Error('equipment: the Select-in-bag helper is not offered');
+    await undoRedo('Select-in-bag helper', async () => click(helperButton()), selectNewItem);
+    if (eqStore.project.input.states.menu.SELECT !== 'equip') throw new Error('equipment: the helper did not bind Select in the bag');
+    if (eqStore.project.input.states.gameplay.SELECT !== 'item') throw new Error('equipment: the helper changed another binding');
+    if (helperButton()) throw new Error('equipment: the helper is still offered once Equip is bound');
+    if (eqValidate(eqStore.project).some((p) => p.rule === 'equip-unbound')) throw new Error('equipment: the unbound-equip warning survived the binding');
+    step('equipment authoring: RPG', 'item added, Can be worn, Weapon ATK 5, starting weapon for Rian, Equip bound by the Select-in-bag helper; each step undone and redone exactly');
+
+    // Build and run it.
+    window.__app.goTo('build');
+    await wait(300);
+    await window.__app.current.buildAndPlay();
+    await until(
+      'the equipment build to boot to a decided state',
+      () => {
+        const emulator = window.__app.current?.player?.emulator;
+        if (!emulator) return false;
+        const hp = emulator.peek(0x004e);
+        return hp >= 1 && hp <= 6 && (emulator.peek(0x0025) === 0 || emulator.peek(0x0025) === 6);
+      },
+      30000
+    );
+    const eqEmu = window.__app.current.player.emulator;
+    if (eqEmu.peek(0x0025) === 6) {
+      // The hero naming grid, the same walk as the RPG build above: Down to the controls row, Right to END, A.
+      const site = 'equipment build naming grid';
+      await until(site + ': grid never finished raising', () => eqEmu.peek(0x0040) === 9 && eqEmu.peek(0x0041) >= 4, 5000);
+      for (let i = 0; i < 3 && eqEmu.peek(0x059b) !== 2; i++) await pressFramePaced(eqEmu, BUTTON.DOWN, site + ' (DOWN)');
+      for (let i = 0; i < 26 && eqEmu.peek(0x059c) !== 1; i++) await pressFramePaced(eqEmu, BUTTON.RIGHT, site + ' (RIGHT)');
+      if (eqEmu.peek(0x059c) !== 1) throw new Error(site + ': cursor never reached END');
+      await pressFramePaced(eqEmu, BUTTON.A, site + ' (A)');
+      await until(site + ': session never ended', () => eqEmu.peek(0x0025) !== 6, 5000);
+    }
+    await until('the equipment build to reach gameplay', () => eqEmu.peek(0x0025) === 0 && eqEmu.peek(0x004e) >= 1, 20000);
+    // engine/constants.asm: pc_eq_atk $07E0 is member 0's attack bonus, set at New Game from startEquip -- the authored 5 reached the ROM.
+    if (eqEmu.peek(0x07e0) !== 5) throw new Error('equipment: Rian’s attack bonus in the ROM is ' + eqEmu.peek(0x07e0) + ', expected the authored 5');
+    // Select in play opens the bag (ST_MENU), Select in the bag opens Equip (ST_BATTLE, bt_phase BP_EQ_SLOTS = 14).
+    await pressFramePaced(eqEmu, BUTTON.SELECT, 'equipment: Select in play');
+    await until('Select in play to open the bag', () => eqEmu.peek(0x0025) === 1, 5000);
+    await pressFramePaced(eqEmu, BUTTON.SELECT, 'equipment: Select in the bag');
+    await until('Select in the bag to open the Equip screen', () => eqEmu.peek(0x0025) === 5 && eqEmu.peek(0x0053) === 14, 5000);
+    await wait(300); // the rows are drawn one per frame
+    console.log('SMOKE_SHOT 9001 equip-screen');
+    await until('the Equip screenshot', () => window.__shotDone === 9001, 12000);
+    // Back on a slot row leaves to gameplay.
+    await pressFramePaced(eqEmu, BUTTON.B, 'equipment: Back');
+    await until('Back to leave the Equip screen', () => eqEmu.peek(0x0025) === 0, 5000);
+    step('equipment authoring: run', 'built and booted, the authored attack bonus 5 is in RAM, Select twice opened the Equip screen (ST_BATTLE, BP_EQ_SLOTS), Back left it');
+  }
+  // Reopen the pristine sample-rpg: the walk above ran on its own directory copy, and what follows assumes the fixture as it was.
+  {
+    const pristine = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+    if (!pristine.ok) throw new Error('re-open sample-rpg after the equipment walk: ' + pristine.error);
+    window.__app.store.open(pristine.value.dir, pristine.value.project);
+    await wait(200);
+  }
+
   // --- battle-test: fire a chosen encounter from the Map Forge without
   // walking into it (ROADMAP item 3's last bullet), on the RPG build still
   // open above. Both entry points, and both checked against real Emulator
@@ -15583,6 +15793,14 @@ export async function runSmoke(window) {
     filter: (source) => !source.includes(`${path.sep}build`)
   });
 
+  // The equipment walk builds (and a build writes the project into its directory), so it gets a copy of its own: sampleRpgCopy has to stay
+  // the pristine fixture the capacity checks below compare the Build panel against.
+  const sampleRpgEquipCopy = path.join(scratch, 'SampleRpgEquip.forge');
+  await fs.cp(path.join(REPO_ROOT, 'sample-rpg'), sampleRpgEquipCopy, {
+    recursive: true,
+    filter: (source) => !source.includes(`${path.sep}build`)
+  });
+
   try {
     await new Promise((resolve) => window.webContents.once('did-finish-load', resolve));
 
@@ -16195,7 +16413,7 @@ export async function runSmoke(window) {
         `${cameraOnTotalFrames} for comparison`
     );
 
-    const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
+    const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy, sampleRpgEquipCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
 
     // The Build panel's battle-system meter, checked against the capacity
