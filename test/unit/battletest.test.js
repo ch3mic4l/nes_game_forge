@@ -547,7 +547,12 @@ test('an overlapping door taking effect mid-battle-start is detected (engine wit
   // moving flat_screen to the door's destination underneath it. Requesting
   // an unrelated formation (Potion is not a monster and is not placed here)
   // isolates this from the formation/monster checks above.
-  assert.throws(() => applyBattleTest(emulator, pad4([3]), build), /different screen|door/);
+  // Either detection is the mutant being caught. take_door redraws a screen from inside the entity pass, and how far past
+  // the harness's 2-frame rendezvous that lands depends on where in the frame check_encounter sits -- which every engine
+  // change that adds cycles to a frame moves (equipment C1b's dispatch_input skip, +6 bytes, moved it past the edge: the
+  // door is still taken, but the pass reaches main_loop only after a third frame boundary and the earlier "never settled"
+  // check fires before the screen comparison).
+  assert.throws(() => applyBattleTest(emulator, pad4([3]), build), /different screen|door|entity pass never settled/);
 });
 
 test('a pickup collected mid-battle-start is detected (engine without the first-contact guard)', { skip: skipRpg }, async (t) => {

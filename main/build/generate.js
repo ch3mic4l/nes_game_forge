@@ -820,7 +820,13 @@ export function baseKernelCodeBytes(mapper) {
 // / `bne` pair, 4 bytes, no mapper-specific instruction, so the figure stays flat per board and MMC3's
 // own 11-byte gap over the other two is unchanged. battle_begin's switch from X to Y (engine/rpg.asm)
 // is byte-for-byte the same size. An action project assembles none of it.
-export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 233, 4: 244, 30: 233 };
+// +6 on every board (233/244/233 -> 239/250/239), the battle input fix (docs/design-equipment.md §4, ruling E9):
+// dispatch_input (engine/input.asm) leaves for dispatch_done under `.if BATTLE_ENABLED` when game_state is
+// ST_BATTLE -- `lda <game_state` / `cmp #ST_BATTLE` / `beq`, 2+2+2, no mapper-specific instruction, so the figure
+// stays flat per board and MMC3's 11-byte gap is unchanged. Measured on sample-rpg as the kernel-lo usage with and
+// without the three instructions: MMC1 6472 -> 6478, MMC3 6655 -> 6661, UNROM 512 6670 -> 6676. It is part of the
+// RPG base, not a feature term: nothing an RPG can turn off conditions it.
+export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 239, 4: 250, 30: 239 };
 
 /** Whether `battleKernelAllowance` has a real, measured entry for `mapper`. */
 export function hasBattleKernelAllowance(mapper) {

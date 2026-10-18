@@ -1980,7 +1980,9 @@ test(
     for (let i = 0; i < 252; i++) project.sprites.metasprites.push({ id: 1000 + i, name: `FillerMS${i}`, tiles: [] });
     // 129 -> 128 animations (entity-pass fix, +4 kernel-lo on every RPG): each animation is 4 table
     // bytes, so one fewer cancels the +4 and the deficit is 194 again.
-    for (let i = 0; i < 128; i++) project.sprites.animations.push({ id: 2000 + i, name: `FillerAnim${i}`, frames: [] });
+    // 128 -> 127 (the battle input fix, equipment C1b: +6 kernel-lo on every RPG): the deficit is 200 with 128, past the 198 MMC1
+    // frees, so the shape would stop exercising the swap; one animation fewer (-4 table bytes) lands it at 196, inside (189, 198].
+    for (let i = 0; i < 127; i++) project.sprites.animations.push({ id: 2000 + i, name: `FillerAnim${i}`, frames: [] });
 
     const mapper30 = SUPPORTED_MAPPERS.find((m) => m.id === 30);
     const mapper1 = SUPPORTED_MAPPERS.find((m) => m.id === 1);
@@ -1997,7 +1999,7 @@ test(
     const error = problems.find((p) => p.severity === 'error' && /lookup tables/.test(p.message));
     assert.ok(error, 'expected checkCapacity to refuse this project on UNROM 512');
     const deficit = Number(error.message.match(/need (\d+) bytes but only (-?\d+) are free/)?.[1]) - Number(error.message.match(/need (\d+) bytes but only (-?\d+) are free/)?.[2]);
-    assert.equal(deficit, 194, 'the reproduction must still isolate to exactly a 194-byte deficit, or this is testing a different shape');
+    assert.equal(deficit, 196, 'the reproduction must still isolate to exactly a 196-byte deficit, or this is testing a different shape');
     assert.ok(
       deficit > codeSaved,
       `this case only exercises the bug if the code-only savings (${codeSaved}) alone would NOT cover the deficit (${deficit})`
@@ -4110,7 +4112,7 @@ test(
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
     const paintedId = project.maps[0].screens[0].metatiles[0];
     project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
-    inflate(project, 99); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 480, above bound tile/Move but at or below Save; 100 -> 99 for the entity-pass fix (+4 kernel-lo), one fewer filler keeps Save the only single fix
+    inflate(project, 98); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 480, above bound tile/Move but at or below Save; 100 -> 99 for the entity-pass fix (+4 kernel-lo), one fewer filler keeps Save the only single fix; 99 -> 98 for the battle input fix (equipment C1b, +6 kernel-lo): deficit 509 against Save's 516
 
     const message = kernelShortfallMessage(project);
     // Save only: neither the bound tile's own allowance nor Move alone
@@ -4833,7 +4835,7 @@ test(
         }
       }
     });
-    inflate(project, 92); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    inflate(project, 91); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md; 92 -> 91 for the battle input fix (equipment C1b, +6 kernel-lo on every RPG): deficit 50, inside the name token's 55 and past Turn's 33
     const message = kernelShortfallMessage(project);
     assert.match(message, /the name token \(frees \d+ bytes\)/, 'the token should be offered as one real fix');
   }

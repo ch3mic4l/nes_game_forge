@@ -1153,10 +1153,13 @@ test('a mag-only build assembles byte-identical whether or not magic defence exi
   // gained one `.if BATTLE_ENABLED` game_state test and battle_begin now clears pc_status with Y, so
   // every RPG ROM's kernel bytes move, unrelated to magic power/defence. The old hashes were
   // confirmed to be what HEAD produced before the edit.
+  // Re-pinned a fifth time (equipment C1b, the battle input fix, ruling E9): dispatch_input gained a
+  // `.if BATTLE_ENABLED` game_state test (+6 kernel-lo), so every RPG ROM's kernel bytes move, unrelated
+  // to magic power/defence. Old -> new is recorded in handoff-next/equip/c1b/pins.md.
   const HASHES = {
-    1: '360e63d8b6e6b14163af22b4c32650ae76cb172467b1b5c866d554437b8ef33b', // MMC1
-    4: 'c9ca4db5a28b075196569cc6bbe6d7d3b10f8ef1c8f4c24b3d9c808ccb829aaf', // MMC3
-    30: '85b586963ee31dd165ba796f48f7007bac89739e6aa5395d1e63f020470e9c07' // UNROM 512
+    1: 'dff83e9124074d9bda087361877b31059ad45e24d6c379639431236fb5ac0452', // MMC1
+    4: 'd347a055a2ee453639b3af0f988336af35384882bb5fbb372d7cfc57a5a3c7b8', // MMC3
+    30: '98269c1a3a810bfc5c312aaf7945ef18087819b1d591aa2012f54637e088eb2b' // UNROM 512
   };
   for (const mapper of CAPABLE_MAPPERS) {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));

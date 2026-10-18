@@ -580,7 +580,10 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // a 4-byte game_state test in update_entities_loop under BATTLE_ENABLED and battle_begin moved its pc_status loop and owner
 // lookup from X to Y (byte-neutral), so every RPG's kernel-lo changed; size is unchanged (still 147472) and no action
 // project moves (the four action fixtures' hashes are identical).
-const PINNED_RPG_BASELINE_HASH = '86d7a02e8770c030e8720f41c92cfbd85c703d2b44e9f8dd5a99e3e0c628f545';
+// Re-pinned again (equipment C1b, the battle input fix, ruling E9): engine/input.asm's dispatch_input gained a 6-byte
+// `.if BATTLE_ENABLED` skip under ST_BATTLE, so every RPG's kernel-lo changed; size is unchanged (still 147472) and no
+// action project moves (PINNED_BASELINE_HASH above is untouched).
+const PINNED_RPG_BASELINE_HASH = 'd3a4ef076f68974c5f939a150b2ced14ab567a70d0251ecdebb5660e77b6b4cb';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

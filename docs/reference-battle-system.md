@@ -366,6 +366,17 @@ It has 22 entry points
 - Anything needing a multiply is a precomputed table; `ACTOR_BATTLE_DEFAULTS`
   (`shared/project.js`) is the single writer for an actor's battle defaults.
 
+- **`dispatch_input` reads no button action while `game_state` is `ST_BATTLE`** (`engine/input.asm`,
+  under `.if BATTLE_ENABLED`, so an action ROM does not gain it; equipment C1b, ruling E9). The
+  battle phases read `pad_new` themselves, and the authored `battle` row (A confirm, B cancel) used
+  to run too: a B at the command menu ran `do_action_cancel` → `close_ui`, set `ST_GAMEPLAY` and
+  abandoned the fight and its screen before the battle code read the pad. Battle controls are fixed:
+  the battle phases read the pad themselves, and any binding in the battle row, including a
+  hand-edited one, is ignored during a fight. Cost: 6 bytes of kernel-lo on every RPG
+  board, folded into `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER`. Held by test/unit/battleinput.test.js
+  (a real fight, its control with the skip cut, field B, the action-ROM byte identity, the 6 bytes on
+  each board).
+
 ### Topic list moved from CLAUDE.md, The battle system
 
 Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.

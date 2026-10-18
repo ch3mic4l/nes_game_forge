@@ -112,13 +112,15 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // all six restore to their original, pre-7b hashes.
 // Re-pinned for the two RPG fixtures only (the entity pass's first-contact-wins fix: engine/entities.asm's 4-byte game_state
 // test under BATTLE_ENABLED, test/unit/entitypassbattle.test.js); the four action fixtures' hashes are unchanged.
+// Re-pinned for the two RPG fixtures only again (equipment C1b, the battle input fix, ruling E9: engine/input.asm's
+// `.if BATTLE_ENABLED` skip under ST_BATTLE, +6 kernel-lo); the four action fixtures' hashes are unchanged.
 const BASELINES = {
   sample: '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',
-  'sample-rpg': '83c219802ce81def52c1b91fc1eae7613e4550cdeeef3e62664b5fd9fe1b4607',
+  'sample-rpg': '6ff7950fef409b9d63e37d3f4884bb020f82ffa4fa14ec9f1509acabb8c3a80e',
   'sample-mmc1': '54150a3dc8bc958c56a08b7105423046c8d2503e2c9986210be61387109e9833',
   'sample-mmc3': '7069a6341ae75c5ed1187981a8a1486cf1e61c4ccb3cdc6b208acec5017362ec',
   'sample-u512': '44b4d10952d4ce7da7c7113f8bf186fa19b5558ad1cc12caf7a1ee8472547525',
-  'sample-rpg-mmc1': '1da6101df5dea5c6288c830ae126ae4166c275de19a4713dff85340de7f0c323'
+  'sample-rpg-mmc1': '7c149b587ab1a87e61adefd8387628a9f17fd831ce682d7cd6ec422db33adbfc'
 };
 
 for (const name of Object.keys(BASELINES)) {

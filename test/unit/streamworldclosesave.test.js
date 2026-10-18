@@ -60,7 +60,7 @@ import { saveBodySize, SAVE_FIELDS } from '../../shared/save.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { engineFileNames, checkCapacity, kernelCodeBytes, kernelTableBytes, planStreamedRegions } from '../../main/build/generate.js';
 import { resolveMapper, prgLayout } from '../../shared/cartridge.js';
-import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
+import { mergeReconstructEngineFile, carryBattleInputLever } from '../lib/enginehistory.js';
 import { emitStreamedLayout } from '../../main/build/streamed.js';
 import { decodeStreamedLayout } from '../lib/streamdecoder.js';
 import NES from '../../renderer/emulator/core/nes.js';
@@ -2901,10 +2901,14 @@ function historicalEngineOverrides(rev) {
 // differ by exactly that, so it lifts those two files at their CURRENT text, as build_identity_baseline.mjs's --carry-* levers
 // lift a fix into the parent; an action build assembles neither change (both are inside .if BATTLE_ENABLED or byte-neutral),
 // so its row stays a genuine flat comparison. The fix itself is held by entitypassbattle.test.js.
+// The battle input skip (equipment C1b, ruling E9: dispatch_input's `.if BATTLE_ENABLED` ST_BATTLE test, +6 kernel-lo on every RPG) is
+// carried the same way, into the 2563ef4 input.asm (carryBattleInputLever) rather than by lifting the whole current file.
 function historicalEngineOverridesCarryingEntityPassFix(rev) {
-  return historicalEngineOverrides(rev).map((o) => (o.name === 'entities.asm' || o.name === 'rpg.asm'
-    ? { name: o.name, text: fs.readFileSync(path.join(ROOT, 'engine', o.name), 'utf8') }
-    : o));
+  return historicalEngineOverrides(rev).map((o) => {
+    if (o.name === 'entities.asm' || o.name === 'rpg.asm') return { name: o.name, text: fs.readFileSync(path.join(ROOT, 'engine', o.name), 'utf8') };
+    if (o.name === 'input.asm') return { name: o.name, text: carryBattleInputLever(o.text, fs.readFileSync(path.join(ROOT, 'engine', 'input.asm'), 'utf8')) };
+    return o;
+  });
 }
 
 // UPDATE (fix round 1b, B1): a flat historicalEngineOverrides('2563ef4') is no longer a valid
@@ -3004,7 +3008,7 @@ const A4_SHAPES = [
     'ordinary UNROM-512, camera+Say+Save, rpg',
     () => createOrdinaryCameraProject({ gameType: 'rpg' }),
     historicalEngineOverridesCarryingEntityPassFix,
-    { short: '2563ef4', full: "2563ef4 -- every engine/*.asm file reverted to its exact 2563ef4 text EXCEPT engine/entities.asm and engine/rpg.asm, which stay at their CURRENT text (the entity pass's first-contact-wins contract, a battle-only change that every RPG carries; docs/reference-engine.md, 'The entity pass and a battle'); this shape never touches B1's relocated code" },
+    { short: '2563ef4', full: "2563ef4 -- every engine/*.asm file reverted to its exact 2563ef4 text EXCEPT engine/entities.asm and engine/rpg.asm, which stay at their CURRENT text (the entity pass's first-contact-wins contract, a battle-only change that every RPG carries; docs/reference-engine.md, 'The entity pass and a battle'), and engine/input.asm, which carries the current ST_BATTLE skip (equipment C1b, carryBattleInputLever); this shape never touches B1's relocated code" },
   ],
   [
     'streamed, Say without Save, action',
@@ -3256,7 +3260,8 @@ for (const gameType of ['action', 'rpg']) {
       // kernel-lo setup call is absent and the hi delta is B1's 474 exactly.
       // The entity pass's first-contact-wins test (4 bytes of BATTLE_KERNEL_ALLOWANCE_BY_MAPPER) is in
       // every RPG build and in none of 2563ef4's, so an RPG's kernel-lo is 4 bytes dearer than the flat baseline's; an action build has none.
-      const ENTITY_PASS_BATTLE_LO = gameType === 'rpg' ? 4 : 0;
+      // The battle input skip (equipment C1b, ruling E9: dispatch_input's `.if BATTLE_ENABLED` ST_BATTLE test, 6 bytes) is likewise in every RPG build and none of 2563ef4's.
+      const ENTITY_PASS_BATTLE_LO = gameType === 'rpg' ? 4 + 6 : 0;
       assert.equal(loDelta, -501 + 18 + 7 + ENTITY_PASS_BATTLE_LO, `${gameType}: kernel-lo delta must be Item 4's -501 plus S1's 18-byte OAM_BUSY cost and (a1)'s 7-byte mover parity gate (plus an RPG's 4-byte entity-pass battle test)`);
       // Phase 3a S3a.5: this baseline is the flat 2563ef4 engine, which still has sw_camera_window_recompute's two
       // repeated-subtract loops; the current engine's closed forms are 78 bytes smaller (STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE

@@ -686,6 +686,23 @@ export function carryEntityPassLever(oldEntities, currentEntities, oldRpg, curre
   };
 }
 
+// ---- the battle input fix (equipment C1b, ruling E9) -------------------------------------------------------------------------------
+// engine/input.asm's dispatch_input leaves for dispatch_done without reading a button action while game_state is ST_BATTLE, under
+// `.if BATTLE_ENABLED` (+6 kernel-lo on every RPG, nothing on an action build). The block is lifted from the CURRENT file into an older
+// text just before its dispatch loop (count-checked), or cut from a current text, so a comparison against an older commit still means
+// what it did for every RPG ROM; an action build assembles none of it.
+const BATTLE_INPUT_SKIP = /^  \.if BATTLE_ENABLED\n  lda <game_state\n  cmp #ST_BATTLE[^\n]*\n  beq dispatch_done[^\n]*\n  \.endif[^\n]*\n/m;
+const BATTLE_INPUT_ANCHOR = '  ldx #0\ndispatch_loop:\n';
+
+/** An older input.asm with the battle input skip carried in from the current file. */
+export function carryBattleInputLever(oldInput, currentInput) {
+  const block = currentInput.match(BATTLE_INPUT_SKIP)?.[0];
+  if (!block) throw new Error('battle input: the current input.asm does not carry the ST_BATTLE skip');
+  if (BATTLE_INPUT_SKIP.test(oldInput)) throw new Error('battle input: the older input.asm already carries the skip');
+  if (oldInput.split(BATTLE_INPUT_ANCHOR).length !== 2) throw new Error('battle input: the older dispatch_loop head was not found exactly once');
+  return oldInput.replace(BATTLE_INPUT_ANCHOR, () => block + BATTLE_INPUT_ANCHOR);
+}
+
 // ---- the streamed save-range fix (Continue at local y 225-239) ---------------------------------------------------------------------
 // engine/save.asm's save_check_valid y gate became mode-dependent on a streamed build (`.if STREAMING_ENABLED`), asking
 // sw_save_streamed_screen, a block engine/streamworld.asm gained right after sw_save_commit_tail_end. Both are lifted from the CURRENT files

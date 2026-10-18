@@ -76,7 +76,12 @@ function observerCommands(variant) {
 // STREAMWORLD_SAVE_RANGE_KERNEL_ALLOWANCE, +12 kernel-lo on every streamed Save build) took the free lookup
 // bytes from 278 to 266 against the 272 the four-dropped inventory needs: one more placed actor (8 bytes)
 // has to go. 19 placed actors with Save now. FLAGGED in handoff-next/fix-continue-y-report.md.
-export const S1_SAVE_ACTORS_DROPPED = 5;
+//
+// The battle input fix (equipment C1b, ruling E9: dispatch_input leaves for dispatch_done under ST_BATTLE, +6 kernel-lo
+// on every RPG, BATTLE_KERNEL_ALLOWANCE_BY_MAPPER 233 -> 239 on UNROM 512) took the free lookup bytes by 6 against the
+// same need: the build was refused at 264 needed, 260 free. One more placed actor (8 bytes) has to go. 18 placed actors
+// with Save now. FLAGGED in handoff-next/equip/c1b/report.md, as the two entries above were.
+export const S1_SAVE_ACTORS_DROPPED = 6;
 
 function dropActorsForS1KernelLo(p, count) {
   const placed = [];

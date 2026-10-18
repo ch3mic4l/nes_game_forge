@@ -92,7 +92,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   512): 5617 }` — action-side, nothing conditional on, falling back to the largest of the four for
   an unmeasured mapper (`docs/kernel-base-overcharge-report.md`; the NROM entry was added measuring
   in-game naming's own isolation deltas, below).
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 233, 4: 244, 30: 233 }` is its RPG-only supplement — no
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 239, 4: 250, 30: 239 }` is its RPG-only supplement (+6 on every board for the battle input fix, E9: `dispatch_input`'s `.if BATTLE_ENABLED` skip under `ST_BATTLE`, measured 6472 -> 6478 / 6655 -> 6661 / 6670 -> 6676 on `sample-rpg`) — no
   fallback, deliberately, the same reason Save's table has none; MMC3's extra 11 bytes are
   `split_select`'s second `.if BATTLE_ENABLED` arm (`engine/split.asm`). Its gate,
   `battleEnabledFor` (`codeRegions(...).length > 0`), does not imply `rpgCapable(mapper)`, so

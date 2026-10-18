@@ -51,6 +51,11 @@ dispatch_input:
                               ; same frame produce at most one grid action
   .endif
 
+  .if BATTLE_ENABLED
+  lda <game_state
+  cmp #ST_BATTLE            ; the battle phases read pad_new themselves; a
+  beq dispatch_done         ; button action here (B -> close_ui) would abandon
+  .endif                    ; the fight and its screen before they ran
   ldx #0
 dispatch_loop:
   lda <game_state
