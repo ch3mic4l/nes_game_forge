@@ -703,6 +703,41 @@ export function carryBattleInputLever(oldInput, currentInput) {
   return oldInput.replace(BATTLE_INPUT_ANCHOR, () => block + BATTLE_INPUT_ANCHOR);
 }
 
+// ---- the physical-damage fix (equipment C3b, ruling E11) ---------------------------------------------------------------------------
+// engine/battleturn.asm's physical_damage parks the attacker's ATK in bt_dmg_lo instead of bt_tmp (combatant_def's party path runs level_row,
+// which overwrites bt_tmp with the member index): two operand bytes, no size change, every RPG ROM. The routine's head, up to
+// physical_damage_floor, is lifted from the CURRENT file into an older text (count-checked), so a comparison against an older commit still
+// means what it did for every RPG ROM; an action build assembles none of it.
+const PHYSICAL_DAMAGE_HEAD = /^physical_damage:\n[\s\S]*?^physical_damage_floor:\n/m;
+
+/** An older battleturn.asm with physical_damage's ATK parking fix carried in from the current file. */
+export function carryPhysicalDamageLever(oldBattleturn, currentBattleturn) {
+  const head = currentBattleturn.match(PHYSICAL_DAMAGE_HEAD)?.[0];
+  if (!head || !head.includes('sta <bt_dmg_lo')) throw new Error('physical damage: the current battleturn.asm does not park ATK in bt_dmg_lo');
+  const old = oldBattleturn.match(PHYSICAL_DAMAGE_HEAD)?.[0];
+  if (!old) throw new Error('physical damage: the older battleturn.asm has no physical_damage head');
+  if (old === head || !old.includes('sta <bt_tmp\n')) throw new Error('physical damage: the older battleturn.asm already carries the fix');
+  if (oldBattleturn.split(old).length !== 2) throw new Error('physical damage: the older head was not found exactly once');
+  return oldBattleturn.replace(old, () => head);
+}
+
+// ---- the equipment flags, off (equipment C3b) --------------------------------------------------------------------------------------
+// --carry-backdrop lifts the CURRENT engine/battle.asm and engine/battleturn.asm whole into the parent. Since equipment C2/C3 those files
+// carry `.if EQUIP_ENABLED` blocks, and the flag lives in the generated config.inc, which the PARENT's generator does not write: nesasm
+// reports every such `.if` as "Undefined symbol in operand field". The parent's build is an
+// equipment-free build by definition, so the flags are appended to its constants.asm as 0; every equipment block then assembles to nothing,
+// which is exactly what an equipment-free current build does.
+const EQUIP_OFF_FLAGS = ['EQUIP_ENABLED', 'EQUIP_MAG_ENABLED', 'EQUIP_MDEF_ENABLED'];
+
+/** An older constants.asm with the equipment flags defined as 0. */
+export function carryEquipOffConstants(oldConstants) {
+  for (const flag of EQUIP_OFF_FLAGS) {
+    if (new RegExp(`^${flag}\\s*=`, 'm').test(oldConstants)) throw new Error(`equipment off: the older constants.asm already defines ${flag}`);
+  }
+  const block = EQUIP_OFF_FLAGS.map((flag) => `${flag} = 0\n`).join('');
+  return `${oldConstants.replace(/\n*$/, '\n')}\n; equipment off (test/lib/enginehistory.js carryEquipOffConstants)\n${block}`;
+}
+
 // ---- the streamed save-range fix (Continue at local y 225-239) ---------------------------------------------------------------------
 // engine/save.asm's save_check_valid y gate became mode-dependent on a streamed build (`.if STREAMING_ENABLED`), asking
 // sw_save_streamed_screen, a block engine/streamworld.asm gained right after sw_save_commit_tail_end. Both are lifted from the CURRENT files

@@ -1159,10 +1159,12 @@ test('a mag-only build assembles byte-identical whether or not magic defence exi
   // Re-pinned a fifth time (equipment C1b, the battle input fix, ruling E9): dispatch_input gained a
   // `.if BATTLE_ENABLED` game_state test (+6 kernel-lo), so every RPG ROM's kernel bytes move, unrelated
   // to magic power/defence. Old -> new is recorded in handoff-next/equip/c1b/pins.md.
+  // Re-pinned a sixth time (equipment C3b, ruling E11): physical_damage parks ATK in bt_dmg_lo instead of bt_tmp, two operand
+  // bytes in the battle bank and no size change, so every RPG ROM's bytes move. Old -> new is in handoff-next/equip/c3b/pins.md.
   const HASHES = {
-    1: 'dff83e9124074d9bda087361877b31059ad45e24d6c379639431236fb5ac0452', // MMC1
-    4: 'd347a055a2ee453639b3af0f988336af35384882bb5fbb372d7cfc57a5a3c7b8', // MMC3
-    30: '98269c1a3a810bfc5c312aaf7945ef18087819b1d591aa2012f54637e088eb2b' // UNROM 512
+    1: '0c3aae24d3d89f787b8a46943ee168e6d82aa25e64f1744c9f80aabf802fed9b', // MMC1
+    4: '8888cc29cf5413a775c8a3d8a748564dca02ffa199e86a31ce3c42ad4d719fce', // MMC3
+    30: '17e3487f9ab255fe206218ee5b653642184830f4e22c5ace13f9ac94adbb2e6f' // UNROM 512
   };
   for (const mapper of CAPABLE_MAPPERS) {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));

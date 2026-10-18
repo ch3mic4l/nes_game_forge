@@ -60,7 +60,7 @@ import { saveBodySize, SAVE_FIELDS } from '../../shared/save.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { engineFileNames, checkCapacity, kernelCodeBytes, kernelTableBytes, planStreamedRegions } from '../../main/build/generate.js';
 import { resolveMapper, prgLayout } from '../../shared/cartridge.js';
-import { mergeReconstructEngineFile, carryBattleInputLever } from '../lib/enginehistory.js';
+import { mergeReconstructEngineFile, carryBattleInputLever, carryPhysicalDamageLever } from '../lib/enginehistory.js';
 import { emitStreamedLayout } from '../../main/build/streamed.js';
 import { decodeStreamedLayout } from '../lib/streamdecoder.js';
 import NES from '../../renderer/emulator/core/nes.js';
@@ -2903,10 +2903,13 @@ function historicalEngineOverrides(rev) {
 // so its row stays a genuine flat comparison. The fix itself is held by entitypassbattle.test.js.
 // The battle input skip (equipment C1b, ruling E9: dispatch_input's `.if BATTLE_ENABLED` ST_BATTLE test, +6 kernel-lo on every RPG) is
 // carried the same way, into the 2563ef4 input.asm (carryBattleInputLever) rather than by lifting the whole current file.
+// The physical-damage fix (equipment C3b, ruling E11: physical_damage parks ATK in bt_dmg_lo, two operand bytes on every RPG) is carried into
+// the 2563ef4 battleturn.asm the same way (carryPhysicalDamageLever).
 function historicalEngineOverridesCarryingEntityPassFix(rev) {
   return historicalEngineOverrides(rev).map((o) => {
     if (o.name === 'entities.asm' || o.name === 'rpg.asm') return { name: o.name, text: fs.readFileSync(path.join(ROOT, 'engine', o.name), 'utf8') };
     if (o.name === 'input.asm') return { name: o.name, text: carryBattleInputLever(o.text, fs.readFileSync(path.join(ROOT, 'engine', 'input.asm'), 'utf8')) };
+    if (o.name === 'battleturn.asm') return { name: o.name, text: carryPhysicalDamageLever(o.text, fs.readFileSync(path.join(ROOT, 'engine', 'battleturn.asm'), 'utf8')) };
     return o;
   });
 }
@@ -3008,7 +3011,7 @@ const A4_SHAPES = [
     'ordinary UNROM-512, camera+Say+Save, rpg',
     () => createOrdinaryCameraProject({ gameType: 'rpg' }),
     historicalEngineOverridesCarryingEntityPassFix,
-    { short: '2563ef4', full: "2563ef4 -- every engine/*.asm file reverted to its exact 2563ef4 text EXCEPT engine/entities.asm and engine/rpg.asm, which stay at their CURRENT text (the entity pass's first-contact-wins contract, a battle-only change that every RPG carries; docs/reference-engine.md, 'The entity pass and a battle'), and engine/input.asm, which carries the current ST_BATTLE skip (equipment C1b, carryBattleInputLever); this shape never touches B1's relocated code" },
+    { short: '2563ef4', full: "2563ef4 -- every engine/*.asm file reverted to its exact 2563ef4 text EXCEPT engine/entities.asm and engine/rpg.asm, which stay at their CURRENT text (the entity pass's first-contact-wins contract, a battle-only change that every RPG carries; docs/reference-engine.md, 'The entity pass and a battle'), engine/input.asm, which carries the current ST_BATTLE skip (equipment C1b, carryBattleInputLever), and engine/battleturn.asm, which carries the current physical_damage ATK parking (equipment C3b, carryPhysicalDamageLever); this shape never touches B1's relocated code" },
   ],
   [
     'streamed, Say without Save, action',

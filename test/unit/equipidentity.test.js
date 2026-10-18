@@ -3,6 +3,9 @@
 // handoff-next/equip/c2/capture-pins.mjs on that tree before any C2 edit (a clean checkout of 720d976, built from mkdtemp copies); a test that
 // read them from the tree under test would prove nothing. Every project is a loadProject() read of a checked-in fixture, edited in memory and
 // built in its own mkdtemp directory: none of the six fixtures is written to or changes.
+// RPG_HASHES were re-captured post-C3b (ruling E11: physical_damage's ATK parking fix moves every RPG ROM by two operand bytes). They
+// are the output of rpgVariant/buildHash (test/lib/equipvariants.js) for each board and variant on the C3b tree, pasted as literals; old -> new
+// in handoff-next/equip/c3b/pins.md. ACTION_HASHES did not move and stay the post-C1b values.
 //
 // Later commits (C3, C4) must keep these passing: equipment off assembles byte for byte as before, on every board.
 
@@ -23,25 +26,25 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 const skip = !hasNesasm && 'nesasm not found on PATH';
 
 // sample-rpg on each RPG board, by { save, naming } (rpgVariant). 'save=0 naming=1' is the fixture exactly as checked in, so the MMC1 entry is also
-// the sample-rpg hash in handoff-next/equip/c1b/fixture-hashes-after.txt (6ff7950f...).
+// the sample-rpg hash in handoff-next/equip/c3b/fixture-hashes-after.txt (46197555...).
 const RPG_HASHES = {
   1: { // MMC1
-    'save=0 naming=0': { size: 163856, hash: '554ba7fbc7bc67ebc415e9341e4adabd699d0a1c613f98b754738a0471bc9509' },
-    'save=0 naming=1': { size: 163856, hash: '6ff7950fef409b9d63e37d3f4884bb020f82ffa4fa14ec9f1509acabb8c3a80e' },
-    'save=1 naming=0': { size: 163856, hash: '0a23a4d94b416a95856b9e9c8337b15ac28e9932ceb02d67d4529e2b4473fe58' },
-    'save=1 naming=1': { size: 163856, hash: '1ecf12a095b22eb1d0087c0cb5b862887434f6eea246b672d41f52552ed71fca' }
+    'save=0 naming=0': { size: 163856, hash: '8382f807243641513080b2583ad8326dcc0a28ff99bb0cd0b4bb0360b7cb2524' },
+    'save=0 naming=1': { size: 163856, hash: '46197555869db699ddf3bd8f467320545038cc6e354cd808c3c763391030f643' },
+    'save=1 naming=0': { size: 163856, hash: 'fd6d3104d7da2d26fa5a4da5534b9fcbbfdc22e5a174aaeaf83642e33be8e248' },
+    'save=1 naming=1': { size: 163856, hash: '1c5d4db455e38fcb9b128b9cff19bc4fbfa834cbf5bac9d60a4b9559164e996a' }
   },
   4: { // MMC3
-    'save=0 naming=0': { size: 294928, hash: 'd2c321bd1cdd04545e9dedc2f216b23df2a3ae00ea973e43150fd006e4e56d85' },
-    'save=0 naming=1': { size: 294928, hash: 'e831f71d7c21d82ee0740cd3949eb46f507402f8df974d16979aa1e196a91110' },
-    'save=1 naming=0': { size: 294928, hash: 'd05d62ba2f5f233c0585d3cfeae12723346c9ff5950e29ece8f362fa784b1bdf' },
-    'save=1 naming=1': { size: 294928, hash: '66e8b0bea22ea0e5212a2ef7024441657251358d126b322c522990aff17e3ebb' }
+    'save=0 naming=0': { size: 294928, hash: '198df020d17429ce52d7d39d511b895b86eb28596ab1aa9e9d343dab590aa836' },
+    'save=0 naming=1': { size: 294928, hash: '357a7b98fc2550649e4eb3e9ab4557bc62aef2285d9af55db8c95f19860ced0e' },
+    'save=1 naming=0': { size: 294928, hash: '56b9db55e77842a1bc1e4005a340e4f941002ba40306209f8a4768da8ef08874' },
+    'save=1 naming=1': { size: 294928, hash: '1c429467cf1984687ea7949c889af15c3df041102a7543e8f266ef20d6222489' }
   },
   30: { // UNROM 512
-    'save=0 naming=0': { size: 524304, hash: '66cad197054406904fbbdf422968bbd3f89172eb0d86238b0b772351f7d958f8' },
-    'save=0 naming=1': { size: 524304, hash: 'e492ede55ea173c8e77d612833c3422e5d0059ef0768a76657fb1a6155143fda' },
-    'save=1 naming=0': { size: 524304, hash: '12a282ab48615746c1deb1d4a2e216f73886c623eefd080edd17e7477b079293' },
-    'save=1 naming=1': { size: 524304, hash: '7043ee6c248c2d850fa41559e33aab612111c055d07e91454ff72d0f28a5739f' }
+    'save=0 naming=0': { size: 524304, hash: '65e5db4f5c14bf29f1e2ec186b794c226eba736f813623569fabb31fb6f145a0' },
+    'save=0 naming=1': { size: 524304, hash: '17991a5934c5f7062c97add7835eb374b8e7e52abfea5bd85fad3e8955d5b0db' },
+    'save=1 naming=0': { size: 524304, hash: '99b8e37ac85d1203ba127f0c44807daafb297fe28323459889cb4881e9304210' },
+    'save=1 naming=1': { size: 524304, hash: '85fb85e70b6781321a216fda14d2a6a8d84a97fae56899bfdaf029332dcca3df' }
   }
 };
 
@@ -66,7 +69,7 @@ test('the pin tables cover every RPG board and every supported board', () => {
 });
 
 // (2) Per-board pins for sample-rpg (only MMC1 was pinned before).
-test('(2) sample-rpg builds to its pinned post-C1b hash on MMC1, MMC3 and UNROM 512', { skip }, async () => {
+test('(2) sample-rpg builds to its pinned post-C3b hash on MMC1, MMC3 and UNROM 512', { skip }, async () => {
   // Catches any engine, generator or schema change that moves an RPG ROM when the project has no equipment.
   for (const board of RPG_BOARDS) {
     const built = await buildHash(await rpgVariant({ mapper: board.id, save: false, naming: true }));
@@ -150,7 +153,7 @@ test('(4) an action game whose items carry equip data builds byte-identical to t
 });
 
 // (5) Equipment-free Save and naming variants of an RPG.
-test('(5) equipment-free Save and naming variants of sample-rpg build to the post-C1b hashes on all three RPG boards', { skip }, async () => {
+test('(5) equipment-free Save and naming variants of sample-rpg build to the post-C3b hashes on all three RPG boards', { skip }, async () => {
   // Catches an equipment term that leaks into the Save or naming code paths when equipment is off (the allowance gated on Save alone, a flag
   // emitted unconditionally). Save on/off x naming on/off, apart and together: twelve builds, each pinned.
   for (const board of RPG_BOARDS) {

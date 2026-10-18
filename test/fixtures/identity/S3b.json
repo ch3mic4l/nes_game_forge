@@ -1,7 +1,7 @@
 {
   "slice": "S3b",
   "parentRev": "15c11b7bc9fcd3caaf06dbb5e165439e5ce5cb3a",
-  "carries": "overrun-lever+backdrop+entitypass+saverange+battleinput+deadwriter",
+  "carries": "overrun-lever+backdrop+entitypass+saverange+battleinput+equipoff+deadwriter",
   "shapes": {
     "action:base": {
       "romSha": "1026212533344f3ac70bcfe18eaa0dc7360a203af41d353c511086e9001a61cf",
@@ -208,13 +208,13 @@
       "moveFace": 52684
     },
     "rpg:base": {
-      "romSha": "85882d7c50381336c3dab0e2df10efb9088afadde42a7a4e3debec669f64062e",
+      "romSha": "7c66c8d5987310a5467b7a3e46af745b84be612430e9e762ac8dcc273eccd136",
       "size": 524304,
       "namesSha": "2a065b48d2fa817b2d1a693182bb76efa97c4403667742589b6da1b5d520c4d8",
       "klAnchor": 55103
     },
     "rpg:U-noA": {
-      "romSha": "ca94a66da02bd79a17cd4000e8f215c98cd7b158e2ac67fd73c5ef93bcb1bbe0",
+      "romSha": "22e62211381a8e4402a6b239023cf7d470f2162b7732d1dccdbf041cc80963aa",
       "size": 524304,
       "namesSha": "294f21d840faf0667845ffcb846e39e34482a3095b0df15a6cfc003a0f7a2810",
       "klAnchor": 55932,
@@ -226,7 +226,7 @@
       }
     },
     "rpg:U-A": {
-      "romSha": "d383d8bf6fd955e2fedcd9767939e2f14e3b893a255fd6d34ba553c5a801d094",
+      "romSha": "0983d9f2c444d93478ddcecda7f9ef1cd6b9543487c4a770cca387f2a21189a2",
       "size": 524304,
       "namesSha": "2fa64e84af3bee308f367dc0550ceeb89f89ae2e4e9cb59eb8df7d1dc6dcb004",
       "klAnchor": 55813,
@@ -238,14 +238,14 @@
       }
     },
     "rpg:move-npc": {
-      "romSha": "593c3f82d1c2991eb93238167fa6662fd1790a9f11d79b0dcad349cbc6358f28",
+      "romSha": "aceb2f31118c52434df30294e25e63caa0c0a1f9a1cc8cfdf279a7b5f077d799",
       "size": 524304,
       "namesSha": "65406a60a10a7d932238d33b752c39bdf31f2666b9e8474658ba955968bcdd34",
       "klAnchor": 55475,
       "moveFace": 52062
     },
     "rpg:move-player-ord": {
-      "romSha": "e0d7009bc7785a130dee7501efeee04dd83abc8b718b6ac64779654880b07e87",
+      "romSha": "d81de728077373b4fee102447c66367d11adb7b04d2401d5092276f7029d211a",
       "size": 524304,
       "namesSha": "ecf8f4839cad6159542ebaca11831a4f217ca132cf51c24bad92672807bfd968",
       "klAnchor": 56398,
@@ -258,7 +258,7 @@
       "moveFace": 52835
     },
     "rpg:move-player-str": {
-      "romSha": "fee4f8570578479c4c18f2e6307d829599826cfb2d2d0a5d085218cffd25859e",
+      "romSha": "fc09be1c610e4e75646c869cb8fdc889d0395e96c0ee19160d7badf72ef87f70",
       "size": 524304,
       "namesSha": "bbdd5d448c4e7780ae8856dd5e90f3c542a039bec876e2e89d6b87d7e7d5758f",
       "klAnchor": 56268,
@@ -271,39 +271,39 @@
       "moveFace": 52705
     },
     "rpg:text": {
-      "romSha": "a8ddfc86b03adddaa72ada43e26633240582730dc818b596911b3ec6ed332f51",
+      "romSha": "d2815e34ae2ae4657bb4cd64d56ff4d6efc50b99dc00edf38b83e2a87abdb647",
       "size": 524304,
       "namesSha": "2a065b48d2fa817b2d1a693182bb76efa97c4403667742589b6da1b5d520c4d8",
       "klAnchor": 55103
     },
     "rpg:save": {
-      "romSha": "eb6dc582ae3619a86c9518b2c582267e9e2c056e47e91ac5559b432d4559d8c7",
+      "romSha": "571f8a5071ee8e3fc814f3ebef2d1ecb98479fb93d938f669cf6da2f368f0bf4",
       "size": 524304,
       "namesSha": "7cbe413067ca278d965b4e83e36b0c5de5e76fd0d9f82a929ea8b1a0f0e562b1",
       "klAnchor": 55984
     },
     "rpg:turn": {
-      "romSha": "be7d8a7c4eb0c139c0e0d1ec33e2f65345b00898af59d6731348377ebd2d7e46",
+      "romSha": "67dbdb4a0bb0720a162b2a7841cd8a0b47d480b7437b35d15d6ff5a3a6f62d15",
       "size": 524304,
       "namesSha": "2e59b3d8ff9d9c1acfd999e75520da2f9e7191b8abda55668d82710dc3d381e0",
       "klAnchor": 55173,
       "moveFace": 51846
     },
     "rpg:visible": {
-      "romSha": "78ffd9c02c6e123ee725602978deb4f6dfce385da44fccaba7fe51d82da438bc",
+      "romSha": "b0346270b33ff2c9366f0daebee6be25d19914199033496391918bf5e4193f8e",
       "size": 524304,
       "namesSha": "674c2490c4b2baced193848558472a4d9936d26c1176640aea8fd89a6afbe533",
       "klAnchor": 55150
     },
     "rpg:turn+move-npc": {
-      "romSha": "c1c70117607bea0c5ad9e06fb51d572f06684b6d7cb06ec64aae489cfb07836a",
+      "romSha": "0e0b75eb513403e6c8c3094dddcc421061f6ca9ed8e65af6b4fc9a4e06f10e82",
       "size": 524304,
       "namesSha": "ad74e10a54ea4dd8c4d33331d9c61080a985a924e294821ea5377d233e412a59",
       "klAnchor": 55508,
       "moveFace": 52062
     },
     "rpg:U-noA+turn": {
-      "romSha": "11fe8b2b7c4467fe2bc42144486a3ae0e2fd75507a6d085890dcfb5a85cbec54",
+      "romSha": "3793dd2b47456462609bbab6857650043a4400258c7d163a5c5a66f8220fa2c4",
       "size": 524304,
       "namesSha": "0a45f305adc23d40a4c4815563096ba6e68ec293f121ed5c817471feacfa63db",
       "klAnchor": 56002,
@@ -316,7 +316,7 @@
       "moveFace": 52541
     },
     "rpg:U-A+turn": {
-      "romSha": "8bcb3ccd2929278c9f5ca825607143b05413b0e9efd6d3143f4e6d74cdb21a7f",
+      "romSha": "81b747be989b9ebd1be9482cf957882e72de160f3ddf3d7822ac24182abd1142",
       "size": 524304,
       "namesSha": "27b405b7bd6ed8d2215530b833a1caaecdac9baf30489a21755315d0114b5f11",
       "klAnchor": 55883,
@@ -329,7 +329,7 @@
       "moveFace": 52422
     },
     "rpg:U-A+move-npc+text": {
-      "romSha": "bf6fdc11118d19571439c1f3b188520d55fd1916282a1676d1dc0be16a9bde7f",
+      "romSha": "a3355ce69f681acd205759eae13b340efaef52ae9b0c8e3ad673161b0b2eed43",
       "size": 524304,
       "namesSha": "bbdd5d448c4e7780ae8856dd5e90f3c542a039bec876e2e89d6b87d7e7d5758f",
       "klAnchor": 56268,
@@ -342,7 +342,7 @@
       "moveFace": 52705
     },
     "rpg:U-noA+move-npc": {
-      "romSha": "537b10456a95a62655d67783a183c07a0a3e6857b2001896d0969de70ee417ce",
+      "romSha": "61f436900857fdd2609aa832350cf89558f1bf0f1b5c2328bf9210874fc27eb2",
       "size": 524304,
       "namesSha": "ae9e78a15d051ed2c621eeea88ae50c7877483ca69fdf9f48d7f85c636c6a66b",
       "klAnchor": 56387,
@@ -355,14 +355,14 @@
       "moveFace": 52824
     },
     "rpg:all-toggles+move-npc": {
-      "romSha": "4d62e8c35f8fec79401f4a54d2e8d39822576e8d4bcb893e95777d7f8a42508e",
+      "romSha": "10632862daf94752b1812781e340b56ee2e1f540d6150cc32d29789a02e71496",
       "size": 524304,
       "namesSha": "50c11f092e797c406899a0daef3d5cf9d24cb3aff5e28cfd37b0f54a35b5ab80",
       "klAnchor": 56436,
       "moveFace": 52074
     },
     "rpg:U-A+text+visible": {
-      "romSha": "8458ea81cd63ebb41f025c1cf7e89e8fd706a4f6f3fcea0fccf5f128c2c2d927",
+      "romSha": "e470eb9f46aaf30ebcae871cbe309080729956ca49bf04aa95a2f04a2325667c",
       "size": 524304,
       "namesSha": "e93bf17f0f167a0d812d572db21c762ce4b242cc8a12e64e3e706bc9494b56be",
       "klAnchor": 55860,
@@ -374,7 +374,7 @@
       }
     },
     "rpg:U-noA+text+save+visible": {
-      "romSha": "fe361c8de96403cedbccf466fe58d1b8eaee3b741b4b9ed38adbcb3dbb70a6e2",
+      "romSha": "765d8365ce74489df18f235c806c020b1e508779438c9cba3f257d5572423f94",
       "size": 524304,
       "namesSha": "1a628cbbd77ba392110b4536260abca40df8b72a791343c27af44d88751dabfb",
       "klAnchor": 56900,
@@ -386,7 +386,7 @@
       }
     },
     "rpg:move-player-ord+turn+text": {
-      "romSha": "0db18460088f9c9181cc81dd556ff7b4f9cce92293a5c9ae6160c6c4c4a6c6c9",
+      "romSha": "5e4e212684538f32c6dd5669b02ac052164d95ebfa16f2ee7a4de566dd90dffa",
       "size": 524304,
       "namesSha": "a2e7966650014e5e4ac6574193200d6259f46a0b7aba3802eaf276c192542b32",
       "klAnchor": 56431,
@@ -399,7 +399,7 @@
       "moveFace": 52835
     },
     "rpg:move-player-str+turn+text+visible": {
-      "romSha": "a04c5503418fc5908048489a36c787eca666821a64dc3d532af056fca91df585",
+      "romSha": "54ae0685561989ea9de3816ba137f82b8c964f1f993903d05a8819761a11c44f",
       "size": 524304,
       "namesSha": "0dd98f265b5844c539a3706a7eba597555833bf124bedfcd2242674ba4baf763",
       "klAnchor": 56348,

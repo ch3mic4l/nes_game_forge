@@ -42,6 +42,10 @@ Each of these cost real debugging time and now has a regression test. They are e
   (`bt_vrow`). `bt_tmp2` is load-bearing again as `cast_all`'s own end-of-side
   sentinel for its `spell_damage`/`roll_spell_amount`/`mod8` chain
   — a new routine there has exactly one byte it may not pick.
+  `physical_damage` parked the attacker's ATK in `bt_tmp` across `combatant_def`, whose party path
+  runs `level_row`, which stores the member index there: every monster hit on a party member was
+  `max(1, member index - DEF)` plus noise until it parked ATK in `bt_dmg_lo` (dead until the
+  routine writes its result) — see `test/unit/equipengine.test.js`.
 - **A backward `.org` silently splices bytes into whatever already assembled there.** nesasm
   places a bank's contents at file offset `address & (bank size - 1)` with no check that the
   address is actually inside the bank being assembled — an address *behind* the bank's own base

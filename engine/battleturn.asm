@@ -739,11 +739,12 @@ combatant_eva_ret:
 physical_damage:
   lda <bt_actor
   jsr combatant_atk
-  sta <bt_tmp
+  sta <bt_dmg_lo            ; park ATK in the dead result byte: combatant_def's party path runs
+                            ; level_row, which overwrites bt_tmp with the member index
   lda <bt_target
   jsr combatant_def
   sta <bt_tmp2
-  lda <bt_tmp
+  lda <bt_dmg_lo
   sec
   sbc <bt_tmp2
   bcs physical_damage_floor

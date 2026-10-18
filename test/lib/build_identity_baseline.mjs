@@ -3,7 +3,7 @@
 //
 //   node test/lib/build_identity_baseline.mjs S1 99d4156
 //   node test/lib/build_identity_baseline.mjs S3a 3313b62 --carry-s3a5
-//   node test/lib/build_identity_baseline.mjs S3b 15c11b7 --carry-overrun --carry-backdrop --carry-entitypass --carry-saverange --carry-battleinput
+//   node test/lib/build_identity_baseline.mjs S3b 15c11b7 --carry-overrun --carry-backdrop --carry-entitypass --carry-saverange --carry-battleinput --carry-equipoff
 //
 // --carry-overrun (Say/Move overrun fix): the parent's streamdialog.asm, chunk read, shim body and close-row alias bytes are
 // replaced by the CURRENT ones (carryOverrunLever / carryOverrunConstants), so "identical to the parent" still means what it
@@ -32,6 +32,11 @@
 // the parent's input.asm (carryBattleInputLever), so every RPG ROM carries the 6 bytes in both builds; an action build assembles none of it, and the
 // fix itself is held by battleinput.test.js.
 //
+// --carry-equipoff (equipment C3b): --carry-backdrop lifts the CURRENT battle.asm / battleturn.asm whole, and since equipment C2/C3 they hold
+// `.if EQUIP_ENABLED` blocks whose flags only the CURRENT generator writes (config.inc); carryEquipOffConstants appends EQUIP_ENABLED = 0 (and the
+// MAG/MDEF pair) to the parent's constants.asm so the lift assembles again, as an equipment-free build. The lift also carries C3b's physical_damage
+// fix (ATK parked in bt_dmg_lo), so every RPG ROM carries it in both builds.
+//
 // --carry-s3a5 (Phase 3a S3a.5): the parent's sw_camera_window_recompute is replaced by the CURRENT closed-form
 // camera (carryS3a5Lever, test/lib/enginehistory.js) before it is built, and the file records `carries`. S3a.5
 // made every streamed ROM differ from every earlier commit's in that one routine and the kernel-hi addresses
@@ -59,7 +64,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { saveProject } from '../../main/project-io.js';
 import { SHAPES, buildShapeProject } from './identityshapes.js';
 import { sha256, parseFns, namesHash, normalizeSpan } from './identitycompare.js';
-import { carryS3a5Lever, carryOverrunLever, carryOverrunConstants, carryEntityPassLever, carrySaveRangeLever, carryBattleInputLever } from './enginehistory.js';
+import { carryS3a5Lever, carryOverrunLever, carryOverrunConstants, carryEntityPassLever, carrySaveRangeLever, carryBattleInputLever, carryEquipOffConstants } from './enginehistory.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const carryLever = process.argv.includes('--carry-s3a5');
@@ -68,6 +73,7 @@ const carryBackdrop = process.argv.includes('--carry-backdrop');
 const carryEntityPass = process.argv.includes('--carry-entitypass');
 const carrySaveRange = process.argv.includes('--carry-saverange');
 const carryBattleInput = process.argv.includes('--carry-battleinput');
+const carryEquipOff = process.argv.includes('--carry-equipoff');
 const [slice, rev] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 if (!slice || !rev) {
   process.stderr.write('usage: node test/lib/build_identity_baseline.mjs <slice> <parent-rev>\n');
@@ -120,6 +126,10 @@ try {
       fs.writeFileSync(path.join(wt, 'engine', name), fs.readFileSync(path.join(ROOT, 'engine', name), 'utf8'));
     }
   }
+  if (carryEquipOff) {
+    const at = path.join(wt, 'engine/constants.asm');
+    fs.writeFileSync(at, carryEquipOffConstants(fs.readFileSync(at, 'utf8')));
+  }
   const { buildProject } = await import(pathToFileURL(path.join(wt, 'main/build/pipeline.js')));
   const result = {};
   for (const shape of SHAPES) {
@@ -153,7 +163,7 @@ try {
   }
   const file = path.join(ROOT, 'test/fixtures/identity', `${slice}.json`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify({ slice, parentRev: fullRev, ...(carryLever ? { carries: 's3a5-lever' } : {}), ...(carryOverrun ? { carries: (carryBackdrop ? 'overrun-lever+backdrop' : 'overrun-lever') + (carryEntityPass ? '+entitypass' : '') + (carrySaveRange ? '+saverange' : '') + (carryBattleInput ? '+battleinput' : '') + '+deadwriter' } : {}), shapes: result }, null, 2)}\n`);
+  fs.writeFileSync(file, `${JSON.stringify({ slice, parentRev: fullRev, ...(carryLever ? { carries: 's3a5-lever' } : {}), ...(carryOverrun ? { carries: (carryBackdrop ? 'overrun-lever+backdrop' : 'overrun-lever') + (carryEntityPass ? '+entitypass' : '') + (carrySaveRange ? '+saverange' : '') + (carryBattleInput ? '+battleinput' : '') + (carryEquipOff ? '+equipoff' : '') + '+deadwriter' } : {}), shapes: result }, null, 2)}\n`);
   process.stdout.write(`wrote ${path.relative(ROOT, file)}: ${Object.keys(result).length} shapes\n`);
 } finally {
   execFileSync('git', ['worktree', 'remove', '--force', wt], { cwd: ROOT, stdio: 'ignore' });

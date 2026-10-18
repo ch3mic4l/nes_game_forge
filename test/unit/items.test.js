@@ -583,7 +583,9 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // Re-pinned again (equipment C1b, the battle input fix, ruling E9): engine/input.asm's dispatch_input gained a 6-byte
 // `.if BATTLE_ENABLED` skip under ST_BATTLE, so every RPG's kernel-lo changed; size is unchanged (still 147472) and no
 // action project moves (PINNED_BASELINE_HASH above is untouched).
-const PINNED_RPG_BASELINE_HASH = 'd3a4ef076f68974c5f939a150b2ced14ab567a70d0251ecdebb5660e77b6b4cb';
+// Re-pinned a third time (equipment C3b, ruling E11): physical_damage parks the attacker's ATK in bt_dmg_lo instead of bt_tmp, two
+// operand bytes; no size change and no action project moves.
+const PINNED_RPG_BASELINE_HASH = 'e87707167375b394195dc0cb85ef5a0b44cc0fe894c5b4d190a9d49b226eefd0';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

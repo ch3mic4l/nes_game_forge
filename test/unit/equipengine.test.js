@@ -192,11 +192,7 @@ test('a real round: MAG adds exactly its bonus to a party spell, MDEF takes exac
     p.sprites.actors[0].battle = { ...p.sprites.actors[0].battle, atk: 40 }; // Slime: a hit well clear of the damage floor
     p.sprites.actors[3].battle = { ...p.sprites.actors[3].battle, spellIds: [0], mag: 0, mdef: 0 }; // Snake casts a flat 10
   };
-  // DEF is covered by the direct combatant_def reads above, not by a real monster swing: physical_damage parks the attacker's
-  // stat in bt_tmp and then calls combatant_def, whose party path runs level_row, which overwrites bt_tmp with the member index
-  // -- so a monster's physical hit on a party member is max(1, member index - DEF) + noise today whatever either stat is. That
-  // defect is in HEAD, with or without equipment (docs: handoff-next/equip/c3/report.md, finding F1), and fixing it is not this
-  // commit's to do: it would move every RPG ROM. A real-round DEF assertion belongs to the commit that fixes it.
+  // DEF is covered by the real monster swings below (the two physical_damage tests), not here.
   // MAG: Rian casts Ember (flat 10, no element) at Slime.
   const cast = async (start) => {
     const built = await buildEquip(t, await equipProject({ items, start, mutate: prep }));
@@ -238,6 +234,91 @@ test('a real round: MAG adds exactly its bonus to a party spell, MDEF takes exac
   const spellCharm = await spellTaken({ 0: [null, null, 3] });
   assert.equal(spellBase, 10);
   assert.equal(spellBase - spellCharm, 4, 'the Charm takes exactly its +4 MDEF off the Snake\'s spell');
+});
+
+// --- physical_damage (ruling E11): a monster's real swing at a party member -------------------------------------------------
+// physical_damage used to park the attacker's ATK in bt_tmp; combatant_def's party path runs level_row, which stores the member
+// index there, so the hit was max(1, member index - DEF) + noise whatever either stat was. It parks in bt_dmg_lo now.
+
+/**
+ * Boot the build, fight Slime (ATK 40 in these projects) and let it take its first swing at party member `target`, who is made
+ * the first living in-party member (pick_party_target takes the first one; Rian, who is already choosing, swings and is
+ * skipped if dead). Returns the HP the swing took and its noise: the RNG is left in the state noise was rolled from, so
+ * noise = rng & 3.
+ */
+function monsterSwing(built, target) {
+  const nes = boot(built.romPath);
+  startFight(nes);
+  const mem = nes.cpu.mem;
+  mem[RAM.MON_HP] = 250;
+  for (let member = 0; member < MAX_PARTY; member++) {
+    mem[RAM.PC_IN_PARTY + member] = member === target || member === 0 ? 1 : 0;
+    mem[RAM.PC_HP + member] = member < target ? 0 : 255;
+    mem[RAM.PC_HP_MAX + member] = 255;
+  }
+  mem[RAM.RNG] = 0x21;
+  chooseCommand(nes, BC_FIGHT);
+  for (let frame = 0; frame < 900 && mem[RAM.PC_HP + target] === 255; frame++) {
+    const asking = mem[RAM.BT_PHASE] === BP_MENU || mem[RAM.BT_PHASE] === BP_TARGET;
+    if (asking && frame % 10 === 0) tap(nes, A, 2);
+    else nes.frame();
+  }
+  assert.equal(mem[RAM.GAME_STATE], ST_BATTLE, 'the fight ended before the swing');
+  return { dealt: 255 - mem[RAM.PC_HP + target], noise: mem[RAM.RNG] & 3, level: mem[RAM.PC_LEVEL + target] };
+}
+
+const BP_TARGET = 2; // from engine/constants.asm
+const slimeHits = (atk, shape) => (p) => {
+  p.sprites.actors[0].battle = { ...p.sprites.actors[0].battle, atk };
+  shape(p.party);
+};
+
+test('a real monster swing: worn DEF takes exactly its bonus off the member who wears it, and off nobody else', opts, async (t) => {
+  const ATK = 40;
+  const mutate = slimeHits(ATK, (party) => party.forEach((m) => { m.baseDef = 5; m.defPerLevel = 0; }));
+  const items = rig({}, { def: 3 }, { def: 4 });
+  const WEARER = 2; // not 0, so a bonus read at the wrong index or off the wrong column shows
+  const off = await buildEquip(t, await equipProject({ items, mutate }));
+  const on = await buildEquip(t, await equipProject({ items, start: { [WEARER]: [null, 2, 3] }, mutate }));
+  for (let target = 0; target < MAX_PARTY; target++) {
+    const before = monsterSwing(off, target);
+    const after = monsterSwing(on, target);
+    const bonus = target === WEARER ? 3 + 4 : 0;
+    assert.equal(before.dealt, ATK - 5 + before.noise, `member ${target}, unequipped: ATK - DEF + noise exactly`);
+    assert.equal(after.noise, before.noise, `member ${target}: the same seed rolled the same noise`);
+    assert.equal(before.dealt - after.dealt, bonus, `member ${target}: the Mail's +3 and the Charm's +4 DEF come off the wearer's hit only`);
+  }
+});
+
+test('equipment-free: a high-ATK monster swing is ATK - DEF + noise for every member, whatever the member index', opts, async (t) => {
+  const ATK = 60;
+  // Same DEF everywhere: members 0 and 3 must take the identical hit. Then four different DEFs: each hit follows its own member's DEF.
+  const same = await buildEquip(t, await equipProject({
+    mutate: slimeHits(ATK, (party) => party.forEach((m) => { m.baseDef = 7; m.defPerLevel = 0; }))
+  }));
+  const hits = [0, 1, 2, 3].map((member) => monsterSwing(same, member));
+  hits.forEach((hit, member) => assert.equal(hit.dealt, ATK - 7 + hit.noise, `member ${member}: ATK - DEF + noise, not member index - DEF`));
+  assert.equal(hits[3].dealt, hits[0].dealt, 'a member at index 3 and one at index 0 with the same DEF take the same hit');
+
+  const DEFS = [3, 6, 9, 12];
+  const distinct = await buildEquip(t, await equipProject({
+    mutate: slimeHits(ATK, (party) => party.forEach((m, i) => { m.baseDef = DEFS[i]; m.defPerLevel = 0; }))
+  }));
+  DEFS.forEach((def, member) => {
+    const hit = monsterSwing(distinct, member);
+    assert.equal(hit.dealt, ATK - def + hit.noise, `member ${member} (DEF ${def}): the hit follows that member's DEF`);
+  });
+
+  // The floor: an ATK below every DEF scratches for 1, and the noise is added to the floored 1. Catches a swing that rolls the
+  // noise before subtracting DEF ((ATK + noise) - DEF is the same sum everywhere above the floor, and different at it).
+  const hopeless = await buildEquip(t, await equipProject({
+    mutate: slimeHits(3, (party) => party.forEach((m) => { m.baseDef = 7; m.defPerLevel = 0; }))
+  }));
+  [0, 3].forEach((member) => {
+    const hit = monsterSwing(hopeless, member);
+    assert.ok(hit.noise > 0, 'the seed must roll a nonzero noise, or the floor case cannot tell the orders apart');
+    assert.equal(hit.dealt, 1 + hit.noise, `member ${member}: an ATK 3 swing at DEF 7 is the floor of 1 plus the noise`);
+  });
 });
 
 // --- equip_set: the bag half of putting a piece on and taking it off (design section 2, row 9) -----------------------------
