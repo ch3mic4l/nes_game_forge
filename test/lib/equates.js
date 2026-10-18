@@ -69,17 +69,6 @@ export function resolveEquates(pending, symbols) {
       progress = true;
     }
   }
-  // EQUIP_SAVE_SHIFT lives in build/assets/cartridge.inc (Equipment, build commit C3). test/lua/sw_manifest_scene.mjs is one of
-  // sw_provenance.mjs's HARNESS_FILES, whose hash the recorded curve pins (E10: no harness edit before C6), so it still scans only
-  // constants.asm + config.inc. The shift is nonzero only for equipment + a flash Save (generate.js equipSaveShift), so a caller that
-  // never saw cartridge.inc may take it as 0 ONLY when a RESOLVED flag proves that: EQUIP_ENABLED === 0 or SAVE_FLASH === 0 (both in
-  // config.inc). A flag that is missing counts as unknown, never as zero, and an equipment + flash + Save build without
-  // cartridge.inc still throws below -- it would otherwise resolve the wrong RAM map without a word. C6, which renews the harness,
-  // scans cartridge.inc in sw_manifest_scene.mjs and deletes this block.
-  if (pending.size && !symbols.has('EQUIP_SAVE_SHIFT') && !pending.has('EQUIP_SAVE_SHIFT') && (symbols.get('EQUIP_ENABLED') === 0 || symbols.get('SAVE_FLASH') === 0)) {
-    symbols.set('EQUIP_SAVE_SHIFT', 0);
-    return resolveEquates(pending, symbols);
-  }
   if (pending.size) {
     throw new Error(`could not resolve: ${[...pending.keys()].join(', ')} -- each names something never defined`);
   }

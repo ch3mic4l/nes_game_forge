@@ -300,6 +300,7 @@ async function assembleScene({ root, buildProject, project, icon, outDir }) {
     const pending = new Map();
     scanEquates(await fs.promises.readFile(path.join(dir, 'build', 'constants.asm'), 'utf8'), pending);
     scanEquates(await fs.promises.readFile(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8'), pending);
+    scanEquates(await fs.promises.readFile(path.join(dir, 'build', 'assets', 'cartridge.inc'), 'utf8'), pending);
     const ram = new Map(); resolveEquates(pending, ram);
     await fs.promises.mkdir(outDir, { recursive: true });
     const romPath = path.join(outDir, 'scene.nes');

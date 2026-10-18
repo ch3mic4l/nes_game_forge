@@ -24,6 +24,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import NES from '../../renderer/emulator/core/nes.js';
 import { scanEquates, resolveEquates } from '../lib/equates.js';
+import { buildScene, REPO } from '../lua/sw_manifest_scene.mjs';
 import { saveBodySize, saveFields, saveIdentity } from '../../shared/save.js';
 import { loadProject } from '../../main/project-io.js';
 import {
@@ -505,11 +506,12 @@ test('a visible event-replay counter: wearing gear changes how many times an ent
   assert.deepEqual(bare, { atNewGame: 1, afterContinue: 2 });
 });
 
-// ---- the resolver's fallback for a caller that never read cartridge.inc (review R2) ---------------------------------------------------
-// test/lib/equates.js may take EQUIP_SAVE_SHIFT as 0 for the frozen harness scene builder (sw_manifest_scene.mjs reads constants.asm +
-// config.inc only) -- but ONLY when a resolved flag proves it. The wrong implementation: a fallback that silently picks 0 for any build,
-// which resolves an equipment + flash + Save build's RAM map ($0780 block) with the wrong addresses and no error.
-test('resolveEquates: the missing-cartridge fallback is proven by a resolved flag, never guessed', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+// ---- the resolver has no fallback for a caller that never read cartridge.inc (review R2, C6a) --------------------------------------------
+// EQUIP_SAVE_SHIFT lives in build/assets/cartridge.inc, and every caller that resolves a build's RAM map scans all three files
+// (test/lua/sw_manifest_scene.mjs does since C6a). The wrong implementation: a fallback that silently picks 0 for a build whose flags look
+// harmless, which resolves an equipment + flash + Save build's RAM map ($0780 block) with the wrong addresses and no error. With no
+// fallback at all, a missing cartridge.inc throws for EVERY build, the equipment-free and flashless ones included.
+test('resolveEquates: a build without cartridge.inc throws for every build, the shift is never guessed', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   const resolveWith = (built, files) => {
     const pending = new Map();
     for (const file of files) scanEquates(fs.readFileSync(path.join(built.dir, 'build', file), 'utf8'), pending);
@@ -521,11 +523,14 @@ test('resolveEquates: the missing-cartridge fallback is proven by a resolved fla
   const allThree = [...constantsAndConfig, 'assets/cartridge.inc'];
   const sword = [piece(1, 'Sword', WEAPON, { atk: 7 })];
 
-  // 1. Proven zero: no equipment at all (EQUIP_ENABLED = 0), and equipment without a flash Save (SAVE_FLASH = 0) -- both resolve to $0780.
+  // 1. No equipment at all (EQUIP_ENABLED = 0), and equipment without a flash Save (SAVE_FLASH = 0): both used to resolve to $0780 on a
+  // proven-zero fallback; without cartridge.inc they now throw, and with it they are the stock map.
   const plainBuild = await buildEquip(t, await equipProject({ mapper: 30, save: true }));
-  assert.equal(resolveWith(plainBuild, constantsAndConfig).get('sw_fc_wy_lo'), 0x0780, 'EQUIP_ENABLED = 0 proves the shift is 0');
+  assert.throws(() => resolveWith(plainBuild, constantsAndConfig), /could not resolve: .*sw_fc_wy_lo/, 'no fallback: an equipment-free build without cartridge.inc throws');
+  assert.equal(resolveWith(plainBuild, allThree).get('sw_fc_wy_lo'), 0x0780, 'with cartridge.inc the equipment-free build is the stock map');
   const noSave = await buildEquip(t, await equipProject({ mapper: 30, items: sword }));
-  assert.equal(resolveWith(noSave, constantsAndConfig).get('sw_fc_wy_lo'), 0x0780, 'SAVE_FLASH = 0 proves the shift is 0');
+  assert.throws(() => resolveWith(noSave, constantsAndConfig), /could not resolve: .*sw_fc_wy_lo/, 'no fallback: a flashless build without cartridge.inc throws');
+  assert.equal(resolveWith(noSave, allThree).get('sw_fc_wy_lo'), 0x0780, 'with cartridge.inc the flashless build is the stock map');
 
   // 2. The real equipment + flash + Save build: without cartridge.inc the resolver must refuse, not pick a wrong map.
   const real = await buildEquip(t, await equipProject({ mapper: 30, save: true, items: sword }));
@@ -539,4 +544,37 @@ test('resolveEquates: the missing-cartridge fallback is proven by a resolved fla
 
   // 4. An unknown flag is never zero: constants.asm alone (no config.inc, so EQUIP_ENABLED and SAVE_FLASH are unknown) throws.
   assert.throws(() => resolveWith(plainBuild, ['constants.asm']), /could not resolve/, 'unknown flags do not prove a zero shift');
+});
+
+// The harness half of the same fact: the sweep's scene builder reads cartridge.inc, so the RAM map it records for an equipment + flash
+// Save scene carries the 12-byte shift. The wrong implementation is the pre-C6a builder, which scanned constants.asm + config.inc only and
+// failed this very build with "could not resolve: sw_fc_wy_lo ..." (or, with a fallback, recorded the unshifted $0780 block).
+test('the sweep scene builder (sw_manifest_scene.mjs buildScene) records EQUIP_SAVE_SHIFT: 12 and $078C for equipment + flash Save, $0780 otherwise', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
+  const sword = piece(0, 'Sword', WEAPON, { atk: 7 });
+  const withEquipAndSave = (p, { createMap, createScreen }) => {
+    p.items.push({ ...sword, id: p.items.length });
+    const title = createMap(1, 'Title');
+    title.screens = [createScreen()];
+    p.maps.push(title);
+    p.project.titleMap = 1;
+    p.project.titleScreen = 0;
+  };
+  const withEquipOnly = (p) => p.items.push({ ...sword, id: p.items.length });
+  const symbolsOf = async (opts) => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-equipsave-scene-'));
+    try {
+      return (await buildScene({ root: REPO, outDir, gt: 'rpg', ...opts })).symbols.ram;
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  };
+  const shifted = await symbolsOf({ flashCmds: [{ op: 'save' }], mutate: withEquipAndSave });
+  assert.equal(shifted.EQUIP_SAVE_SHIFT, 12, 'equipment + flash Save shifts the block by 12');
+  assert.equal(shifted.sw_fc_wy_lo, 0x078c, 'and the recorded RAM map is the shifted one');
+  const plain = await symbolsOf({});
+  assert.equal(plain.EQUIP_SAVE_SHIFT, 0);
+  assert.equal(plain.sw_fc_wy_lo, 0x0780, 'a plain scene is the stock map');
+  const equipOnly = await symbolsOf({ mutate: withEquipOnly });
+  assert.equal(equipOnly.EQUIP_SAVE_SHIFT, 0, 'equipment without a Save shifts nothing');
+  assert.equal(equipOnly.sw_fc_wy_lo, 0x0780);
 });
