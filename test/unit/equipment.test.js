@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import {
   ACTIONS,
   EQUIP_SLOTS,
@@ -70,11 +71,20 @@ test('EQUIP_SLOTS is the append-only wire order and RPG_LIMITS.equipSlots is its
   assert.equal(EQUIP_SLOTS.length, RPG_LIMITS.equipSlots);
 });
 
-test('ACTIONS is untouched: nine actions, none of them equip (C4 lifts this)', () => {
-  // C4 appends `equip` at index 9 together with its working handler and ACT_EQUIP (design section 4, F6): the Controller Forge builds its list from
-  // ACTIONS, so an earlier append would offer an action nothing implements. When C4 lands, this pin moves to 10 and gains the id.
-  assert.equal(ACTIONS.length, 9);
-  assert.ok(!ACTIONS.some((action) => action.id === 'equip'));
+test('ACTIONS gained `equip` at index 9 and ACT_EQUIP in constants.asm is that index (C4)', () => {
+  // Catches an action appended in the JS list but not in the engine's ACT_* table (or in a different position): the input table is
+  // written as ACTIONS indices, so the two numberings are one wire format. The nine earlier actions must not move.
+  assert.equal(ACTIONS.length, 10);
+  assert.equal(ACTIONS[9].id, 'equip');
+  assert.deepEqual(ACTIONS.slice(0, 9).map((action) => action.id), [
+    'none', 'attack', 'interact', 'dash', 'item', 'pause', 'cancel', 'confirm', 'continue'
+  ]);
+  const constants = readFileSync(new URL('../../engine/constants.asm', import.meta.url), 'utf8');
+  assert.equal(Number(/^ACT_EQUIP\s*=\s*(\d+)/m.exec(constants)?.[1]), 9);
+  ACTIONS.forEach((action, index) => {
+    const match = new RegExp(`^ACT_${action.id.toUpperCase()}\\s*=\\s*(\\d+)`, 'm').exec(constants);
+    assert.equal(Number(match?.[1]), index, `ACT_${action.id.toUpperCase()}`);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------- 1. normalization

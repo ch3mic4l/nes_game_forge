@@ -423,7 +423,7 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // projectUsesEquipmentMdef (a read of item.equip.mag / .mdef); nothing stores a screen reference and remapScreenReferences, projectEvents
 // and allCommands are untouched.
 const PINNED_DIGESTS = {
-  'shared/project.js': '12889d7acd480c67bcee0c5732099d74ad251d95382d1196e1bd6e8e6166d268',
+  'shared/project.js': '6ddef81cbd69d9cc382e0c558ea93052800b37112929298efc88c0941d294f4f',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

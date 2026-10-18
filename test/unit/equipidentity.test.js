@@ -152,6 +152,28 @@ test('(4) an action game whose items carry equip data builds byte-identical to t
   }
 });
 
+// (4b) C4: the same dormant data PLUS an `equip` binding. ACTIONS gained `equip` (index 9) and the Controller Forge offers it in every game type, so an
+// action game can bind it. The stripped reference here keeps the binding (the binding itself writes one byte of input.inc, so it cannot equal
+// the unbound ACTION_HASHES); what must not move is everything the equipment DATA could add. The control proves the binding is in the ROM.
+test('(4b) an action game with equip data AND an equip binding builds byte-identical to the same game with the binding and no equip data, on every board', { skip }, async () => {
+  // Catches a dispatch chain whose `cmp #ACT_EQUIP` assembles unconditionally (it would move every action ROM by the compare, bound or not),
+  // and an opener / Equip screen assembled for an action game because the binding exists. The binding is on Select in gameplay.
+  const bind = (project) => {
+    project.input.states.gameplay.SELECT = 'equip';
+    return project;
+  };
+  for (const mapper of SUPPORTED_MAPPERS) {
+    const unbound = await buildHash(await actionVariant({ mapper: mapper.id }));
+    assert.deepEqual(unbound, ACTION_HASHES[mapper.name], `${mapper.name}: the unbound game is the pinned ROM (the ACTIONS append changed nothing)`);
+    const bound = await buildHash(bind(await actionVariant({ mapper: mapper.id })));
+    const dormant = bind(await actionVariant({ mapper: mapper.id }));
+    addDormantEquipment(dormant);
+    assert.deepEqual(await buildHash(dormant), bound, `${mapper.name}: equip data under an equip binding changes no byte`);
+    assert.equal(bound.size, unbound.size, `${mapper.name}: the binding changes content, never the size`);
+    assert.notEqual(bound.hash, unbound.hash, `${mapper.name}: control -- the binding is real (it is one byte of input.inc)`);
+  }
+});
+
 // (5) Equipment-free Save and naming variants of an RPG.
 test('(5) equipment-free Save and naming variants of sample-rpg build to the post-C3b hashes on all three RPG boards', { skip }, async () => {
   // Catches an equipment term that leaks into the Save or naming code paths when equipment is off (the allowance gated on Save alone, a flag

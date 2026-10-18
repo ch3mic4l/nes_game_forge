@@ -1,0 +1,352 @@
+-- equip_nmi_timing.lua.template -- Mesen (cycle-accurate) proof for the Equip screen's share of the NMI budget and, on MMC3, for the
+-- register file Equip leaves behind (docs/design-equipment.md section 10 row 15, obligation F8 (b) and (c)).
+--
+-- The Equip tick is one more vram_buf producer: eq_flush publishes ONE nametable row (3 header + 30 cells = 33 bytes) per frame, from
+-- ui_tick -> call_battle -> battle_tick -> equip_dispatch. Frozen-world producers (the four of docs/reference-engine.md) run in the same
+-- ui_tick slot and are mutually exclusive with it, so Equip is not a fourth independent producer; the worst frame it can share is
+--     flip_tick (2 x 5) + flash_tick (35) = 45 queued ahead of Equip's tick; a row is 33 more. A flip + Flash frame is 78 with the row, whose NMI
+-- settles on scanline 257 on MMC3, so eq_flush publishes no row into a frame that already holds more than EQ_QUEUE_MAX (35) bytes (E12): the
+-- row stays dirty and goes out the next frame. This script measures the shapes on the real NMI:
+--     MODE "equip":  one Equip row                          vram_len 33   packets [equip]
+--     MODE "flash":  a Flash on-edge and an Equip row       vram_len 68   packets [flash, equip]
+--     MODE "flipeq": a bound-tile flip and an Equip row     vram_len 43   packets [flip, flip, equip]
+--     MODE "flip":   a flip and Flash, the row deferred     vram_len 45   packets [flip, flip, flash]
+-- and judges, on each, that nmi's rti executes before scanline 257 -- on scanline 256 or earlier -- with the rti's own remaining 6 CPU
+-- cycles (18 PPU dots) added. This is E12 (Chris's ruling on review Q1 of C4): the Equip frame keeps "rti before scanline 257" on every board
+-- and in every mode; the 260 (end of vblank) the three sibling templates judge is NOT used here.
+--
+-- STRICT 0 is the control: the same judge on a ROM whose Equip tick publishes every dirty row in one frame (test/lua/build_equip_nmi_roms.mjs
+-- --control=rows) or publishes into the flip + Flash frame (--control=nodefer, the C4 code before E12). The workload-shape check is skipped
+-- there, so the verdict that flips PASS -> FAIL is the rti-before-257 judge alone.
+--
+-- REGCHECK 1 (MMC3): the register file is observed through what it maps, at every main_loop_ready (a frame boundary, where no pair is
+-- mid-write): a hash of CPU $8000-$BFFF (R6/R7), PPU $0000-$07FF (R0), $0800-$0FFF (R1) and $1000-$1FFF (R2-R5), plus the split_lock and
+-- chr_r1 shadows. Baseline = the field frame before Equip is opened. While Equip is up: R6/R7 pair back on the field bank every frame, R0 and
+-- R2-R5 the live tileset, split_lock 0, split armed (split_mode SPL_BATTLE). R1 is judged against this build's own constants and ROM, not
+-- against itself (review R2 of C4): the chr_r1 shadow equals BATTLE_TILESET * 8 + 2 (config.inc), R1 at the frame boundary (idle) maps exactly
+-- the battle tileset's second 2 KB of ROM CHR, and, sampled at the end of the split's handler (`irq_done`), R1 maps exactly the font page,
+-- the 2 KB at FONT_R1 * 1 KB (config.inc). After B: everything equals the baseline again, split_mode SPL_OFF.
+--
+-- This is a TEMPLATE: test/lua/build_equip_nmi_roms.mjs substitutes the __TOKENS__ with addresses resolved out of that exact build.
+--   node test/lua/build_equip_nmi_roms.mjs <outDir> --mode=equip|flash|flip [--control=rows] [--board=1|4|30]
+--   Mesen --testRunner <outDir>/equip_nmi_timing.lua <outDir>/equip_nmi.nes
+-- (test/lua/run_equip_nmi_check.sh does every variant.)
+local NMI_RTI          = __NMI_RTI__
+local MAIN_LOOP_READY  = __MAIN_LOOP_READY__
+local FLASH_TICK       = __FLASH_TICK__
+local FLIP_TICK        = __FLIP_TICK__
+local EQUIP_DISPATCH   = __EQUIP_DISPATCH__
+local FLASH_LEFT       = __FLASH_LEFT__
+local MODE             = "__MODE__"
+local STRICT           = __STRICT__
+local REGCHECK         = __REGCHECK__
+local EXPECT_LEN       = __EXPECT_LEN__
+local IRQ              = __IRQ__             -- engine/split.asm's irq: the split's scanline handler (MMC3)
+local BATTLE_TILESET   = __BATTLE_TILESET__  -- config.inc: the CHR bank draw_battle_screen selects (the Equip screen draws as a battle)
+local FONT_R1          = __FONT_R1__         -- config.inc: the font page's $0800-$0FFF half in MMC3's 1 KB bank units
+local IRQ_DONE         = __IRQ_DONE__        -- engine/split.asm's irq_done: the handler has written R1 (the font or the art) by here
+local BATTLE_R1        = BATTLE_TILESET * 8 + 2 -- engine/constants.asm chr_r1: "the live tileset's R1 bank (tileset*8+2)"
+
+-- Engine RAM, from engine/constants.asm.
+local GAME_STATE        = 0x25
+local VRAM_LEN          = 0x3c
+local CHR_R1            = 0x74
+local SPLIT_MODE        = 0x75
+local SPLIT_LOCK        = 0x99
+local BT_PHASE          = 0x53
+local VRAM_BUF          = 0x0400
+local FLIP_PENDING_IDX  = 0x055f
+local FLIP_PENDING_COUNT = 0x0567
+local EQ_DIRTY          = 0x07d2
+
+local ST_GAMEPLAY = 0
+local ST_BATTLE   = 5
+local BP_EQ_SLOTS = 14
+local SPL_OFF     = 0
+local SPL_BATTLE  = 2
+local FLASH_ARM_VALUE = 7   -- FLASH_TOTAL_FRAMES (6) + 1
+local ALL_ROWS    = 0x7f    -- EQ_D_ALL: every Equip row dirty
+
+local EQUIP_ROW_HI_MIN, EQUIP_ROW_HI_MAX, EQUIP_ROW_COUNT = 0x22, 0x23, 30
+local FLASH_HI, FLASH_COUNT = 0x3f, 32
+local FLIP_HI, FLIP_COUNT = 0x20, 2
+
+-- NTSC: scanlines have 341 dots; rti's remaining 6 CPU cycles are 18 dots.
+local VBLANK_FIRST_SCANLINE, DEADLINE_LAST_SCANLINE = 241, 256  -- E12: rti settles on scanline 256 or earlier ("before 257"); NOT the 260 of the sibling templates
+local DOTS_PER_SCANLINE = 341
+local RTI_REMAINING_DOTS = 6 * 3
+
+local EXIT_TIMEOUT        = 99
+local EXIT_STALE_ANCHOR   = 6
+local EXIT_NEVER_OPENED   = 3
+local EXIT_DEADLINE_MISS  = 5
+local EXIT_WORKLOAD       = 7
+local EXIT_NOT_DRAINED    = 8   -- the NMI's rti was reached with vram_len still non-zero
+local EXIT_REG_BASELINE    = 10
+local EXIT_REG_LOCK        = 11
+local EXIT_REG_PRG         = 12   -- R6/R7: the screen bank is not the field's
+local EXIT_REG_TILESET     = 13   -- R0 / R2-R5: not the live tileset
+local EXIT_REG_SHADOW      = 14
+local EXIT_REG_NOT_ARMED   = 15
+local EXIT_REG_NO_FONT     = 16
+local EXIT_REG_FONT_MOVED  = 17
+local EXIT_REG_SPLIT_LEFT_ON = 18
+local EXIT_REG_R1_NOT_BACK = 19
+local EXIT_REG_FONT_PAGE   = 40   -- R1 at the end of the split handler is not the font page's ROM bytes
+local EXIT_REG_BATTLE_ART  = 41   -- R1 at the frame boundary is not the battle tileset's ROM bytes
+local EXIT_NEVER_LEFT     = 9
+
+local frame = 0
+local held = {}
+local phase = "boot"
+local mark = 0
+local measuring = false
+local flashArmed, flipArmed = false, false
+local checkedWorkload, checkedDeadline, checkedAnchor = false, false, false
+local baseline = nil
+local framesInEquip = 0
+local framesAfterExit = 0
+
+local function log(message) emu.log(string.format("[%5d] %s", frame, message)) end
+local function fail(code, message) log("FAIL: " .. message); emu.stop(code) end
+_G.failBase = fail
+local function pass(message) log("ok   " .. message) end
+local function read(address) return emu.read(address, emu.memType.nesMemory) end
+local function write(address, value) emu.write(address, value, emu.memType.nesMemory) end
+local function onInput() emu.setInput(held, 0) end
+
+local function hashRange(memType, from, to)
+  local h = 0
+  for a = from, to do h = (h * 31 + emu.read(a, memType) + 1) % 4294967291 end
+  return h
+end
+
+local function snapshot()
+  return {
+    prg = hashRange(emu.memType.nesMemory, 0x8000, 0xBFFF),
+    r0 = hashRange(emu.memType.nesPpuMemory, 0x0000, 0x07FF),
+    r1 = hashRange(emu.memType.nesPpuMemory, 0x0800, 0x0FFF),
+    r25 = hashRange(emu.memType.nesPpuMemory, 0x1000, 0x1FFF),
+    chrR1 = read(CHR_R1),
+    lock = read(SPLIT_LOCK),
+    mode = read(SPLIT_MODE),
+  }
+end
+
+-- ROM CHR bytes [base, base+len): what R0 / R1 / R2-R5 must map when they point there.
+local function chrRomHashAt(base, len)
+  local h = 0
+  for a = base, base + len - 1 do h = (h * 31 + emu.read(a, emu.memType.nesChrRom) + 1) % 4294967291 end
+  return h
+end
+-- ROM CHR bank `bank` (8 KB), the region [from, from+len).
+local function chrRomHash(bank, from, len) return chrRomHashAt(bank * 0x2000 + from, len) end
+local battleR0, battleR25, battleR1Hash, fontHash
+local irqCount, irqLast, irqLine = 0, 0, -1  -- split IRQs since the last frame boundary / in the frame before it / the scanline of the last one
+local IRQ_LINE_MIN, IRQ_LINE_MAX = 20 * 8 - 4, 20 * 8 + 12  -- BT_BOX_ROW (engine/constants.asm) * 8: the font comes in at the battle box's top border
+
+-- Called at every main_loop_ready while REGCHECK: the register file as observed at a frame boundary.
+local function checkRegisters(where, inEquip)
+  local now = snapshot()
+  local function fail(code, message) return _G.failBase(code + (inEquip and 0 or 20), message) end -- after-exit verdicts are +20
+  if now.lock ~= 0 then return fail(EXIT_REG_LOCK, where .. ": split_lock is " .. now.lock .. ", not 0 at a frame boundary") end
+  if now.prg ~= baseline.prg then return fail(EXIT_REG_PRG, where .. ": CPU $8000-$BFFF (R6/R7) is not the field's screen bank") end
+  if inEquip then
+    -- Equip draws as a battle: R0 and R2-R5 map the BATTLE_TILESET page (the ROM's own bytes), R1 either that page or the font.
+    if now.r0 ~= battleR0 or now.r25 ~= battleR25 then return fail(EXIT_REG_TILESET, where .. ": R0 / R2-R5 are not the battle tileset page") end
+  elseif now.r0 ~= baseline.r0 or now.r25 ~= baseline.r25 then
+    return fail(EXIT_REG_TILESET, where .. ": R0 / R2-R5 are not the field's tileset again")
+  end
+  if inEquip then
+    -- chr_r1 is the tileset page R1 returns to when the split is idle: the battle tileset's while Equip is up (derived, not self-referenced),
+    -- and R1 at this idle frame boundary maps that page's ROM bytes.
+    if now.chrR1 ~= BATTLE_R1 then return fail(EXIT_REG_SHADOW, string.format("%s: chr_r1 shadow is %d, the battle tileset's is %d (BATTLE_TILESET %d * 8 + 2)", where, now.chrR1, BATTLE_R1, BATTLE_TILESET)) end
+    if now.r1 ~= battleR1Hash then return fail(EXIT_REG_BATTLE_ART, where .. ": R1 at the frame boundary does not map the battle tileset's art") end
+  elseif now.chrR1 ~= baseline.chrR1 then
+    return fail(EXIT_REG_SHADOW, string.format("%s: chr_r1 shadow is %d, the field's was %d", where, now.chrR1, baseline.chrR1))
+  end
+  if inEquip then
+    if now.mode ~= SPL_BATTLE then return fail(EXIT_REG_NOT_ARMED, where .. ": split_mode is " .. now.mode .. ", not SPL_BATTLE: the split is not armed for the Equip screen") end
+    if irqLine < IRQ_LINE_MIN or irqLine > IRQ_LINE_MAX then return fail(EXIT_REG_NO_FONT, string.format("%s: the split IRQ fired on scanline %d, not at the battle box's top border (%d-%d)", where, irqLine, IRQ_LINE_MIN, IRQ_LINE_MAX)) end
+    if irqLast ~= 1 then return fail(EXIT_REG_FONT_MOVED, string.format("%s: the split IRQ ran %d times in the last frame, expected exactly 1 (one font-in entry)", where, irqLast)) end
+  else
+    if now.mode ~= SPL_OFF then return fail(EXIT_REG_SPLIT_LEFT_ON, where .. ": split_mode is " .. now.mode .. " after leaving Equip, not SPL_OFF") end
+    if now.r1 ~= baseline.r1 then return fail(EXIT_REG_R1_NOT_BACK, where .. ": R1 is not back on the tileset page after leaving Equip") end
+  end
+  return true
+end
+
+-- The packets sitting in vram_buf at main_loop_ready, as a list of kinds.
+local function packets(len)
+  local kinds, i = {}, 0
+  while i < len do
+    local hi, count = read(VRAM_BUF + i), read(VRAM_BUF + i + 2)
+    local kind = "other"
+    if hi == FLASH_HI and count == FLASH_COUNT then kind = "flash"
+    elseif hi == FLIP_HI and count == FLIP_COUNT then kind = "flip"
+    elseif hi >= EQUIP_ROW_HI_MIN and hi <= EQUIP_ROW_HI_MAX and count == EQUIP_ROW_COUNT then kind = "equip" end
+    kinds[#kinds + 1] = kind
+    i = i + 3 + count
+  end
+  return kinds, i
+end
+
+local EXPECTED = {
+  equip = { "equip" },
+  flash = { "flash", "equip" },
+  flip = { "flip", "flip", "flash" },   -- the row waits a frame (E12)
+  flipeq = { "flip", "flip", "equip" },
+}
+
+-- Keep one full Equip row pending on every frame, so the measured frame is the worst one and not a lucky idle one.
+local function onIrq()
+  irqCount = irqCount + 1
+  irqLine = emu.getState()["ppu.scanline"]
+end
+
+-- The end of the split handler, while Equip is up: R1 must map the font page's bytes (the armed entry is the font-in entry).
+local function onIrqDone()
+  if REGCHECK ~= 1 or fontHash == nil or read(GAME_STATE) ~= ST_BATTLE or read(BT_PHASE) < 13 then return end
+  if hashRange(emu.memType.nesPpuMemory, 0x0800, 0x0FFF) ~= fontHash then
+    _G.failBase(EXIT_REG_FONT_PAGE, "after the split handler R1 does not map the font page (FONT_R1 " .. FONT_R1 .. ")")
+  end
+end
+
+local function onEquipDispatch()
+  if not measuring then return end
+  write(EQ_DIRTY, ALL_ROWS)
+end
+
+local function onFlipTick()
+  if not measuring or flipArmed or (MODE ~= "flip" and MODE ~= "flipeq") then return end
+  flipArmed = true
+  write(FLIP_PENDING_IDX, 0)
+  write(FLIP_PENDING_COUNT, 1)
+end
+
+local function onFlashTick()
+  if not measuring or flashArmed or MODE == "equip" or MODE == "flipeq" then return end
+  flashArmed = true
+  write(FLASH_LEFT, FLASH_ARM_VALUE)
+end
+
+local function onMainLoopReady()
+  local state = read(GAME_STATE)
+  irqLast, irqCount = irqCount, 0 -- IRQs since the last frame boundary
+  if phase == "boot" and frame >= 60 and state == ST_GAMEPLAY then
+    baseline = snapshot()
+    battleR0, battleR25 = chrRomHash(BATTLE_TILESET, 0, 0x800), chrRomHash(BATTLE_TILESET, 0x1000, 0x1000)
+    battleR1Hash, fontHash = chrRomHash(BATTLE_TILESET, 0x800, 0x800), chrRomHashAt(FONT_R1 * 0x400, 0x800)
+    if REGCHECK == 1 and fontHash == battleR1Hash then return fail(EXIT_REG_BASELINE, "the font page and the battle art hash alike: the R1 verdicts would be vacuous") end
+    if baseline.mode ~= SPL_OFF then return fail(EXIT_REG_BASELINE, "the field baseline already has a split running") end
+    phase = "open"
+    mark = frame
+    pass("baseline taken in the field")
+    return
+  end
+  if REGCHECK == 1 and state == ST_BATTLE and read(BT_PHASE) >= 13 then
+    framesInEquip = framesInEquip + 1
+    if framesInEquip > 3 and not checkRegisters("in Equip", true) then return end
+  end
+  if phase == "after" and state == ST_GAMEPLAY then
+    framesAfterExit = framesAfterExit + 1
+    if REGCHECK == 1 and framesAfterExit >= 3 then
+      if not checkRegisters("after leaving Equip", false) then return end
+      pass("after B: the register file equals the field's, split off")
+      log("all phases passed")
+      emu.stop(0)
+      return
+    elseif REGCHECK == 0 then
+      log("all phases passed")
+      emu.stop(0)
+      return
+    end
+  end
+  if not measuring or checkedWorkload then return end
+  checkedWorkload = true
+  local len = read(VRAM_LEN)
+  local kinds, used = packets(len)
+  if STRICT == 1 then
+    if len ~= EXPECT_LEN or used ~= len or read(VRAM_BUF + len) ~= 0 then
+      return fail(EXIT_WORKLOAD, string.format("main_loop_ready: vram_len is %d (packets end at %d, terminator %d), expected %d", len, used, read(VRAM_BUF + len), EXPECT_LEN))
+    end
+    local want = EXPECTED[MODE]
+    if #kinds ~= #want then return fail(EXIT_WORKLOAD, string.format("expected %d packets (%s), found %d (%s)", #want, table.concat(want, ","), #kinds, table.concat(kinds, ","))) end
+    for i = 1, #want do
+      if kinds[i] ~= want[i] then return fail(EXIT_WORKLOAD, string.format("packet %d is %s, expected %s (order %s)", i, kinds[i], want[i], table.concat(kinds, ","))) end
+    end
+    pass(string.format("workload confirmed: vram_len=%d, packets %s", len, table.concat(kinds, ", ")))
+  else
+    pass(string.format("control: vram_len=%d (workload shape not judged)", len))
+  end
+end
+
+local function onNmiRti()
+  if not measuring or not checkedWorkload or checkedDeadline then return end
+  checkedDeadline = true
+  local state = emu.getState()
+  local scanline, cycle = state["ppu.scanline"], state["ppu.cycle"]
+  local vramLen = read(VRAM_LEN)
+  local finishDot, finishScanline = cycle + RTI_REMAINING_DOTS, scanline
+  while finishDot >= DOTS_PER_SCANLINE do finishDot = finishDot - DOTS_PER_SCANLINE; finishScanline = finishScanline + 1 end
+  log(string.format("nmi_rti: scanline=%d cycle=%d (rti settles on scanline %d, dot %d) vram_len=%d", scanline, cycle, finishScanline, finishDot, vramLen))
+  if vramLen ~= 0 then return fail(EXIT_NOT_DRAINED, "vram_len should be 0 right after the drain, saw " .. vramLen) end
+  if scanline < VBLANK_FIRST_SCANLINE or finishScanline > DEADLINE_LAST_SCANLINE then
+    return fail(EXIT_DEADLINE_MISS, string.format("the Equip frame's NMI does not finish before scanline 257 (rti at scanline %d, settling on scanline %d, dot %d)", scanline, finishScanline, finishDot))
+  end
+  pass(string.format("the Equip frame's NMI finished at scanline %d, dot %d (rti settles on scanline %d, dot %d), before scanline 257", scanline, cycle, finishScanline, finishDot))
+  measuring = false
+  phase = "leave"
+  mark = frame
+end
+
+local function onFrame()
+  frame = frame + 1
+  if not checkedAnchor then
+    checkedAnchor = true
+    local byte = read(NMI_RTI)
+    if byte ~= 0x40 then return fail(EXIT_STALE_ANCHOR, string.format("byte at NMI_RTI (0x%04x) is 0x%02x, not rti ($40): stale address", NMI_RTI, byte)) end
+    pass(string.format("NMI_RTI anchor verified at 0x%04x", NMI_RTI))
+  end
+  if frame > 1500 then return fail(EXIT_TIMEOUT, "timed out in phase " .. phase) end
+
+  if phase == "open" then
+    -- The first frame after a screen is drawn drops the pad (settle_owed): press for one frame, release for three, until Equip is up.
+    local state = read(GAME_STATE)
+    if state == ST_BATTLE and read(BT_PHASE) == BP_EQ_SLOTS and read(EQ_DIRTY) == 0 then
+      held = {}
+      pass("Equip is open and drained")
+      phase = "measure"
+      measuring = true
+      mark = frame
+      return
+    end
+    held = ((frame - mark) % 4 == 0 and state == ST_GAMEPLAY) and { select = true } or {}
+    if frame - mark > 200 then return fail(EXIT_NEVER_OPENED, "Select never opened the Equip screen") end
+  elseif phase == "measure" then
+    if frame - mark > 40 then return fail(EXIT_TIMEOUT, "the measured frame never came (workload checked: " .. tostring(checkedWorkload) .. ")") end
+  elseif phase == "leave" then
+    local state = read(GAME_STATE)
+    if state == ST_GAMEPLAY then
+      held = {}
+      phase = "after"
+      return
+    end
+    -- let Equip run a few frames with the register check on, then B
+    held = ((frame - mark) % 4 == 0 and frame - mark > 8) and { b = true } or {}
+    if frame - mark > 200 then return fail(EXIT_NEVER_LEFT, "B never left the Equip screen") end
+  elseif phase == "after" then
+    held = {}
+    if frame - mark > 400 then return fail(EXIT_TIMEOUT, "the post-exit register check never completed") end
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onFlipTick, emu.callbackType.exec, FLIP_TICK)
+emu.addMemoryCallback(onIrq, emu.callbackType.exec, IRQ)
+emu.addMemoryCallback(onIrqDone, emu.callbackType.exec, IRQ_DONE)
+emu.addMemoryCallback(onFlashTick, emu.callbackType.exec, FLASH_TICK)
+emu.addMemoryCallback(onEquipDispatch, emu.callbackType.exec, EQUIP_DISPATCH)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)

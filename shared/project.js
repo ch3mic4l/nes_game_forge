@@ -478,7 +478,11 @@ export const ACTIONS = [
   // ignores this action here" for one bound somewhere it does nothing, and a
   // project with no Save command is exactly that, not a reason to hide the
   // option. Appended last so existing ACT_* numbering is untouched.
-  { id: 'continue', label: 'Continue (load save)' }
+  { id: 'continue', label: 'Continue (load save)' },
+  // Opens the Equip screen (docs/design-equipment.md section 4): from play or the bag, in an RPG that has equipment.
+  // Unbound by default, like every action added after the first release, and ignored by an action game's engine.
+  // Appended last so existing ACT_* numbering is untouched.
+  { id: 'equip', label: 'Equip screen' }
 ];
 
 /**
@@ -6830,6 +6834,27 @@ export function projectUsesEquipmentMdef(project) {
 }
 
 /**
+ * The shortfall advisors' removal candidates for equipment (battleShortfallAdvice, kernelShortfallAdvice): the project with no item
+ * wearable, with no piece adding MAG, with no piece adding MDEF. Pure clones; a piece loses its `equip` block and stays an ordinary
+ * item, which is what removing it in the Items Forge's "Can be worn" does.
+ */
+export function projectWithoutEquipment(project) {
+  const clone = structuredClone(project);
+  for (const item of clone.items ?? []) item.equip = null;
+  return clone;
+}
+export function projectWithoutEquipmentMag(project) {
+  const clone = structuredClone(project);
+  for (const item of clone.items ?? []) if (item.equip) item.equip.mag = 0;
+  return clone;
+}
+export function projectWithoutEquipmentMdef(project) {
+  const clone = structuredClone(project);
+  for (const item of clone.items ?? []) if (item.equip) item.equip.mdef = 0;
+  return clone;
+}
+
+/**
  * Whether magic power -- a caster's `baseMag`/`magPerLevel`/`battle.mag`
  * adding into a spell's own rolled amount -- is worth assembling at all.
  * Drives the generated `MAGIC_POWER_ENABLED` flag the same shape
@@ -8079,6 +8104,19 @@ export function validateProject(project) {
         }
       });
     });
+    // Nothing opens the Equip screen: the engine opens it from play or from the bag, so a binding in either state counts and a
+    // binding anywhere else (where do_action ignores it) does not. A warning, not an error -- the project still builds and plays,
+    // the player just can never change what anyone wears. Quiet with no equipment at all.
+    if (equipItems.length && !['gameplay', 'menu'].some((state) => Object.values(project.input?.states?.[state] ?? {}).includes('equip'))) {
+      add(
+        'warning',
+        'Controller Forge',
+        `${equipItems.length} item${equipItems.length === 1 ? ' is' : 's are'} equipment, but no button ` +
+          'opens the Equip screen. Bind "Equip screen" to a button in the Gameplay or Menu row of the Controller Forge, or ' +
+          'the player can never change what anyone wears.',
+        'equip-unbound', {}, [equipItems.length]
+      );
+    }
   }
 
   // Give item / Take item is a base-engine command (engine/ui.asm's

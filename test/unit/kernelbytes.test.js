@@ -42,6 +42,7 @@ import {
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   SAVE_BATTLE_KERNEL_ALLOWANCE,
   EQUIP_SAVE_KERNEL_ALLOWANCE,
+  EQUIP_KERNEL_ALLOWANCE,
   MOVE_KERNEL_ALLOWANCE,
   FACE_KERNEL_ALLOWANCE,
   TURN_KERNEL_ALLOWANCE,
@@ -8170,13 +8171,13 @@ test(
 // --- Equipment (docs/design-equipment.md section 8, ROADMAP item 5, build commit C3) ---------------------------------------
 //
 // EQUIP_SAVE_KERNEL_ALLOWANCE: the save_check_valid worn-id loop plus the three pc_equip descriptor bytes. Charged only with
-// Save on (the descriptors live in assets/save.inc under .if SAVE_ENABLED). The opener's EQUIP_KERNEL_ALLOWANCE waits for C4.
-// Cells measured: MMC1, MMC3, UNROM 512 x Save on/off x in-game naming on/off. NOT measured: a streamed map, a Move command,
-// a title-less Save build (Save needs a title in the editor, so every Save cell has one).
+// Save on (the descriptors live in assets/save.inc under .if SAVE_ENABLED). EQUIP_KERNEL_ALLOWANCE (build commit C4): the
+// `cmp #ACT_EQUIP / beq` chain entry in do_action and do_action_equip, charged on equipment alone, Save or not.
+// Cells measured: MMC1, MMC3, UNROM 512 x Save on/off x in-game naming on/off. The shapes beyond that are the cells below.
 
 import { equipProject, piece as equipPiece, WEAPON as EQUIP_WEAPON } from '../lib/equipharness.js';
 
-test('EQUIP_SAVE_KERNEL_ALLOWANCE equals the real kernel-lo growth of an equipment build, on every RPG-capable board; it is 0 without Save', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+test('EQUIP_KERNEL_ALLOWANCE (always) plus EQUIP_SAVE_KERNEL_ALLOWANCE (with Save) equal the real kernel-lo growth of an equipment build, on every RPG-capable board', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   for (const mapper of CAPABLE_MAPPERS) {
     for (const save of [false, true]) {
       for (const naming of [false, true]) {
@@ -8191,7 +8192,7 @@ test('EQUIP_SAVE_KERNEL_ALLOWANCE equals the real kernel-lo growth of an equipme
           return (await measureKernelLoBank(t, mapper, project)) - fixedBytes - tableBytes;
         };
         const delta = (await codeUsed(on)) - (await codeUsed(off));
-        const expected = save ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0;
+        const expected = EQUIP_KERNEL_ALLOWANCE + (save ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0);
         assert.equal(delta, expected, `${mapper.name} (save ${save}, naming ${naming}): real kernel-lo growth ${delta} != allowance ${expected}`);
         // The byte math charges exactly that, and nothing else, for the equipment piece.
         assert.equal(kernelCodeBytes(on, mapper) - kernelCodeBytes(off, mapper), expected, `${mapper.name}: kernelCodeBytes charge`);
@@ -8228,7 +8229,16 @@ for (const cell of KERNEL_CELLS) {
       const bare = await cell.make({ mapper: mapperId, items: [], save: cell.save });
       await assert.rejects(() => measureKernelLoBank(t, resolveMapper(mapperId), bare), /lookup tables need/, `${label}: this project, with no equipment, is refused by the capacity check`);
     }
-    for (const mapperId of cell.boards ?? KERNEL_CELL_BOARDS) {
+    for (const mapperId of cell.equipRefusedOn ?? []) {
+      // The opener (C4) takes this cell over the edge: the project WITHOUT equipment still fits (its margin is the pinned 20), the same project
+      // with one piece is refused by the kernel-lo capacity check, and the refusal names the equipment cost (docs/design-equipment.md section 8).
+      const label = `${resolveMapper(mapperId).name} / ${cell.label}`;
+      const bare = await cell.make({ mapper: mapperId, items: [], save: cell.save });
+      assert.equal(await measureWholeBank(t, resolveMapper(mapperId), bare), 20, `${label}: the equipment-free project fits, margin 20`);
+      const worn = await cell.make({ mapper: mapperId, items: [equipPiece(1, 'Sword', EQUIP_WEAPON, { atk: 5 })], save: cell.save });
+      await assert.rejects(() => measureKernelLoBank(t, resolveMapper(mapperId), worn), /lookup tables need[^]*Equipment costs 49 bytes of the program kernel; remove equipment pieces in the Items Forge\.$/, `${label}: one piece is refused, naming its 49 bytes`);
+    }
+    for (const mapperId of (cell.boards ?? KERNEL_CELL_BOARDS).filter((id) => !(cell.equipRefusedOn ?? []).includes(id))) {
       const mapper = resolveMapper(mapperId);
       const label = `${mapper.name} / ${cell.label}`;
       const off = await cell.make({ mapper: mapperId, items: [], save: cell.save });
@@ -8239,7 +8249,7 @@ for (const cell of KERNEL_CELLS) {
         const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
         return (await measureKernelLoBank(t, mapper, project)) - fixedBytes - tableBytes;
       };
-      const expected = cell.save ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0;
+      const expected = EQUIP_KERNEL_ALLOWANCE + (cell.save ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0);
       assert.equal((await codeUsed(on)) - (await codeUsed(off)), expected, `${label}: real kernel-lo code growth`);
       assert.equal(kernelCodeBytes(on, mapper) - kernelCodeBytes(off, mapper), expected, `${label}: kernelCodeBytes charges exactly that`);
       const marginOff = await measureWholeBank(t, mapper, off);

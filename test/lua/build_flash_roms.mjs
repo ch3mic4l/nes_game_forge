@@ -176,7 +176,18 @@ async function buildEquipBoard(key, { copyOut, noShift = false, omitPayload = fa
   // A streamed project ships no items, so a plain item 0 keeps the pieces at ids 1..4 as on the ordinary board (the Lua restates them).
   const tonic = { id: 0, name: 'Tonic', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 20 } };
   const project = streamed
-    ? equipStreamedProject({ mapper: 30, save: true, items: [tonic, ...pieces] })
+    ? equipStreamedProject({
+        mapper: 30,
+        save: true,
+        items: [tonic, ...pieces],
+        // The Equip opener (C4, EQUIP_KERNEL_ALLOWANCE + the Save term, 49 bytes) takes this board's kernel-lo tables 20 bytes over the edge, so the
+        // title map shrinks from 2x2 to one screen (13 bytes of lookup tables per screen). The streamed map and the Save record are untouched.
+        mutate: (p) => {
+          p.maps[0].gridW = 1;
+          p.maps[0].gridH = 1;
+          p.maps[0].screens = p.maps[0].screens.slice(0, 1);
+        }
+      })
     : await equipProject({ mapper: 30, save: true, items: pieces });
   if (noShift) {
     const constants = await fs.promises.readFile(path.join(ROOT, 'engine/constants.asm'), 'utf8');

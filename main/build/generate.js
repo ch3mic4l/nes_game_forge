@@ -117,6 +117,7 @@ import {
   projectWithoutHeroNaming,
   projectWithoutJoinNaming,
   projectWithoutNameToken,
+  projectWithoutEquipment,
   projectNeedsHeroDefault,
   projectNeedsNameSeed,
   streamedBoardProblems,
@@ -911,6 +912,15 @@ export function equipSaveShift(project, mapper) {
  * equal to the design's 16 + 3, and flat because nothing in it branches on a board.
  */
 export const EQUIP_SAVE_KERNEL_ALLOWANCE = 19;
+
+/**
+ * The Equip action's kernel half (docs/design-equipment.md section 8, build commit C4): the `ACT_EQUIP` entry in `do_action`'s chain
+ * (4 bytes), `do_action_equip` (20: the paused refusal, the game-state test, `battle_begin`, the phase store) and the dispatch pass's stop
+ * after an action that opened the screen (6: `lda game_state; cmp #ST_BATTLE; beq dispatch_done`, review R1 of C4). Charged on
+ * `projectUsesEquipment` alone -- it is the only gate of `.if EQUIP_ENABLED` in engine/input.asm. Measured per
+ * test/unit/kernelbytes.test.js on MMC1, MMC3 and UNROM 512 in every cell of test/lib/equipcells.js that has a kernel half.
+ */
+export const EQUIP_KERNEL_ALLOWANCE = 30;
 // move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
 // move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
 // Turn/Wait first slice), so this dropped from the 395 bytes it measured
@@ -2158,6 +2168,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesSaveBattle ? SAVE_BATTLE_KERNEL_ALLOWANCE : 0) +
+    (projectUsesEquipment(project) ? EQUIP_KERNEL_ALLOWANCE : 0) +
     (usesSave && projectUsesEquipment(project) ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
@@ -2538,6 +2549,37 @@ function projectWithoutStreaming(project) {
   return clone;
 }
 
+function kernelAlternativeBoard(project, mapper, budget, deficit) {
+  return switchableMappers(project, mapper)
+    .map((candidate) => {
+      const { fixedBytes, tableBytes } = kernelTableBytes(project, candidate);
+      return { candidate, occupancy: kernelCodeBytes(project, candidate) + fixedBytes + tableBytes };
+    })
+    .filter((entry) => budget - entry.occupancy >= deficit)
+    .sort((a, b) => a.occupancy - b.occupancy)[0];
+}
+
+/**
+ * The extra line an equipment project's kernel-lo refusal carries (docs/design-equipment.md section 8): what the equipment itself costs,
+ * measured as the occupancy the project loses with every piece made an ordinary item, and what to do about it. The board clause is
+ * advice only where a board this project could switch to actually closes the gap (the same test kernelShortfallAdvice's own board
+ * sentence uses), so it never tells an author to choose a board that does not exist -- the rule streamedCapacityProblems follows.
+ * Empty for a project without equipment.
+ */
+function equipmentKernelLine(project, mapper, deficit) {
+  if (!projectUsesEquipment(project)) return '';
+  const occupancy = (proj) => {
+    const { fixedBytes, tableBytes } = kernelTableBytes(proj, mapper);
+    return kernelCodeBytes(proj, mapper) + fixedBytes + tableBytes;
+  };
+  const budget = occupancy(project);
+  const cost = budget - occupancy(projectWithoutEquipment(project));
+  const board = kernelAlternativeBoard(project, mapper, budget, deficit)
+    ? ', or choose a board with more room in the Build panel'
+    : '';
+  return ` Equipment costs ${cost} bytes of the program kernel; remove equipment pieces in the Items Forge${board}.`;
+}
+
 function kernelShortfallAdvice(project, mapper, deficit) {
   // saveMediaImplemented for the same reason kernelCodeBytes itself reads it:
   // "active" below feeds freedByDropping, which calls kernelCodeBytes, so
@@ -2604,6 +2646,11 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   }
   if (projectUsesNameToken(project)) {
     active.push({ label: 'the name token', strip: (p) => projectWithoutNameToken(p) });
+  }
+  // Equipment (docs/design-equipment.md section 8): the Equip action's opener and, with Save, the worn-piece bound in
+  // save_check_valid. Priced by the same full occupancy as every lever here.
+  if (projectUsesEquipment(project)) {
+    active.push({ label: 'every equipment piece', strip: (p) => projectWithoutEquipment(p) });
   }
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
@@ -2686,13 +2733,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // was being reported as saving only 195, understating -- or in the
   // reviewer's reproduction, missing entirely -- a board switchableMappers
   // itself already considers safe.
-  const alternative = switchableMappers(project, mapper)
-    .map((candidate) => {
-      const { fixedBytes, tableBytes } = kernelTableBytes(project, candidate);
-      return { candidate, occupancy: kernelCodeBytes(project, candidate) + fixedBytes + tableBytes };
-    })
-    .filter((entry) => budget - entry.occupancy >= deficit)
-    .sort((a, b) => a.occupancy - b.occupancy)[0];
+  const alternative = kernelAlternativeBoard(project, mapper, budget, deficit);
   if (alternative) {
     const saved = budget - alternative.occupancy;
     return `Try ${alternative.candidate.name} in the Build panel — it reserves ${saved} fewer bytes for the same features.`;
@@ -3533,7 +3574,8 @@ export function checkCapacity(project) {
       where: 'Map Forge',
       message:
         `The lookup tables need ${tableBytes} bytes but only ${BANK_SIZE - kernelBudget - fixedBytes} are ` +
-        `free alongside the engine code. ${kernelShortfallAdvice(project, mapper, -kernelFree)}`,
+        `free alongside the engine code. ${kernelShortfallAdvice(project, mapper, -kernelFree)}` +
+        equipmentKernelLine(project, mapper, -kernelFree),
       rule: 'kernel-lo-tables-over',
       subject: {},
       counts: [tableBytes, BANK_SIZE - kernelBudget - fixedBytes]

@@ -919,6 +919,10 @@ pc_eq_atk   = $07E0  ; @size=MAX_PARTY
 pc_eq_def   = $07E4  ; @size=MAX_PARTY
 pc_eq_mag   = $07E8  ; @size=MAX_PARTY
 pc_eq_mdef  = $07EC  ; @size=MAX_PARTY
+; The Equip screen's own two bytes (engine/battle.asm), just under pc_equip: the dirty-row mask (one bit per content row, drained one row
+; a frame by eq_flush) and the slot under the cursor.
+eq_dirty    = $07D2
+eq_cur_slot = $07D3
 
 MSG_ROW     = 21            ; the message area and the lists share these rows
 LIST_ROWS   = 4
@@ -1468,6 +1472,12 @@ BP_DONE     = 11            ; leave the battle on the next tick
 ; ticks. Unconditional: every RPG project's own battle bank gets this phase,
 ; not merely one that authors an attackAnim.
 BP_WALK     = 12
+; The Equip screen (docs/design-equipment.md section 4): phases on ST_BATTLE, appended after BP_WALK so every fight phase keeps
+; its number. battle_tick sends every phase >= BP_EQ_FIRST to equip_dispatch. Assembled only under EQUIP_ENABLED.
+BP_EQ_INTRO = 13            ; the opener has run; the first tick draws the screen
+BP_EQ_SLOTS = 14            ; choosing a slot row, or a member
+BP_EQ_LIST  = 15            ; the pick list for the chosen slot
+BP_EQ_FIRST = BP_EQ_INTRO
 
 ; What the trampoline is being asked for. One entry point, because every extra
 ; one is another place the bank could be left switched in.
@@ -1575,6 +1585,7 @@ ACT_CONTINUE = 8            ; title only, and only where SAVE_ENABLED -- loads
                             ; the one save slot; do_action ignores it anywhere
                             ; else, the same as any action bound somewhere it
                             ; means nothing
+ACT_EQUIP   = 9             ; opens the Equip screen (an RPG with equipment, from play or the bag); ignored elsewhere
 
 NUM_STATES  = 6             ; gameplay, menu, dialogue, title, game over, battle
 NUM_BUTTONS = 4             ; A, B, Select, Start

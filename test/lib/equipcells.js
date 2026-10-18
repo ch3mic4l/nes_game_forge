@@ -7,8 +7,14 @@
 // Coverage boundary (handoff-next/equip/c3/fix2/report.md). Streamed + Save + Move and streamed + Save + the battle features are
 // measured in their compact form (see `compact`). Where a project truly exceeds the kernel-lo capacity it is refused for THAT project,
 // named as such, never for the feature conjunction: the compact streamed + Save + Move project on MMC3 and UNROM 512 (free bytes
-// -70 and -282 with no equipment), and the uncompacted streamed + Save + Move project on every board. Not cells: a streamed map with
-// the camera off (refused); the opener (C4); DEF-only/ATK-only pieces in the new cells (they share the core's gate, measured on the
+// -70 and -282 with no equipment), and the uncompacted streamed + Save + Move project on every board. `equipRefusedOn` (C4): boards where the cell
+// fits with no equipment but one piece is refused, because the Equip opener (EQUIP_KERNEL_ALLOWANCE, 30 bytes, 49 with Save) takes
+// kernel-lo over its edge -- UNROM 512 streamed + Save (20 bytes short with one piece; 32 free without) and UNROM 512 compact streamed + Save +
+// the battle features (8 short; 44 free without); asserted as exactly that refusal in kernelbytes.test.js, so no equipment ROM exists there
+// for THOSE projects. The conjunctions stay supported in smaller projects and are measured there (review R3 of C4, `trimmed`): the same
+// streamed + Save with the title map cut to one screen (`compact`), and the battle-feature cell with the unplaced Iris NPC removed -- UNROM 512
+// only, appended to both ledgers; no feature predicate changes. Not cells: a streamed map with
+// the camera off (refused); DEF-only/ATK-only pieces in the new cells (they share the core's gate, measured on the
 // default cells); encounters (the grafted monsters are never placed).
 
 import { loadProject } from '../../main/project-io.js';
@@ -100,10 +106,17 @@ export const compact = (p) => {
   p.maps[0].gridW = 1;
   p.maps[0].gridH = 1;
 };
+/** Removes the grafted sample-rpg's unplaced Iris NPC (no entity references her): 'Rian' and 'Slime' stay, every battle-feature predicate stays true. */
+const dropUnplacedIris = (p) => {
+  const index = p.sprites.actors.findIndex((a) => a.name === 'Iris');
+  if (index !== 2 || p.maps.some((m) => m.screens.some((s) => s.entities.some((e) => e.actorId === index)))) throw new Error('dropUnplacedIris expects the unplaced Iris NPC at actor 2');
+  p.sprites.actors.splice(index, 1);
+};
 const streamed = (opts, graft) => async ({ mapper, items = [], sources = false, save = false }) => {
   const p = equipStreamedProject({ mapper, items, save: opts.save ?? save, move: opts.move });
   if (opts.compact) compact(p);
   if (graft) await graftBattleContent(p);
+  if (opts.dropIris) dropUnplacedIris(p);
   if (sources) withSources(p);
   return p;
 };
@@ -120,11 +133,16 @@ export const BANKED_CELLS = [
   { label: 'everything at once: Save + naming + animation + spell list + hit feedback + miss', make: ordinary((p) => { naming(p); animation(p); spellList(p); hitAndMiss(p); }), save: true, shape: { ...F, save: true, naming: true, anim: true, spells: true, hit: true, miss: true } },
   { label: 'streamed world', make: streamedCell({}, false), shape: { ...F, streamed: true } },
   { label: 'streamed world + animation + spell list + hit feedback + miss', make: streamedCell({}, true), shape: { ...F, streamed: true, anim: true, spells: true, hit: true, miss: true } },
-  { label: 'streamed world + Save', make: streamedCell({ save: true }, false), save: true, shape: { ...F, streamed: true, save: true } },
+  { label: 'streamed world + Save', make: streamedCell({ save: true }, false), save: true, shape: { ...F, streamed: true, save: true }, equipRefusedOn: [30] },
   { label: 'compact streamed world + Save + Move', make: streamedCell({ save: true, move: true, compact: true }, false), save: true,
     shape: { ...F, streamed: true, save: true, move: true }, boards: [1] },
   { label: 'compact streamed world + Save + animation + spell list + hit feedback + miss', make: streamedCell({ save: true, compact: true }, true), save: true,
-    shape: { ...F, streamed: true, save: true, anim: true, spells: true, hit: true, miss: true } }
+    shape: { ...F, streamed: true, save: true, anim: true, spells: true, hit: true, miss: true }, equipRefusedOn: [30] },
+  // The supported conjunctions the two refusals above would otherwise leave unmeasured (review R3 of C4): UNROM 512 only.
+  { label: 'streamed world + Save, title map trimmed to one screen', make: streamedCell({ save: true, compact: true }, false), save: true,
+    shape: { ...F, streamed: true, save: true }, boards: [30] },
+  { label: 'compact streamed world + Save + animation + spell list + hit feedback + miss, unplaced Iris NPC removed', make: streamedCell({ save: true, compact: true, dropIris: true }, true), save: true,
+    shape: { ...F, streamed: true, save: true, anim: true, spells: true, hit: true, miss: true }, boards: [30] }
 ];
 
 /** Kernel-ledger cells (the Save supplement is charged only with Save; the other cells prove it is 0 without).
@@ -133,7 +151,12 @@ export const BANKED_CELLS = [
  *  base model's whole-bank margin over [KERNEL_SLACK, 2*KERNEL_SLACK], measured with no equipment: { mapperId: margin }. */
 export const KERNEL_CELLS = [
   { label: 'streamed world + Save', make: streamedCell({ save: true }, false), save: true, shape: { ...F, streamed: true, save: true },
-    pinnedMargin: { 1: 50, 4: 50 } },
+    pinnedMargin: { 1: 50, 4: 50 }, equipRefusedOn: [30] },
+  // The supported UNROM 512 forms of the two conjunctions its equipRefusedOn entries refuse (review R3 of C4).
+  { label: 'streamed world + Save, title map trimmed to one screen', make: streamedCell({ save: true, compact: true }, false), save: true,
+    shape: { ...F, streamed: true, save: true }, boards: [30] },
+  { label: 'compact streamed world + Save + animation + spell list + hit feedback + miss, unplaced Iris NPC removed', make: streamedCell({ save: true, compact: true, dropIris: true }, true), save: true,
+    shape: { ...F, streamed: true, save: true, anim: true, spells: true, hit: true, miss: true }, boards: [30] },
   { label: 'Move + Save', make: ordinary(move), save: true, shape: { ...F, save: true, move: true } },
   { label: 'Move + Save + naming', make: ordinary((p) => { move(p); naming(p); }), save: true, shape: { ...F, save: true, move: true, naming: true } },
   { label: 'streamed world + Move (no Save)', make: streamedCell({ move: true }, false), save: false, shape: { ...F, streamed: true, move: true } },
@@ -141,5 +164,5 @@ export const KERNEL_CELLS = [
   { label: 'compact streamed world + Save + Move', make: streamedCell({ save: true, move: true, compact: true }, false), save: true,
     shape: { ...F, streamed: true, save: true, move: true }, boards: [1], refusedOn: [4, 30], pinnedMargin: { 1: 50 } },
   { label: 'compact streamed world + Save + animation + spell list + hit feedback + miss', make: streamedCell({ save: true, compact: true }, true), save: true,
-    shape: { ...F, streamed: true, save: true, anim: true, spells: true, hit: true, miss: true }, pinnedMargin: { 1: 50, 4: 50 } }
+    shape: { ...F, streamed: true, save: true, anim: true, spells: true, hit: true, miss: true }, pinnedMargin: { 1: 50, 4: 50 }, equipRefusedOn: [30] }
 ];

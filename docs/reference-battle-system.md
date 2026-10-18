@@ -377,6 +377,25 @@ It has 22 entry points
   (a real fight, its control with the skip cut, field B, the action-ROM byte identity, the 6 bytes on
   each board).
 
+- **The Equip screen is a battle phase that never fights** (equipment C4, `docs/design-equipment.md` sections 4 and 8; `engine/battle.asm`
+  under `.if EQUIP_ENABLED`, opener `do_action_equip` in `engine/input.asm`). It reuses the battle bank, `draw_battle_screen` and the
+  `bt_*` scratch: `BP_EQ_INTRO` (13), `BP_EQ_SLOTS` (14), `BP_EQ_LIST` (15). The opener refuses while `paused` (`main_loop` skips `ui_tick`,
+  so nothing would drive the screen), accepts `ST_GAMEPLAY` and `ST_MENU`, refuses every other state, and calls `battle_begin` for the
+  freeze, status reset and owner capture. `eq_intro` runs in the fight's own order (F1): it clears `mon_slot_actor` and runs
+  `setup_monsters` *before* storing `bt_from_ent = NO_ENTITY` -- a stale `bt_from_ent` makes `battle_end` stand down a slime the
+  player never fought, and stale monster slots would draw a fight's monsters behind the menu. `eq_leave` is `pla; pla; jmp battle_end`:
+  it is reached from inside `equip_dispatch`'s `jsr`, whose return address lies in the switchable window, and `battle_end`'s
+  `redraw_screen` re-maps that window to the field's own bank, so without the two `pla`s the final `rts` returns into a window that no
+  longer holds this bank. Equip Back (E9): B in the list returns to the slot rows, B on a slot row leaves to gameplay; no input row is
+  generated or overridden for it. One row is published per tick (`eq_flush`, 33 `vram_buf` bytes), the lowest dirty bit first; a
+  member change marks all seven rows and they drain over seven frames. The piece taken off is appended to the bag's end; a full bag
+  refuses a take-off to NONE with a hint instead of losing the piece (a replacement from a full bag succeeds: the new piece's bag slot
+  takes the old one). The opener ends the `dispatch_input` pass (R1): once `do_action_equip` has set `ST_BATTLE` no later button in
+  the same pass runs, because the next button would read the *battle* input row (B -> `cancel`, an authored Start -> `pause`) against
+  a screen whose intro has not run. A frame that already holds a flip and Flash (more than 35 bytes queued) publishes no row (E12): the
+  bit stays dirty and the row goes out the next frame. Held by test/unit/equipscreen.test.js, which names the wrong
+  implementation each case catches, and by test/lua/run_equip_nmi_check.sh (Mesen: NMI deadline and the MMC3 register file).
+
 ### Topic list moved from CLAUDE.md, The battle system
 
 Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.

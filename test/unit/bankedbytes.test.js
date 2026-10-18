@@ -3018,7 +3018,7 @@ import { BANKED_CELLS, CELL_BOARDS, shapeOf } from '../lib/equipcells.js';
 
 for (const cell of BANKED_CELLS) {
   test(`equipment banked allowances in the cell "${cell.label}", on every RPG-capable board: isolated deltas and the whole-region model`, { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
-    for (const mapperId of cell.boards ?? CELL_BOARDS) {
+    for (const mapperId of (cell.boards ?? CELL_BOARDS).filter((id) => !(cell.equipRefusedOn ?? []).includes(id))) {
       const mapper = resolveMapper(mapperId);
       const label = `${mapper.name} / ${cell.label}`;
       const build = async (stats, sources) => {

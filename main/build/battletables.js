@@ -45,6 +45,9 @@ import {
   projectUsesEquipment,
   projectUsesEquipmentMag,
   projectUsesEquipmentMdef,
+  projectWithoutEquipment,
+  projectWithoutEquipmentMag,
+  projectWithoutEquipmentMdef,
   EQUIP_SLOTS,
   projectUsesHeroNaming,
   projectUsesJoinNaming,
@@ -345,6 +348,22 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
       }
     }
     chunks.push(`eq_start:\n${dbRows(start)}`);
+    // The Equip screen's words (engine/battle.asm, docs/design-equipment.md section 4): EQS_* indices into eq_text,
+    // MSG_COLS cells each like bs_text, and the four stat labels, four cells each. Derived from EQUIP_STRINGS so
+    // the engine's indices cannot drift from the text (the engine addresses the slot names as EQS_SLOT_FIRST + slot).
+    EQUIP_STRINGS.forEach(([name], index) => chunks.push(`EQS_${name} = ${index}`));
+    chunks.push(
+      `eq_text:\n${dbRows(
+        EQUIP_STRINGS.flatMap(([, text]) => textToTiles(text.padEnd(MSG_COLS, ' ').slice(0, MSG_COLS)).tiles),
+        MSG_COLS
+      )}`
+    );
+    chunks.push(
+      `eq_label:\n${dbRows(
+        EQUIP_STAT_LABELS.flatMap((text) => textToTiles(text.padEnd(4, ' ').slice(0, 4)).tiles),
+        4
+      )}`
+    );
   }
 
   // --- spells ---------------------------------------------------------------
@@ -466,6 +485,23 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
 
   return `${chunks.join('\n')}\n`;
 }
+
+/**
+ * The Equip screen's fixed lines, in the order the engine addresses them: `EQS_*` in the generated header is this
+ * list's index, and the three slot names sit in EQUIP_SLOTS order starting at `EQS_SLOT_FIRST` so the engine finds
+ * "WEAPON / ARMOR / ACCESSORY" by `EQS_SLOT_FIRST + slot`. Each is the message area's twelve columns wide, like
+ * `battleStrings`. Emitted only when the project uses equipment.
+ */
+export const EQUIP_STRINGS = [
+  ['TITLE', 'EQUIP'],
+  ...EQUIP_SLOTS.map((slot) => [slot === EQUIP_SLOTS[0] ? 'SLOT_FIRST' : `SLOT_${slot.toUpperCase()}`, slot.toUpperCase()]),
+  ['NONE', 'NONE'],
+  ['BAGFULL', 'BAG FULL'],
+  ['HINT_SLOT', 'A:PICK B:OUT'],
+  ['HINT_LIST', 'A:OK  B:BACK'],
+];
+/** The stat labels, in ATK / DEF / MAG / MDEF order: the engine's stat index, four cells each. */
+export const EQUIP_STAT_LABELS = ['ATK ', 'DEF ', 'MAG ', 'MDEF'];
 
 /**
  * The lines the battle box says. Fixed, and part of the engine rather than the
@@ -780,15 +816,19 @@ export const MAGIC_POWER_BATTLE_ALLOWANCE = 62;
 // Re-measured for the zero-page kernel diet: 56 (down from 65).
 export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 56;
 
-// Equipment (docs/design-equipment.md sections 3 and 8), the banked half: equip_recalc (the sanitizer and
-// the saturating sums), equip_set, equip_init, the two glue jumps in party_init / party_restore and the
-// ATK / DEF bonus adds in combatant_atk / combatant_def -- everything the stock engine assembles when
-// EQUIP_ENABLED, with no MAG or MDEF term in it. Measured as an isolated delta (a one-piece sample-rpg
-// against the same project with no equipment, emitted eq_* table bytes subtracted) on MMC1, MMC3 and
-// UNROM 512: 184 on all three, with Save and naming each on and off (test/unit/bankedbytes.test.js).
-// Flat rather than per-mapper because nothing in it branches on a board. The opener's own screen and
-// the Equip action (docs/design-equipment.md section 11, C4) add their own terms later.
-export const EQUIP_BATTLE_ALLOWANCE = 184;
+// Equipment (docs/design-equipment.md sections 3, 4 and 8), the banked half: the engine core (equip_recalc, the sanitizer and the
+// saturating sums, equip_set, equip_init, the two glue jumps in party_init / party_restore and the ATK / DEF bonus adds in
+// combatant_atk / combatant_def: 184 bytes, build commit C3) AND the Equip screen (the BP_EQ_* phases, the dirty-row drawer, the pick
+// list, the stat preview and the draw_battle_screen / battle_tick hooks: 890 bytes of CODE, build commit C4 and its fix round) -- 1074, one term, with no MAG or
+// MDEF term in it (the screen assembles the same bytes whichever stats the build has: eq_stat_val's two optional jumps are 3 bytes
+// either way, so MAG / MDEF below stay the engine core's own). One term rather than a core term and a menu term because the two cannot
+// be built apart: both turn on with EQUIP_ENABLED and with nothing else, so a "menu only" delta is not a build anyone can make, and a
+// split would invent a boundary no measurement can check. The emitted strings and labels (eq_text and eq_label: 112 bytes) and the
+// eq_start offsets (12) are .db tables that battleTableBytes counts (124 in all), not part of this term: 890 is code only. Measured as an isolated delta (a one-piece sample-rpg against the same project
+// with no equipment, emitted eq_* table bytes subtracted) on MMC1, MMC3 and UNROM 512 in every cell of test/lib/equipcells.js
+// (test/unit/bankedbytes.test.js): 1074 on all three boards in all of them, so flat rather than per-mapper -- nothing in it branches on
+// a board, a game shape or a battle feature.
+export const EQUIP_BATTLE_ALLOWANCE = 1074;
 // The MAG (resp. MDEF) subset: the extra sum in equip_recalc and the add in combatant_mag (combatant_mdef),
 // assembled only when some piece adds that stat (EQUIP_MAG_ENABLED / EQUIP_MDEF_ENABLED). Gated on its own
 // predicate, independently of MAGIC_POWER_BATTLE_ALLOWANCE / MAGIC_DEFENCE_BATTLE_ALLOWANCE, which a piece's
@@ -1398,6 +1438,21 @@ export function battleShortfallAdvice(
     // docs/design-battle-animation.md §13.9.
     if (battleBankEnabled(project, mapper) && projectUsesMiss(project)) {
       bankedFeatures.push({ label: 'the MISS overlay', strip: projectWithoutMiss });
+    }
+    // Equipment (docs/design-equipment.md section 8): the Equip screen and the ATK / DEF bonus code, and on their own the extra MAG
+    // and MDEF sums, each paid on its own predicate (EQUIP_BATTLE_ALLOWANCE, EQUIP_MAG_BATTLE_ALLOWANCE, EQUIP_MDEF_BATTLE_ALLOWANCE
+    // plus the eq_* columns battleRegionBytes counts). The Magic fields are named only while a piece actually sets them.
+    if (battleBankEnabled(project, mapper) && projectUsesEquipment(project)) {
+      bankedFeatures.push({ label: 'every equipment piece in the Items Forge', strip: projectWithoutEquipment });
+      if (projectUsesEquipmentMag(project)) {
+        bankedFeatures.push({ label: 'the Magic field of every equipment piece in the Items Forge', strip: projectWithoutEquipmentMag });
+      }
+      if (projectUsesEquipmentMdef(project)) {
+        bankedFeatures.push({
+          label: 'the Magic defence field of every equipment piece in the Items Forge',
+          strip: projectWithoutEquipmentMdef
+        });
+      }
     }
   }
   if (bankedFeatures.length) {

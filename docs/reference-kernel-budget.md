@@ -837,3 +837,27 @@ assertions cannot see.
 
 The figures are those of the C2 worktree (the `S3b` tree plus the dlgwr removal) for the shapes `createStreamedProject` builds; the flat figure
 across the three boards and two game types is a measured result, not an assumption, so no `*_BY_MAPPER` split exists.
+
+### Equipment allowances (ROADMAP item 5, build commit C4)
+
+`EQUIP_BATTLE_ALLOWANCE` is **1,074** bytes of the banked region, charged when the project has equipment: 184 for the core plus 890 of
+**code** for the Equip screen (its strings and labels are another 112 emitted bytes and `eq_start` 12 more, 124 together, counted by
+`battleTableBytes`, not by this term). It is measured on MMC1, MMC3 and UNROM 512 in every cell of `BANKED_CELLS` (`test/lib/equipcells.js`,
+which includes hit feedback, miss, battle animation and the streamed worlds the earlier figures only conjoined) and identical to the byte on
+all three boards, so it is one flat term, not `*_BY_MAPPER`. Magic and Magic defence are 25 bytes each, charged only while a piece sets them
+(50 with both). `EQUIP_KERNEL_ALLOWANCE` is **30** bytes of kernel-lo (the `ACT_EQUIP` chain entry, 4, `do_action_equip`, 20, and the 6-byte
+stop that ends the `dispatch_input` pass after an action opened the screen), plus `EQUIP_SAVE_KERNEL_ALLOWANCE` 19 with Save, 49 in all;
+kernel real equals model in every `KERNEL_CELLS` cell (`kernelbytes.test.js`). The two fix-round additions were measured, not estimated:
+the dispatch stop is +6 kernel (24 -> 30) and the Equip row's deferral test (E12, `docs/reference-engine.md`) +6 banked (1,068 -> 1,074).
+Neither is charged to an equipment-free RPG or to an action project, whose ROM is byte-identical to before (`equipidentity.test.js`,
+including an action project that carries `equip` data and an `equip` binding).
+
+**The 49 bytes refuse a world that fitted.** On UNROM 512 a streamed world with Save, and the compact streamed world with Save and the battle
+features, are **20 and 8 bytes over** with one equipment piece (the opener's 49 against the 10 and 22 bytes of kernel-lo the C3 equipment
+builds had free; the equipment-free builds have 32 and 44 free). They are refused with `kernel-lo-tables-over`, and the message ends
+"Equipment costs 49 bytes of the program kernel; remove equipment pieces in the Items Forge." (no board clause: MMC1 is the roomier board
+only for a project MMC1 can carry). Those two projects are asserted as exactly that refusal; the same conjunctions stay supported in
+smaller projects and are **measured there** (review R3 of C4): the streamed + Save world with its title map trimmed to one screen, and the
+compact streamed + Save + battle-feature world with the unplaced Iris NPC removed, both UNROM 512 in `BANKED_CELLS` and `KERNEL_CELLS`
+(1,074 / +25 / +25 / +50 and kernel 49, model gap 0). `test/lua/build_flash_roms.mjs`'s streamed equipment board shrinks its title map
+to one screen (13 lookup bytes per screen) so that the flash save check keeps a streamed world with Save and equipment.

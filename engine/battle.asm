@@ -364,6 +364,565 @@ equip_init_loop:
   dex
   bpl equip_init_loop
   jmp equip_recalc
+
+; ------------------------------------------------------------------ the Equip screen (docs/design-equipment.md section 4)
+; A set of battle phases (BP_EQ_*) on ST_BATTLE, not a game state: it reuses the battle bank, the battle backdrop, the lists and the party
+; sprites. battle_tick sends every phase >= BP_EQ_FIRST here and skips the fight's own ticks. The screen borrows battle scratch that is idle
+; in these phases: bt_actor (the member), bt_sel/bt_len/bt_scroll/bt_list (the pick list), bt_str (the hint), bt_cmd (stat), bt_target
+; (preview value), bt_vrow, bt_arg, bt_row/bt_col, bt_dmg_lo and bt_tmp -- and never bt_x/bt_y across a combatant_* call (they clobber them).
+EQ_D_HEAD   = $01           ; dirty bits, one per content row (row = MSG_ROW + bit): the header...
+EQ_D_SLOTS  = $0E           ; ...the three slot rows (they are the pick-list rows while it is open)...
+EQ_D_STATS  = $30           ; ...the two stat rows...
+EQ_D_HINT   = $40           ; ...and the hint
+EQ_D_ALL    = $7F
+EQ_D_NOHEAD = $7E
+EQ_COLS     = 30            ; cells in a content row: columns 1-30, between the frame's two edge columns
+EQ_QUEUE_MAX = 35           ; vram_buf bytes already queued above which a row waits a frame: Flash's 35 and Flash + Equip's 68 land by
+                            ; scanline 255, a flip's two packets (10) + Flash (35) + a row (33) would settle past 256 on MMC3 (E12)
+EQ_NSLOTS   = EQUIP_BYTES/MAX_PARTY
+EQ_SHOWN_STATS = 3+MAGIC_POWER_ENABLED*4+MAGIC_DEFENCE_ENABLED*8  ; ATK and DEF always; MAG / MDEF only where the build has the stat
+
+; Reached by `jsr` from battle_tick's hook, so at every exit the stack holds call_battle's return and then the hook's own. Each handler is
+; entered by a branch or a jmp from here and helpers (eq_flush) return before the pad is read: no live jsr is ever between the hook and an exit.
+equip_dispatch:
+  lda <bt_phase
+  cmp #BP_EQ_SLOTS
+  bcc eq_intro
+  beq eq_slots
+  jmp eq_list
+
+; The dedicated entry (F1), not battle_intro. battle_begin did not set bt_from_ent, which battle_end reads to deactivate the entity that
+; started a touch encounter, so it is set here; the monster slots are emptied and setup_monsters (a free reset of every fight-only byte with
+; no actors) clears a flee's live flags and feedback timers. The first recruited member is selected; nobody recruited leaves at once.
+eq_intro:
+  lda #NO_ACTOR
+  ldx #MAX_MONSTERS-1
+eq_in_clear:
+  sta mon_slot_actor,x
+  dex
+  bpl eq_in_clear
+  jsr setup_monsters
+  lda #NO_ENTITY
+  sta <bt_from_ent
+  ldx #0
+eq_in_member:
+  lda pc_in_party,x
+  bne eq_in_found
+  inx
+  cpx #MAX_PARTY
+  bne eq_in_member
+  jmp eq_leave
+eq_in_found:
+  stx <bt_actor
+  lda #0
+  sta eq_cur_slot
+  jsr draw_battle_screen      ; bt_phase is still BP_EQ_INTRO: that selects the equip tail
+  lda #BP_EQ_SLOTS
+  sta <bt_phase
+  lda #EQS_HINT_SLOT
+  sta <bt_str
+  lda #EQ_D_ALL
+  sta eq_dirty
+  rts
+
+eq_slots:
+  jsr eq_flush
+  lda <pad_new
+  and #BTN_B
+  beq eq_s_notb
+  jmp eq_leave
+eq_s_notb:
+  lda <pad_new
+  and #BTN_A
+  beq eq_s_down
+  jmp eq_open_list
+eq_s_down:
+  lda <pad_new
+  and #BTN_DOWN
+  beq eq_s_up
+  ldx eq_cur_slot
+  inx
+  cpx #EQ_NSLOTS
+  bcc eq_s_slot
+  ldx #0
+  beq eq_s_slot
+eq_s_up:
+  lda <pad_new
+  and #BTN_UP
+  beq eq_s_lr
+  ldx eq_cur_slot
+  dex
+  bpl eq_s_slot
+  ldx #EQ_NSLOTS-1
+eq_s_slot:
+  stx eq_cur_slot
+  lda #EQ_D_SLOTS
+  jmp eq_mark
+eq_s_lr:
+  lda <pad_new
+  and #BTN_LEFT|BTN_RIGHT
+  beq eq_s_done
+  ldy #MAX_PARTY-1            ; step -1 (mod MAX_PARTY)
+  and #BTN_RIGHT
+  beq eq_s_step
+  ldy #1
+eq_s_step:
+  sty <bt_tmp
+  ldx <bt_actor
+eq_s_next:
+  txa
+  clc
+  adc <bt_tmp
+  and #MAX_PARTY-1
+  tax
+  lda pc_in_party,x
+  beq eq_s_next               ; terminates: the current member is recruited
+  stx <bt_actor
+  lda #EQ_D_NOHEAD
+  jsr eq_mark
+  lda #EQ_D_HEAD
+  jmp eq_mark
+eq_s_done:
+  rts
+
+; The pick list: the bag's pieces for this slot that this member may wear, in bag order. Row 0 is the virtual NONE row, not in bt_list, so
+; the list never exceeds the bag's eight and the navigation length is bt_len+1 (rows 0..bt_len). The cursor starts on the first piece, so a
+; double A press cannot unequip by accident.
+eq_open_list:
+  lda #0
+  sta <bt_len
+  sta <bt_scroll
+  ldy #0
+eq_ol_slot:
+  cpy <inv_count
+  bcs eq_ol_done
+  lda inv_items,y
+  sta <bt_tmp
+  tax
+  lda eq_slot,x
+  cmp eq_cur_slot
+  bne eq_ol_next
+  lda eq_who,x
+  ldx <bt_actor
+  and bit_mask,x
+  beq eq_ol_next
+  ldx <bt_len
+  lda <bt_tmp
+  sta bt_list,x
+  inc <bt_len
+eq_ol_next:
+  iny
+  bne eq_ol_slot              ; inv_count <= MAX_ITEMS ends the walk above
+eq_ol_done:
+  lda #0
+  ldx <bt_len
+  beq eq_ol_sel
+  lda #1
+eq_ol_sel:
+  sta <bt_sel
+  lda #BP_EQ_LIST
+  sta <bt_phase
+  lda #EQS_HINT_LIST
+  sta <bt_str
+  lda #EQ_D_SLOTS|EQ_D_STATS|EQ_D_HINT
+  jmp eq_mark
+
+eq_list:
+  jsr eq_flush
+  lda <pad_new
+  and #BTN_B
+  beq eq_l_notb
+  jmp eq_back                 ; Equip Back (E9): the list returns to the slot rows, it never leaves
+eq_l_notb:
+  lda <pad_new
+  and #BTN_A
+  beq eq_l_down
+  jmp eq_commit
+eq_l_down:
+  lda <pad_new
+  and #BTN_DOWN
+  beq eq_l_up
+  inc <bt_sel
+  lda <bt_sel
+  cmp <bt_len
+  bcc eq_l_moved
+  beq eq_l_moved              ; rows run 0..bt_len inclusive
+  lda #0
+  sta <bt_sel
+  beq eq_l_moved
+eq_l_up:
+  lda <pad_new
+  and #BTN_UP
+  beq eq_l_done
+  dec <bt_sel
+  bpl eq_l_moved
+  lda <bt_len
+  sta <bt_sel
+eq_l_moved:
+  jsr eq_follow
+  lda #EQS_HINT_LIST
+  sta <bt_str
+  lda #EQ_D_SLOTS|EQ_D_STATS|EQ_D_HINT
+  jmp eq_mark
+eq_l_done:
+  rts
+
+; Row 0 -> NO_ITEM, row r -> bt_list[r-1]. A refused take-off (full bag) keeps the list open and says so in the hint row.
+eq_commit:
+  lda #NO_ITEM
+  ldx <bt_sel
+  beq eq_cm_go
+  lda bt_list-1,x
+eq_cm_go:
+  ldx <bt_actor
+  ldy eq_cur_slot
+  jsr equip_set
+  bcs eq_cm_refused
+eq_back:
+  lda #BP_EQ_SLOTS
+  sta <bt_phase
+  lda #EQS_HINT_SLOT
+  sta <bt_str
+  lda #EQ_D_NOHEAD
+  jmp eq_mark
+eq_cm_refused:
+  lda #EQS_BAGFULL
+  sta <bt_str
+  lda #EQ_D_HINT
+  jmp eq_mark
+
+; Three rows are visible (list_follow hardcodes four): scroll so the selected row is one of them.
+eq_follow:
+  lda <bt_sel
+  cmp <bt_scroll
+  bcc eq_fo_up
+  sec
+  sbc <bt_scroll
+  cmp #3
+  bcc eq_fo_done
+  lda <bt_sel
+  sec
+  sbc #2
+  sta <bt_scroll
+  rts
+eq_fo_up:
+  lda <bt_sel
+  sta <bt_scroll
+eq_fo_done:
+  rts
+
+eq_mark:
+  ora eq_dirty
+  sta eq_dirty
+  rts
+
+; The exit. Reached only by a branch or jmp from a handler, so the stack top is the hook's `jsr equip_dispatch` return, an address inside
+; the switchable window. The two pla discard it; battle_end (kernel) redraws the field, which re-maps the window to the field's screen
+; bank, and its rts returns to call_battle's own `jmp set_screen_ptr`. Without them the rts would return into a window that no longer holds
+; this bank (screen data run as code, with the stack still balanced).
+eq_leave:
+  pla
+  pla
+  jmp battle_end
+
+; ------------------------------------------------------------------ F8: one row per frame
+; The lowest dirty row only, one packet of EQ_COLS cells (header 3 + 30 = 33 bytes of vram_buf, 34 with the terminator). A change marks
+; several rows and they drain over the following frames. A frame that already carries a flip and Flash (45 bytes queued before this tick)
+; publishes no row: the dirty bit stays set and the row goes out next frame, so the Equip row never shares a frame with both and the NMI's
+; rti settles by scanline 256 on every board (E12; docs/reference-engine.md).
+eq_flush:
+  lda eq_dirty
+  beq eq_fl_done
+  ldx <vram_len
+  cpx #EQ_QUEUE_MAX+1
+  bcs eq_fl_done              ; the frame already carries a flip and Flash: the row stays dirty and goes out next frame (E12)
+  ldx #0
+eq_fl_find:
+  lsr a
+  bcs eq_fl_row
+  inx
+  bne eq_fl_find
+eq_fl_row:
+  lda bit_mask,x
+  eor eq_dirty
+  sta eq_dirty                ; clear the bit being published
+  txa
+  clc
+  adc #MSG_ROW
+  sta <bt_row
+  lda #1
+  sta <bt_col
+  jsr queue_at                ; preserves X
+  jsr eq_draw_row
+  jmp vram_end
+eq_fl_done:
+  rts
+
+eq_draw_row:                  ; X = 0 header, 1-3 slot or list rows, 4-5 stat rows, 6 hint
+  txa
+  beq eq_row_head
+  cmp #4
+  bcc eq_row_slot
+  cmp #6
+  beq eq_row_hint
+  sec
+  sbc #4
+  asl a
+  sta <bt_vrow                ; the left cell's stat: 0 or 2
+  ldy #2
+  jsr eq_pad
+  lda <bt_vrow
+  jsr eq_stat_cell
+  ldy #2
+  jsr eq_pad
+  ldx <bt_vrow
+  inx
+  txa
+  jsr eq_stat_cell
+  ldy #EQ_COLS-2-11-2-11
+  jmp eq_pad
+
+eq_row_head:
+  lda #TILE_SPACE
+  jsr vram_push
+  lda #EQS_TITLE
+  jsr eq_push_str
+  ldy #2
+  jsr eq_pad
+  lda <bt_actor
+  jsr push_combatant_name     ; the party member's NAME_LEN cells (pc_name_ram once naming is on)
+  ldy #EQ_COLS-1-MSG_COLS-2-NAME_LEN
+  jmp eq_pad
+
+eq_row_hint:
+  lda #TILE_SPACE
+  jsr vram_push
+  lda <bt_str
+  jsr eq_push_str
+  ldy #EQ_COLS-1-MSG_COLS
+  jmp eq_pad
+
+eq_row_slot:                  ; A = 1..3
+  sec
+  sbc #1
+  sta <bt_vrow
+  lda <bt_phase
+  cmp #BP_EQ_LIST
+  beq eq_row_list
+  lda <bt_vrow
+  cmp eq_cur_slot
+  jsr eq_push_cursor
+  lda <bt_vrow
+  clc
+  adc #EQS_SLOT_FIRST
+  jsr eq_push_str
+  lda <bt_vrow
+  asl a
+  asl a
+  clc
+  adc <bt_actor
+  tax
+  lda pc_equip,x
+  cmp #NO_ITEM
+  beq eq_row_none
+  jsr eq_push_item_name
+  ldy #EQ_COLS-1-MSG_COLS-NAME_LEN
+  jmp eq_pad
+eq_row_none:
+  lda #EQS_NONE
+  jsr eq_push_str
+  ldy #EQ_COLS-1-MSG_COLS-MSG_COLS
+  jmp eq_pad
+
+eq_row_list:
+  lda <bt_vrow
+  clc
+  adc <bt_scroll
+  sta <bt_vrow                ; the absolute row
+  cmp <bt_sel
+  jsr eq_push_cursor
+  lda <bt_vrow
+  beq eq_rl_none
+  cmp <bt_len
+  beq eq_rl_piece
+  bcs eq_rl_blank
+eq_rl_piece:
+  tax
+  lda bt_list-1,x
+  jsr eq_push_item_name
+  ldy #EQ_COLS-1-NAME_LEN
+  jmp eq_pad
+eq_rl_none:
+  lda #EQS_NONE
+  jsr eq_push_str
+  ldy #EQ_COLS-1-MSG_COLS
+  jmp eq_pad
+eq_rl_blank:
+  ldy #EQ_COLS-1
+  jmp eq_pad
+
+; A = stat 0..3 (ATK DEF MAG MDEF) -> 11 cells "LBL bbb>aaa", or 11 blanks when this build does not have that stat. before = the member's
+; real combatant stat; after = the same stat with the highlighted piece trial-worn (equip_recalc, read, put back, recalc), so the saturation
+; and every other rule are the engine's own.
+eq_stat_cell:
+  sta <bt_cmd
+  tax
+  lda bit_mask,x
+  and #EQ_SHOWN_STATS
+  beq eq_sc_off
+  lda <bt_cmd
+  asl a
+  asl a
+  tay
+  ldx #4
+eq_sc_label:
+  lda eq_label,y
+  jsr vram_push
+  iny
+  dex
+  bne eq_sc_label
+  jsr eq_preview_stat
+  sta <bt_target
+  ldx <bt_cmd
+  jsr eq_stat_val
+  jsr eq_push_num
+  lda #ARROW_TILE
+  jsr vram_push
+  lda <bt_target
+  jmp eq_push_num
+eq_sc_off:
+  ldy #11
+  jmp eq_pad
+
+eq_preview_stat:              ; bt_cmd = stat -> A
+  jsr eq_idx
+  lda pc_equip,x
+  sta <bt_arg
+  jsr eq_candidate
+  cmp <bt_arg
+  beq eq_pv_same
+  sta pc_equip,x
+  jsr equip_recalc
+  ldx <bt_cmd
+  jsr eq_stat_val
+  pha
+  jsr eq_idx
+  lda <bt_arg
+  sta pc_equip,x
+  jsr equip_recalc
+  pla
+  rts
+eq_pv_same:
+  ldx <bt_cmd
+  jmp eq_stat_val
+
+eq_candidate:                 ; X = pc_equip index; A = the piece under the cursor (list open) or the worn one
+  lda <bt_phase
+  cmp #BP_EQ_LIST
+  bne eq_cand_cur
+  ldy <bt_sel
+  beq eq_cand_none
+  lda bt_list-1,y
+  rts
+eq_cand_none:
+  lda #NO_ITEM
+  rts
+eq_cand_cur:
+  lda pc_equip,x
+  rts
+
+eq_idx:
+  lda eq_cur_slot
+  asl a
+  asl a
+  clc
+  adc <bt_actor
+  tax
+  rts
+
+eq_stat_val:                  ; X = stat -> A = the member's combatant stat (these preserve X and Y)
+  lda <bt_actor
+  cpx #1
+  beq eq_sv_def
+  bcs eq_sv_hi
+  jmp combatant_atk
+eq_sv_def:
+  jmp combatant_def
+eq_sv_hi:
+  cpx #3
+  beq eq_sv_mdef
+  ; A stat this build does not have is never asked for (EQ_SHOWN_STATS hides its cell), but the jmp is assembled either way so the
+  ; screen's size does not depend on which stats exist: the two terms of the allowance stay the equipment engine's own.
+  .if MAGIC_POWER_ENABLED
+  jmp combatant_mag
+  .endif
+  .if !MAGIC_POWER_ENABLED
+  jmp eq_sv_none
+  .endif
+eq_sv_mdef:
+  .if MAGIC_DEFENCE_ENABLED
+  jmp combatant_mdef
+  .endif
+  .if !MAGIC_DEFENCE_ENABLED
+  jmp eq_sv_none
+  .endif
+eq_sv_none:
+  rts
+
+; ------------------------------------------------------------------ small drawing helpers
+eq_push_num:                  ; A = 0-255 -> three cells
+  sta <bt_dmg_lo
+  jsr print_num
+  ldy #0
+eq_pn_loop:
+  lda bt_digits,y
+  jsr vram_push
+  iny
+  cpy #3
+  bne eq_pn_loop
+  rts
+
+eq_push_item_name:            ; A = item id -> NAME_LEN cells, through draw_list_name's own tail
+  sta <bt_tmp
+  lda #LOW(item_name)
+  sta <ptr_lo
+  lda #HIGH(item_name)
+  sta <ptr_hi
+  jmp draw_list_name_go
+
+eq_push_str:                  ; A = string index -> MSG_COLS cells from eq_text
+  sta <bt_x
+  asl a
+  clc
+  adc <bt_x
+  asl a
+  asl a
+  tay
+  lda #MSG_COLS
+  sta <bt_x
+eq_ps_loop:
+  lda eq_text,y
+  jsr vram_push
+  iny
+  dec <bt_x
+  bne eq_ps_loop
+  rts
+
+eq_push_cursor:               ; flags from the caller's cmp: equal -> arrow, else a space
+  bne eq_pc_space
+  lda #ARROW_TILE
+  jmp vram_push
+eq_pc_space:
+  lda #TILE_SPACE
+  jmp vram_push
+
+eq_pad:                       ; Y = how many spaces (> 0)
+  lda #TILE_SPACE
+eq_pad_loop:
+  jsr vram_push
+  dey
+  bne eq_pad_loop
+  rts
   .endif
 
 ; A = member index; returns Y = that member's row for their current level.
@@ -392,6 +951,16 @@ level_row_add:
 ; metasprite monsters are the only sprites on screen, so this owns the whole
 ; shadow rather than appending to it.
 battle_tick:
+  .if EQUIP_ENABLED
+  ; Every Equip phase (docs/design-equipment.md section 4) is handled whole by equip_dispatch: the fight's own ticks below
+  ; (the wipe, fx, hurt and miss producers) are bypassed, not made safe, and only the party's sprites are drawn.
+  lda <bt_phase
+  cmp #BP_EQ_FIRST
+  bcc battle_tick_fight
+  jsr equip_dispatch
+  jmp battle_draw_sprites
+battle_tick_fight:
+  .endif
   jsr wipe_tick
   .if BATTLE_ANIM_ENABLED
   jsr battle_fx_tick
@@ -766,10 +1335,23 @@ draw_bs_cell:
   bne draw_bs_row
 
   jsr draw_box_frame
+  .if EQUIP_ENABLED
+  ; The Equip screen's intro (eq_intro) wants the backdrop and the frame but no monsters, commands or panel: only the attribute
+  ; table (with every monster slot empty, the ground and the box alone).
+  lda <bt_phase
+  cmp #BP_EQ_INTRO
+  bne draw_bs_fight
+  jsr draw_battle_attr
+  jmp draw_bs_shown
+draw_bs_fight:
+  .endif
   jsr draw_monsters
   jsr draw_battle_attr
   jsr draw_commands
   jsr draw_panel
+  .if EQUIP_ENABLED
+draw_bs_shown:
+  .endif
 
   jsr wait_vblank_poll
   jmp enable_rendering

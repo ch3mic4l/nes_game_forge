@@ -411,6 +411,23 @@ Mesen timing, the same "prove the workload, then trust the deadline" shape
 `flash_nmi_timing.lua.template` established. **A fourth independent producer must re-open this
 accounting again, not assume it still holds.**
 
+**The Equip screen is not a fourth producer** (equipment C4). Its tick runs in `ui_tick`'s slot, which the frozen-world producers share
+exclusively, and it publishes one 33-byte row per frame (`vram_len` 33, 34 with the terminator; a two-row publish reaches 66). **E12 (Chris's
+ruling on review Q1 of C4): the Equip frame's NMI `rti` must settle before scanline 257 -- on 256 or earlier, with `rti`'s own 18 dots --
+on every board and in every mode; the 260 the three sibling checks judge is not used for it.** A frame with a flip (10) + Flash (35) + a
+row (33) settled on scanline 257 on MMC3, so `eq_flush` publishes no row into a frame that already holds more than `EQ_QUEUE_MAX` (35)
+bytes: the dirty bit stays set and the row goes out next frame (one frame of delay on a static screen; the flip and Flash last a few
+frames). The worst frames it can share are therefore Flash 35 + row 33 + terminator = 69 and flip 10 + row 33 + 1 = 44; the flip + Flash
+frame is 46 with no row. Measured by test/lua/run_equip_nmi_check.sh against Mesen on all three RPG boards (judged `rti` scanline, dot
+~): Equip alone 250 / 251 / 250 (MMC1 / MMC3 / UNROM 512), + flip 252, + Flash 255 (dot ~105 / ~315 / ~140), flip + Flash (row deferred) 252.
+Without the deferral that frame settles on 256 (MMC1, UNROM 512) and 257 (MMC3, dot ~35), which the strict judge rejects (control
+`nodefer`). The unchanged sibling checks and the published 88-byte frame keep their 260 judges. Negative control (an Equip tick that
+publishes every dirty row in one frame) overruns on every board. The MMC3 pins (R6/R7 the field's
+screen bank, R0-R5 the battle tileset while open and the field's after exit, R1 the font page's bytes at the box's top border and the
+battle tileset's art when idle -- both derived from the build's own `config.inc` and ROM -- the split armed while open and off after)
+are judged in the same script, with a `battle_end` that no longer redraws the field and a split handler that selects the wrong font page
+as its controls.
+
 **The row-arm guard keeps a row strip off a Flash publication body (phase 3a slice S1).** A row arm queues
 a strip whose vblank drawing competes with a Flash packet's 35-byte `vram_buf` publication, and the
 frame gate (29,780 cycles) has no room for both. `sw_win_arm_flash_guard` (`engine/streamworld.asm`,

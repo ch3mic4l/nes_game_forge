@@ -86,6 +86,11 @@ dispatch_pressed:
   jsr do_action
   pla
   tax
+  .if EQUIP_ENABLED
+  lda <game_state           ; a press that opened the Equip screen has taken the rest of the pass: the buttons after it
+  cmp #ST_BATTLE            ; would be read against the battle row it selected (B -> cancel, Start -> pause) before
+  beq dispatch_done         ; eq_intro has drawn a frame of the screen (review R1 of C4)
+  .endif
   ; An action that drew a screen or decided a warp has taken the frame, and the
   ; buttons after it would be read against whatever it left behind: game_state is
   ; looked up again for every button, so Start on the title and interact pressed
@@ -155,6 +160,10 @@ do_action:
   beq do_action_confirm
   cmp #ACT_CANCEL
   beq do_action_cancel
+  .if EQUIP_ENABLED
+  cmp #ACT_EQUIP
+  beq do_action_equip
+  .endif
   cmp #ACT_PAUSE
   ; Naming's own code (do_action_confirm/do_action_cancel, below) inserts
   ; several dozen bytes between this dispatch chain and do_action_pause's own
@@ -177,6 +186,25 @@ do_action_pause_skip:
   .endif
 do_action_none:
   rts
+
+  .if EQUIP_ENABLED
+; The Equip screen (docs/design-equipment.md section 4): refused while paused (main_loop skips ui_tick while paused, so it would
+; open with nothing to drive it), accepted from play and from the bag, refused in every other state (a conversation runs under
+; ST_DIALOG, which covers script_active). battle_begin's freeze, status reset and owner capture are the fight's own; the first
+; battle tick, eq_intro, draws the screen.
+do_action_equip:
+  lda <paused
+  bne do_action_none
+  lda <game_state
+  beq do_action_equip_open     ; ST_GAMEPLAY
+  cmp #ST_MENU
+  bne do_action_none
+do_action_equip_open:
+  jsr battle_begin
+  lda #BP_EQ_INTRO
+  sta <bt_phase
+  rts
+  .endif
 
 do_action_attack:
   lda <game_state            ; the world is frozen behind a menu or a conversation

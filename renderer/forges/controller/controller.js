@@ -3,7 +3,7 @@
 
 import { store } from '../../store.js';
 import { el, fill, field, toast } from '../../ui.js';
-import { ACTIONS, BUTTONS, INPUT_STATES, projectUsesHeroNaming } from '../../../shared/project.js';
+import { ACTIONS, BUTTONS, INPUT_STATES, projectUsesEquipment, projectUsesHeroNaming } from '../../../shared/project.js';
 import { projectUsesEffectiveTitle } from '../../../shared/font.js';
 import { projectUsesStreaming } from '../../../shared/streamlayout.js';
 
@@ -64,6 +64,13 @@ const ENGINE_SUPPORT = {
       'Loads the save and resumes there. Only offered when the project can save (a save-capable ' +
       'cartridge with a Save command) and a valid save currently exists — otherwise this is ignored the ' +
       'same as anywhere else.'
+  },
+  equip: {
+    gameplay:
+      'Opens the Equip screen: choose a party member, a slot and a piece from the bag. The world freezes, ' +
+      'and Back leaves to the game.',
+    menu: 'Opens the Equip screen from the inventory. Back returns to the game, not to the inventory.',
+    dialog: null
   }
 };
 
@@ -124,6 +131,9 @@ export function actionDetail(project, action, stateName, { locked = false } = {}
   if (action === 'dash' && projectUsesStreaming(project)) {
     return 'The engine ignores dash on a streamed map.';
   }
+  // The Equip screen is an RPG feature that exists in the ROM only when some item can be worn (EQUIP_ENABLED). Anywhere else the
+  // binding does nothing, so it takes the same null -> IGNORED label (and accent colour) `continue` has, not a described effect.
+  if (action === 'equip' && (project.project?.gameType !== 'rpg' || !projectUsesEquipment(project))) return null;
   return ENGINE_SUPPORT[action]?.[stateName] ?? null;
 }
 
