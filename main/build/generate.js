@@ -4389,6 +4389,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `BORDER_V      = ${hex(BORDER_V)}`,
     `BORDER_CORNER = ${hex(BORDER_CORNER)}`,
     `ARROW_TILE    = ${hex(ARROW_TILE)}`,
+    // The Equip screen's current-to-candidate separator (engine/battle.asm eq_stat_cell): a real '>', not the cursor's down-pointing ARROW_TILE.
+    `EQ_CMP_TILE   = ${hex(charToTile('>'))}`,
     `TILE_ZERO     = ${hex(charToTile('0'))}`,
     // The scanline split: on a board with a scanline IRQ the font is not in the
     // tilesets at all — engine/split.asm switches MMC3's R1 register (background

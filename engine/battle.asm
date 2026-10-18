@@ -786,7 +786,7 @@ eq_sc_label:
   ldx <bt_cmd
   jsr eq_stat_val
   jsr eq_push_num
-  lda #ARROW_TILE
+  lda #EQ_CMP_TILE
   jsr vram_push
   lda <bt_target
   jmp eq_push_num

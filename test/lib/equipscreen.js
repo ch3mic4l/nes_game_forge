@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
-import { charToTile } from '../../shared/font.js';
+import { charToTile, ARROW_TILE } from '../../shared/font.js';
 import { buildEquip, equipProject, equipStreamedProject, piece, plain, ROOT, WEAPON, ARMOR, ACCESSORY, EVERYONE, RAM } from './equipharness.js';
 
 export { BUTTON, ROOT, WEAPON, ARMOR, ACCESSORY, EVERYONE, piece, plain, RAM };
@@ -63,10 +63,14 @@ export const NO_ENTITY = 0xff;
 export const MSG_ROW = 21; // engine/constants.asm
 export const BATTLE_ROW_COUNT = 7; // the content rows: header, three slots, two stats, hint
 
-/** Tile index -> ASCII, for reading a nametable row back as text. The cursor arrow and the frame glyphs read as '>' and '#'. */
+/**
+ * Tile index -> ASCII, for reading a nametable row back as text; the frame glyphs read as '#'. ARROW_TILE (the cursor, a down-pointing
+ * triangle) reads as '>' only where a cursor lives (the slot and list rows, CURSOR_ROWS); anywhere else, a stat cell included, it reads as
+ * 'v', so a stat separator that is the cursor glyph can never decode to the '>' the comparison glyph (EQ_CMP_TILE, the font's real '>') does.
+ */
 const TILE_TEXT = new Map();
 for (let code = 0x20; code < 0x7f; code++) TILE_TEXT.set(charToTile(String.fromCharCode(code)), String.fromCharCode(code));
-TILE_TEXT.set(charToTile('\x7f'), '>');
+const CURSOR_ROWS = [1, 2, 3]; // the three slot rows (a pick list scrolls through the same three)
 
 /**
  * sample-rpg (4 members, no wandering encounters) with: item 0 the Potion; ids 1-8 eight weapons (ATK 1..8, everyone); id 9 Mail
@@ -234,8 +238,16 @@ export class Screen {
   row(n) {
     const base = 0x2000 + (MSG_ROW + n) * 32;
     let out = '';
-    for (let c = 0; c < 32; c++) out += TILE_TEXT.get(this.emu.nes.ppu.vramMem[base + c]) ?? '#';
+    for (let c = 0; c < 32; c++) {
+      const tile = this.emu.nes.ppu.vramMem[base + c];
+      out += tile === ARROW_TILE ? (CURSOR_ROWS.includes(n) ? '>' : 'v') : TILE_TEXT.get(tile) ?? '#';
+    }
     return out;
+  }
+  /** One nametable row as raw tile indices (no decoding, so a glyph that merely looks the same cannot hide). */
+  rawRow(n) {
+    const base = 0x2000 + (MSG_ROW + n) * 32;
+    return Array.from(this.emu.nes.ppu.vramMem.slice(base, base + 32));
   }
   rows() {
     return Array.from({ length: BATTLE_ROW_COUNT }, (_, n) => this.row(n));

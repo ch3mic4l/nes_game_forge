@@ -27,6 +27,8 @@ import {
   ARMOR,
   RAM
 } from '../lib/equipscreen.js';
+import { equate } from '../lib/equipharness.js';
+import { ARROW_TILE, charToTile } from '../../shared/font.js';
 
 const hasNesasm = spawnSync('nesasm', [], { encoding: 'utf8' }).error === undefined;
 const skip = !hasNesasm && 'nesasm not found on PATH';
@@ -407,6 +409,54 @@ test('MAG and MDEF cells are blank when the build has neither stat, and shown wh
   gear.openFromGameplay();
   assert.match(trim(gear.row(5)), /^MAG +\d+>\s*\d+ MDEF +\d+>\s*\d+$/);
 });
+
+for (const mapper of BOARDS) {
+  test(`${BOARD_NAME[mapper]}: every stat cell's current-to-candidate separator is the font's '>' (EQ_CMP_TILE), never the cursor's down-pointing ARROW_TILE`, { skip }, async (t) => {
+    // Catches (review C5 N1) a separator drawn with ARROW_TILE: it decodes to '>' in text, but on screen it is a down-pointing triangle, so an
+    // unchanged stat read 11v11 and an increase looked like a decrease. The decoded rows cannot tell the two apart, so this reads the raw tiles.
+    const screen = await field(t, mapper);
+    const cmp = equate(screen.built, 'EQ_CMP_TILE');
+    assert.equal(cmp, charToTile('>'), 'the build\'s equate is the font\'s own \'>\' position');
+    assert.notEqual(cmp, ARROW_TILE);
+    screen.openFromGameplay();
+    // The cursor itself stays the arrow: the slot row carries ARROW_TILE and no comparison glyph.
+    assert.equal(screen.rawRow(1).filter((tile) => tile === ARROW_TILE).length, 1, 'the cursor is still ARROW_TILE');
+    assert.ok(screen.rawRow(1).every((tile) => tile !== cmp), 'and a slot row has no comparison glyph');
+    // The default gear carries MAG and MDEF, so all four cells are on: ATK/DEF in row 4, MAG/MDEF in row 5. Two separators per row.
+    for (const n of [4, 5]) {
+      const tiles = screen.rawRow(n);
+      assert.equal(tiles.filter((tile) => tile === cmp).length, 2, `row ${n}: two cells, two comparison glyphs (${screen.row(n)})`);
+      assert.equal(tiles.filter((tile) => tile === ARROW_TILE).length, 0, `row ${n}: no cursor glyph in a stat cell`);
+    }
+    // A list open with a candidate under the cursor redraws the cells: the separator is the same tile then too.
+    screen.tap(BUTTON.A, 4);
+    screen.tap(BUTTON.DOWN, 3);
+    for (const n of [4, 5]) {
+      const tiles = screen.rawRow(n);
+      assert.equal(tiles.filter((tile) => tile === cmp).length, 2, `list open, row ${n}: two comparison glyphs`);
+      assert.equal(tiles.filter((tile) => tile === ARROW_TILE).length, 0, `list open, row ${n}: no cursor glyph in a stat cell`);
+    }
+  });
+
+  test(`${BOARD_NAME[mapper]}: the '>' glyph is in the build's CHR (the message-font reservation), and is not the cursor's glyph`, { skip }, async (t) => {
+    // Catches a comparison glyph whose tile is not stamped (a blank separator): the glyph must be non-blank at EQ_CMP_TILE in the page the
+    // text draws from, and differ from ARROW_TILE's. A split board (MMC3) carries the font only in its own last CHR page.
+    const built = (await field(t, mapper)).built;
+    const cmp = equate(built, 'EQ_CMP_TILE');
+    const assets = path.join(built.dir, 'build', 'assets');
+    let pages = fs.readdirSync(assets).filter((name) => /^(tiles\d+\.chr|chrram\d+\.bin)$/.test(name)).sort();
+    // Without a split every tileset carries the font (a page past the last tileset is board padding); with one, only the font's own page does.
+    pages = equate(built, 'SPLIT_ENABLED') === 1 ? pages.slice(-1) : pages.slice(0, built.project.tilesets.length);
+    assert.ok(pages.length > 0);
+    const block = (data, tile) => data.subarray(tile * 16, tile * 16 + 16);
+    for (const name of pages) {
+      const data = fs.readFileSync(path.join(assets, name));
+      const glyph = block(data, cmp);
+      assert.ok(glyph.some((byte) => byte !== 0), `${name}: the '>' tile is stamped`);
+      assert.notDeepEqual(Buffer.from(glyph), Buffer.from(block(data, ARROW_TILE)), `${name}: the comparison glyph is not the cursor's`);
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------------------------------- 13. the opener's refusals
 
