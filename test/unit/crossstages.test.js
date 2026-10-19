@@ -132,11 +132,11 @@ test('the two original-capacity groups: 18 parent-refused + 48 new regressions, 
   }
   // none of the 66 is in an older group
   for (const n of ['origParentRefused', 'origNewRegression']) for (const o of ['approved74', 'conditional111', 'appendix']) for (const id of groups[n].ids) assert.ok(!groups[o].ids.has(id), `${id} in ${n} and ${o}`);
-  // the evidence rows: the original's OWN need/free/shortfall (1..38 against 144 free), the parent receipt of its group
+  // the evidence rows: the original's OWN need/free/shortfall (11..48 against 134 free: ruling E19 re-attested them for C1b's six kernel-lo bytes on every RPG board; they were 5..42 against 140), the parent receipt of its group
   const ev = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/crossstage/exclusions-evidence.json'), 'utf8'));
   const shorts = [...ev.origParentRefused, ...ev.origNewRegression].map((r) => r.shortfall);
-  assert.deepEqual([Math.min(...shorts), Math.max(...shorts)], [5, 42]);
-  assert.ok(ev.origNewRegression.every((r) => r.free === 140 && r.parent.status === 'built'));
+  assert.deepEqual([Math.min(...shorts), Math.max(...shorts)], [11, 48]);
+  assert.ok(ev.origNewRegression.every((r) => r.free === 134 && r.parent.status === 'built'));
   assert.ok(ev.origParentRefused.every((r) => r.parent.status === 'refused' && r.parent.need > r.parent.free));
 });
 
