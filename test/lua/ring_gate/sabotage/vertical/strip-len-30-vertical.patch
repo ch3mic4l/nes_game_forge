@@ -1,8 +1,8 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 31f2411..f812fd3 100644
+index 8338600..0343aa2 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4339,7 +4339,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+@@ -4511,7 +4511,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
      // every build: equates occupy no bytes, and the torus values are the literals the fork replaced (a vertical ring keeps the
      // torus row length 32, which is why its ROM is byte-identical to one built before the row fork existed).
      `STREAM_RING = ${ringMode}`,

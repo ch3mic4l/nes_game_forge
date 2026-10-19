@@ -1,8 +1,8 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 31f2411..216eff5 100644
+index 8338600..70517b3 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4266,7 +4266,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+@@ -4435,7 +4435,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
      `JOIN_NAMING_ENABLED = ${usesJoinNaming ? 1 : 0}`,
      `HERO_NAMING_ENABLED = ${usesHeroNaming ? 1 : 0}`,
      `NAME_ENTRY_BANKED = ${nameEntryBanked ? 1 : 0}`,

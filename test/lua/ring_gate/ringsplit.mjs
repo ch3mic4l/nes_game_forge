@@ -26,8 +26,57 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SPLIT_TEMPLATE = path.join(HERE, '../sw_split_ring.lua.template');
 export { spawnMesen };
 
-/** Harness RAM (engine/constants.asm holds nothing in $07E0-$07EF; asserted at build time against the build's own symbol table). */
-export const HD = { preLo: 0x07e0, preHi: 0x07e1, gap: [0x07e2, 0x07e3, 0x07e4, 0x07e5, 0x07e6] };
+/**
+ * The row-8 harness's one RAM reservation: sixteen bytes no engine allocation may touch, asserted at build time against the build's own allocation names (checkHarnessReservation).
+ * HD, the comment below, the guard's bounds and its diagnostic all derive from this declaration. It was $07E0-$07EF until Equipment C3 put pc_eq_atk..pc_eq_mdef there (E20); $07C0-$07CF
+ * lies inside the free run below the Equip screen's eq_dirty ($07D2) in the worst case (UNROM 512 + equipment + flash Save: SAVE_RECORD_LEN 139 plus EQUIP_SAVE_SHIFT 12 end at $0799).
+ */
+export const HD_RESERVATION = { base: 0x07c0, length: 16 };
+/** Harness RAM: preLo, preHi (the pre-delay counter) and the five gap counters, all inside HD_RESERVATION. */
+export const hdLayout = ({ base, length }) => {
+  const hd = { preLo: base, preHi: base + 1, gap: [base + 2, base + 3, base + 4, base + 5, base + 6] };
+  const top = base + length - 1;
+  for (const a of [hd.preLo, hd.preHi, ...hd.gap]) if (a < base || a > top) throw new Error(`harness byte $${a.toString(16)} lies outside its reservation $${base.toString(16)}-$${top.toString(16)}`);
+  return hd;
+};
+export const HD = hdLayout(HD_RESERVATION);
+const hex16 = (a) => a.toString(16).toUpperCase().padStart(4, '0');
+
+/** `NAME = ... @size=TOKEN` annotations of constants.asm: name -> token (a decimal literal or another equate's name). The grammar rammap.test.js reads. */
+const sizeAnnotations = (text) => {
+  const sizes = new Map();
+  for (const line of text.split('\n')) { const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=.*@size=([A-Za-z0-9_]+)/); if (m) sizes.set(m[1], m[2]); }
+  return sizes;
+};
+/** A RAM address is spelled in lower_snake_case (plus OAM): the convention test/unit/rammap.test.js audits the allocation map by. */
+const isRamName = (name) => /^[a-z]/.test(name) || name === 'OAM';
+
+/**
+ * No RAM allocation of this build overlaps the reservation. `symbols` is the build's own resolved equate table (constants.asm + config.inc + cartridge.inc through scanEquates / resolveEquates,
+ * so every address is resolved or the build already failed); `constantsText` supplies the `@size` annotations. Every annotation must resolve to a positive integer and every RAM name's address
+ * to a non-negative one: THERE IS NO ONE-BYTE FALLBACK for an unresolved size. An allocation with no annotation is one byte (the rammap.test.js convention). The WHOLE interval of each
+ * allocation is tested against the WHOLE reservation (a start below the reservation whose size reaches into it collides). Returns the number of RAM allocations checked.
+ */
+export function checkHarnessReservation({ constantsText, symbols, reservation = HD_RESERVATION }) {
+  const lo = reservation.base, hi = reservation.base + reservation.length - 1;
+  const sizes = sizeAnnotations(constantsText);
+  const sizeOf = (name, token) => {
+    const n = /^\d+$/.test(token) ? parseInt(token, 10) : symbols.get(token);
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`${name}'s @size=${token} did not resolve to a positive integer (harness RAM check: an unresolved size is refused, never read as one byte)`);
+    return n;
+  };
+  for (const [name, token] of sizes) sizeOf(name, token); // every @size resolves, whatever the name's case
+  let checked = 0;
+  for (const [name, addr] of symbols) {
+    if (!isRamName(name)) continue;
+    if (!Number.isInteger(addr) || addr < 0) throw new Error(`${name} did not resolve to a non-negative integer address (harness RAM check)`);
+    checked++;
+    const size = sizes.has(name) ? sizeOf(name, sizes.get(name)) : 1;
+    if (addr <= hi && addr + size - 1 >= lo) throw new Error(`harness RAM $${hex16(lo)}-$${hex16(hi)} collides with ${name} ($${hex16(addr)} +${size})`);
+  }
+  if (checked < 50) throw new Error(`only ${checked} RAM allocations resolved -- the harness RAM check read the wrong table`);
+  return checked;
+}
 export const GAP_ITERS = 12; // 7 cycles each
 
 const STOCK_PSB = `switch_prg_bank:
@@ -238,14 +287,8 @@ export async function buildSplitRing({ cell, gt = 'action', placement = 'residen
     const sym = built.symbols;
     for (const n of [...RAM_NAMES, ...(lifecycle ? LC_RAM_NAMES : []), 'SPL_BOX', 'FONT_R1', 'ST_GAMEPLAY', 'BOX_MT_ROW', ...(lifecycle ? ['SPL_BATTLE', 'SPL_TITLE', 'ST_TITLE', 'ST_BATTLE', 'BC_FIGHT', 'BATTLE_BANK', 'BT_BOX_ROW'] : [])]) if (!sym.has(n)) throw new Error(`${n} did not resolve out of this build's own constants.asm/config.inc`);
     for (const n of FNS) if (!Number.isFinite(built.fns[n])) throw new Error(`${n} is not a symbol of this build (SPLIT_ENABLED off, or the harness did not assemble)`);
-    // the harness bytes live where nothing else does: no equate of this build's constants.asm covers $07E0-$07EF
-    const constants = readTreeText(t, 'engine/constants.asm');
-    for (const m of constants.matchAll(/^(\w+)\s*=\s*\$([0-9A-Fa-f]+)\b[^\n]*$/gm)) {
-      const a0 = parseInt(m[2], 16);
-      const sz = /@size=(\w+)/.exec(m[0]);
-      const len = sz ? (/^\d+$/.test(sz[1]) ? Number(sz[1]) : (sym.has(sz[1]) ? sym.get(sz[1]) : 1)) : 1;
-      if (a0 < 0x07f0 && a0 + len > 0x07e0 && a0 >= 0x0100 && a0 < 0x0800) throw new Error(`harness RAM $07E0-$07EF collides with ${m[1]} ($${m[2]} +${len})`);
-    }
+    // the harness bytes live where nothing else does: no allocation of this build's own constants.asm / config.inc / cartridge.inc overlaps HD_RESERVATION
+    checkHarnessReservation({ constantsText: readTreeText(t, 'engine/constants.asm'), symbols: sym });
     const outd = outDir ?? built.dir;
     fs.mkdirSync(outd, { recursive: true });
     const romPath = path.join(outd, 'sw_split.nes');

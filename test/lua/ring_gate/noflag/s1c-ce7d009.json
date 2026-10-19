@@ -1,0 +1,50 @@
+{
+ "nmi-even": {
+  "sw_nmi.nes": "29f7f61ab631cb1bcb35f59526eca11dfdf96a74f081fc1610b8166365911adf",
+  "sw_nmi_deadline.lua": "94611da77547ddfc974f503c981b892e93d2ad50edb106eca3065fb28f157893"
+ },
+ "nmi-even-chunk4": {
+  "sw_nmi.nes": "4652bdc1525359d448c2e7cd0975c3f916c0b9f09ebe5d8857d1b948c63e12b8",
+  "sw_nmi_deadline.lua": "9a3ee3b9294321429ca5190c6d86774a0877a2d38d2366ed52a4b7de74db1cf3"
+ },
+ "nmi-even-mixed3": {
+  "sw_nmi.nes": "5ae053627e8ea1ecb32ecd6828dc99933e614d144f3246f06142ddfe6c8ce4d5",
+  "sw_nmi_deadline.lua": "87ecda065975d1182f57af9bb21e1a2b5f90740b42ea93410a9d05a40a972f8a"
+ },
+ "nmi-odd": {
+  "sw_nmi.nes": "e5154da85338fbc9178fbd12742471ed3ec290e05824f0665890ab5eeb6a7770",
+  "sw_nmi_deadline.lua": "94611da77547ddfc974f503c981b892e93d2ad50edb106eca3065fb28f157893"
+ },
+ "nmi-odd-chunk4": {
+  "sw_nmi.nes": "66e2af1d2adce351fcf674c3719fdac3337838571974389e44542d8ef2459e1d",
+  "sw_nmi_deadline.lua": "9a3ee3b9294321429ca5190c6d86774a0877a2d38d2366ed52a4b7de74db1cf3"
+ },
+ "nmi-odd-mixed3": {
+  "sw_nmi.nes": "9ad94ce99d9a4410ca5694213e7cd27211146209ee4d5cf37f029168d8412c47",
+  "sw_nmi_deadline.lua": "87ecda065975d1182f57af9bb21e1a2b5f90740b42ea93410a9d05a40a972f8a"
+ },
+ "close-resident": {
+  "sw_close_deadline.nes": "73824bfef3d6d5fc66cd5e768057c9fd681646e723e66d960151ba5bf851ad5a",
+  "sw_close_deadline.lua": "0867d1a09768fe63bd257943c6806abbdb761d01e7dd5f0bb36ac9763ca5fb55"
+ },
+ "close-resident-no-flash": {
+  "sw_close_deadline.nes": "73824bfef3d6d5fc66cd5e768057c9fd681646e723e66d960151ba5bf851ad5a",
+  "sw_close_deadline.lua": "3226fc44b50c97f3ce359af711d9ebac79214727a0d8e1f7e0f9e94d93c145e6"
+ },
+ "close-resident-slow-drain": {
+  "sw_close_deadline.nes": "f9acdbfced1ecfc3b0b187d379fcf6075b6f47fe2ba7edbce10a0689f78e096a",
+  "sw_close_deadline.lua": "f7f374962584f34cc711b00dd507443dc87c656100c34850c68fb62b7c574961"
+ },
+ "close-banked": {
+  "sw_close_deadline.nes": "b13e8284c870fef5d36a2a25976a135598befda6a72130fe95db77b076b02fd0",
+  "sw_close_deadline.lua": "8e694801117ab0938c7efb8227be1951cf0d69178f95f47045aa20fbe85d48b0"
+ },
+ "close-banked-no-flash": {
+  "sw_close_deadline.nes": "b13e8284c870fef5d36a2a25976a135598befda6a72130fe95db77b076b02fd0",
+  "sw_close_deadline.lua": "170d7025e563f9894769b6e182d8d461ecd43709a0321635d409aeb12cb0ab37"
+ },
+ "close-banked-slow-drain": {
+  "sw_close_deadline.nes": "4a5716f736c18ad1d3fda83dc3a8028090ac1b01c82da030049e1dcd68624bbe",
+  "sw_close_deadline.lua": "59857db27e7933310ec27777c6c70166d5af538c9450ab996f939f237140e307"
+ }
+}

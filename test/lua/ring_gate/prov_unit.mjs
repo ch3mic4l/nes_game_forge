@@ -231,16 +231,17 @@ test('harnessFingerprint covers EVERY script the matrix executes (argv[0] of eac
 });
 
 // ---- C3 fix 4 (review 4, item 3): every non-script input the certificate reads is TRACKED, fingerprinted and required ------------------------------------------------------
-test('the two no-flag jobs read the tracked baselines (s1c cd7a9f8, s1b aaa678a; never handoff-next), and both baselines, the historical s1b file and every S1b real-record fixture file are hashed into the fingerprint', () => {
+test('the two no-flag jobs read the tracked baselines (s1c and s1b ce7d009, the C6b commit; never handoff-next), and both baselines, the three superseded no-flag files (s1b cd7a9f8 and aaa678a, s1c cd7a9f8) and every S1b real-record fixture file are hashed into the fingerprint', () => {
   const noflag = Object.fromEntries(jobs('/p', '/l').filter((j) => /^s1[bc]-noflag$/.test(j.name)).map((j) => [j.name, j.argv]));
   assert.deepEqual(Object.keys(noflag).sort(), ['s1b-noflag', 's1c-noflag']);
-  assert.deepEqual(noflag['s1c-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json']);
-  assert.deepEqual(noflag['s1b-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1b-aaa678a.json']);
-  assert.deepEqual(Object.values(NOFLAG_BASELINES).sort(), ['test/lua/ring_gate/noflag/s1b-aaa678a.json', 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json']);
+  assert.deepEqual(noflag['s1c-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1c-ce7d009.json']);
+  assert.deepEqual(noflag['s1b-noflag'].slice(1), ['check', 'test/lua/ring_gate/noflag/s1b-ce7d009.json']);
+  assert.deepEqual(Object.values(NOFLAG_BASELINES).sort(), ['test/lua/ring_gate/noflag/s1b-ce7d009.json', 'test/lua/ring_gate/noflag/s1c-ce7d009.json']);
+  assert.deepEqual(Object.values(NOFLAG_HISTORY).sort(), ['test/lua/ring_gate/noflag/s1b-aaa678a.json', 'test/lua/ring_gate/noflag/s1b-cd7a9f8.json', 'test/lua/ring_gate/noflag/s1c-cd7a9f8.json'], 'the three superseded files stay required, fingerprinted inputs');
   const fp = harnessFingerprint();
   const want = [...Object.values(NOFLAG_BASELINES), ...Object.values(NOFLAG_HISTORY), ...S1B_R3_REAL.logs.map((f) => `${S1B_R3_REAL.dir}/logs/${f}`), ...S1B_R3_REAL.prov.map((f) => `${S1B_R3_REAL.dir}/prov/${f}`)];
-  assert.deepEqual([...want].sort(), [...REQUIRED_DATA].sort(), 'REQUIRED_DATA is exactly the baselines, the historical s1b file and the fixture files');
-  assert.equal(want.length, 2 + 1 + 4 + 1);
+  assert.deepEqual([...want].sort(), [...REQUIRED_DATA].sort(), 'REQUIRED_DATA is exactly the baselines, the historical no-flag files and the fixture files');
+  assert.equal(want.length, 2 + 3 + 4 + 1);
   for (const f of want) {
     assert.ok(!/handoff-/.test(f), `${f} must not live under an ignored handoff directory`);
     assert.ok(EXTRA_ROOT.includes(f), `${f} is a required root input`);
@@ -248,8 +249,10 @@ test('the two no-flag jobs read the tracked baselines (s1c cd7a9f8, s1b aaa678a;
   }
 });
 const HISTORICAL_S1B_SHA = 'ac88beeb60fb4c730ceeac03d805e8611aa868a2bc2d7f6c3f61ab7b9dbec251'; // noflag/s1b-cd7a9f8.json as recorded at cd7a9f8 (reproduced byte for byte at RULE-A)
-test('RULE-A continuity: the active S1b no-flag baseline (aaa678a) keeps every project/rom/scene.nes/manifest.lua hash of the superseded cd7a9f8 file; only symbols.json differs, in every configuration', () => {
-  const o = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1b), 'utf8')), n = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_BASELINES.s1b), 'utf8'));
+const HISTORICAL_S1B_AAA_SHA = 'fec88c0a5f9f0b834c68d3540bb59f660d2650d324ad72d95bbfeda2dd47db27'; // noflag/s1b-aaa678a.json as recorded at aaa678a (S3 C1), the active S1b baseline until Equipment C6c (E14)
+const HISTORICAL_S1C_SHA = '00db040ed432cf6bbc7e5de10c4095defafe00f6eba471d242f500045e6f7a88'; // noflag/s1c-cd7a9f8.json as recorded at cd7a9f8 (S2 C2), the active S1c baseline until Equipment C6c (E15)
+test('RULE-A continuity (superseded): the S1b no-flag file aaa678a keeps every project/rom/scene.nes/manifest.lua hash of the older cd7a9f8 file; only symbols.json differs, in every configuration', () => {
+  const o = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1b), 'utf8')), n = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1bPrev), 'utf8'));
   assert.deepEqual(Object.keys(n), Object.keys(o), 'same configurations in the same order');
   assert.equal(Object.keys(o).length, 11);
   for (const c of Object.keys(o)) {
@@ -261,6 +264,75 @@ test('RULE-A continuity: the active S1b no-flag baseline (aaa678a) keeps every p
   }
   // the historical file itself is pinned to its recorded bytes (it is evidence, never edited)
   assert.equal(sha256(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1b))), HISTORICAL_S1B_SHA);
+  // and so is the aaa678a file, now history too: both superseded S1b files, and the superseded S1c file, are pinned to their bytes
+  assert.equal(sha256(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1bPrev))), HISTORICAL_S1B_AAA_SHA);
+  assert.equal(sha256(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1cPrev))), HISTORICAL_S1C_SHA);
+});
+// Equipment C6c (E14): the S1b baseline moved from aaa678a to ce7d009 (the C6b commit). The delta is EXACT and attributed (handoff-next/equip/c6/noflag/audit.md, section 21): C2 added party[].startEquip (project, all 11),
+// C3/C4/C5b added symbols and C1b shifted the RPG code.* addresses by +6 (symbols.json, all 11), C1b and C3b moved the three RPG ROMs (rom + scene.nes). The rendered Lua and every action ROM are untouched.
+const S1B_RPG_CONFIGS = ['manifest-rpg-walk', 'manifest-rpg-name', 'move-rpg-flash-flash'];
+test('S1b continuity aaa678a -> ce7d009 (E14): the same 11 configurations; manifest.lua equal in all 11; rom and scene.nes equal in the 8 action configurations and different in exactly the 3 RPG ones; project and symbols.json different in all 11 (28 of 55 differ, 27 equal)', () => {
+  const o = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1bPrev), 'utf8')), n = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_BASELINES.s1b), 'utf8'));
+  assert.deepEqual(Object.keys(n), Object.keys(o), 'same configurations in the same order');
+  assert.equal(Object.keys(o).length, 11);
+  let differ = 0, equal = 0;
+  for (const c of Object.keys(o)) {
+    assert.deepEqual(Object.keys(n[c]), Object.keys(o[c]), `${c}: same artifact keys`);
+    for (const k of Object.keys(o[c])) {
+      const rpgRom = (k === 'rom' || k === 'scene.nes') && S1B_RPG_CONFIGS.includes(c);
+      const mustDiffer = k === 'project' || k === 'symbols.json' || rpgRom;
+      if (mustDiffer) assert.notEqual(n[c][k], o[c][k], `${c}/${k} must differ from aaa678a`); else assert.equal(n[c][k], o[c][k], `${c}/${k} must keep its aaa678a hash`);
+      if (n[c][k] === o[c][k]) equal++; else differ++;
+    }
+  }
+  assert.deepEqual([differ, equal], [28, 27]);
+});
+test('S1b project continuity (E14): rebuilding each of the 11 configurations in memory exactly as s1b_noflag.mjs does and deleting party[].startEquip (in this test only) reproduces the aaa678a project hash, so the project delta is exactly the C2 schema addition', async () => {
+  const src = fs.readFileSync(path.join(HERE, 's1b_noflag.mjs'), 'utf8');
+  const CONFIGS = new Function(`return ${src.match(/export const CONFIGS = (\[[\s\S]*?\n\]);/)[1]}`)();
+  const old = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1bPrev), 'utf8'));
+  assert.deepEqual(CONFIGS.map((c) => c.id), Object.keys(old), 'the recorder\'s configurations are the baseline\'s');
+  const { runManifest } = await import('../run_sw_manifest.mjs');
+  const { measureMove } = await import('../run_sw_move_manifest.mjs');
+  const realStringify = JSON.stringify;
+  let seen = null;
+  // projectHash() is sha256(JSON.stringify(project)): capture the very object the harness hashes, then hash it again with startEquip deleted from a clone
+  JSON.stringify = function (v, ...rest) { if (v && typeof v === 'object' && Array.isArray(v.party) && Array.isArray(v.maps)) seen = v; return realStringify(v, ...rest); };
+  try {
+    for (const cfg of CONFIGS) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ring-noflag-proj-'));
+      try {
+        seen = null;
+        let res;
+        if (cfg.kind === 'manifest') res = await runManifest({ ...cfg.opts, outDir: dir, prepareOnly: true });
+        else ({ res } = await measureMove({ ...cfg.opts, outDir: dir, prepareOnly: true }));
+        assert.ok(seen, `${cfg.id}: the harness hashed a project`);
+        assert.equal(sha256(realStringify(seen)), res.prov.project, `${cfg.id}: the captured object is the one the harness hashed`);
+        assert.ok(seen.party.some((m) => 'startEquip' in m), `${cfg.id}: the project carries the C2 startEquip default (else the strip proves nothing)`);
+        const stripped = structuredClone(seen);
+        for (const m of stripped.party) delete m.startEquip;
+        assert.equal(sha256(realStringify(stripped)), old[cfg.id].project, `${cfg.id}: minus startEquip the project is the aaa678a project`);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    }
+  } finally { JSON.stringify = realStringify; }
+});
+// Equipment C6c (E15): the S1c baseline moved from cd7a9f8 to ce7d009. Exactly the six close-deadline ROMs moved (the close-deadline builders assemble the RPG scene: C1b, then C3b); no NMI ROM, no rendered Lua moved.
+test('S1c continuity cd7a9f8 -> ce7d009 (E15): the same 12 configurations and artifact keys; the 6 nmi-* ROM and Lua hashes equal; the 6 close-* Lua hashes equal; the 6 close-* sw_close_deadline.nes hashes different (6 of 24 differ)', () => {
+  const o = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_HISTORY.s1cPrev), 'utf8')), n = JSON.parse(fs.readFileSync(path.join(REPO, NOFLAG_BASELINES.s1c), 'utf8'));
+  assert.deepEqual(Object.keys(n), Object.keys(o), 'same configurations in the same order');
+  assert.equal(Object.keys(o).length, 12);
+  assert.equal(Object.keys(o).filter((c) => c.startsWith('nmi-')).length, 6);
+  assert.equal(Object.keys(o).filter((c) => c.startsWith('close-')).length, 6);
+  let differ = 0;
+  for (const c of Object.keys(o)) {
+    assert.deepEqual(Object.keys(n[c]), Object.keys(o[c]), `${c}: same artifact keys`);
+    for (const k of Object.keys(o[c])) {
+      if (c.startsWith('close-') && k === 'sw_close_deadline.nes') assert.notEqual(n[c][k], o[c][k], `${c}/${k} must differ from cd7a9f8`);
+      else assert.equal(n[c][k], o[c][k], `${c}/${k} must keep its cd7a9f8 hash`);
+      if (n[c][k] !== o[c][k]) differ++;
+    }
+  }
+  assert.equal(differ, 6);
 });
 test('SABOTAGE of the required-input rule: a required input that is missing REFUSES the fingerprint (it is never silently omitted), with or without the gap check', () => {
   for (const f of REQUIRED_DATA) {
@@ -480,7 +552,7 @@ const RING_CELL = { 1: REP[1].id, 2: REP[2].id };
 test('BASELINE is a real commit whose engine/main/shared the working tree equals; a ring tree carries no required patch (the refusal lift is retired)', () => {
   assert.match(BASELINE, /^[0-9a-f]{40}$/);
   assert.equal(gitHead('cat-file', '-t', BASELINE), 'commit');
-  assert.equal(BASELINE, 'f3833dbefe85378b6d305f16a0bb341fd5044e96', 'S5 C2: the commit that admits a streamed RPG on the two-nametable ring (UNROM 512, MMC1, MMC3), so production refuses none of the 18 cells');
+  assert.equal(BASELINE, 'ce7d0091ca6c016bfdfc5a3369af329fb3ba8bf9', 'Equipment C6b: the commit whose engine/main/shared the matrix certifies; it carries f3833db\'s ring admission (UNROM 512, MMC1, MMC3), so production refuses none of the 18 cells');
   assert.deepEqual(patchSetFor(false), []);
   assert.throws(() => patchSetFor(true), /refusal lift .* is retired at S5 C3/);
   assert.equal(LIFT_PATCH, '00-refusal-lift.patch');

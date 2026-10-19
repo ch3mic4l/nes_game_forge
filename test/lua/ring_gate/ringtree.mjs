@@ -4,7 +4,7 @@
 // fallback counted as a ring pass is the exact defect the row-1 identity cell exists to catch.
 //
 // Two kinds of ring tree, by STREAM_RING mode. Phase 3b S2 rebaselined the gate onto C2's production vertical ring, S3 C2 onto C1's production horizontal ring, S4a C2 onto the commit that admits the ring on MMC3 for
-// action games, S4b C2 onto the one that admits it on MMC1, S4c C2 onto the one that admits it on UNROM 512, S5 C3 onto the one that admits a streamed RPG (f3833db); ALL of it is production code and the gate patches in NOTHING but a control's own sabotage:
+// action games, S4b C2 onto the one that admits it on MMC1, S4c C2 onto the one that admits it on UNROM 512, S5 C3 onto the one that admits a streamed RPG (f3833db), Equipment C6c onto the C6b commit (ce7d009: f3833db's rings plus the equipment work, C1b and C3b moving every RPG ROM); ALL of it is production code and the gate patches in NOTHING but a control's own sabotage:
 //   ring 1 (vertical)   = BASELINE (+ the sabotage's ring-1 form on a control job). The vertical ring's forks are C2's SHIPPED code, byte for byte.
 //   ring 2 (horizontal) = BASELINE (+ the sabotage's ring-2 form on a control job). The horizontal ring's forks are C1's SHIPPED code, byte for byte
 //                         (the S1 prototype's 01-ring-select / 02-ring-engine / 03-player-far-branch are RETIRED: see RETIRED_PATCHES).
@@ -56,8 +56,8 @@ export const RETIRED_PATCHES = {
     shipped: [['engine/player.asm', ['ring_far1:', 'bne ring_far1']]], absent: [] }
 };
 const COPIED = ['engine', 'main', 'shared'];
-/** The certification baseline: the tree makeTree copies must equal it (S5 commit C2, f3833db: the production vertical AND horizontal rings, admitted on UNROM 512, MMC1 and MMC3 for action AND rpg games -- nothing is refused, so nothing is lifted). */
-export const BASELINE = 'f3833dbefe85378b6d305f16a0bb341fd5044e96';
+/** The certification baseline: the tree makeTree copies must equal it (Equipment C6c, the C6b commit ce7d009; the rings are f3833db's, S5 commit C2: the production vertical AND horizontal rings, admitted on UNROM 512, MMC1 and MMC3 for action AND rpg games -- nothing is refused, so nothing is lifted). */
+export const BASELINE = 'ce7d0091ca6c016bfdfc5a3369af329fb3ba8bf9';
 /** The baseline the S1b certificate (rounds 1-3) was built at, before the rebaseline onto C2: the only baseline a historical re-judgment (s1b_rejudge.mjs) may carry. */
 export const PRE_C2_BASELINE = '5138c1f0c33107016a90423da17dcbb33d8697ca';
 
@@ -83,7 +83,7 @@ function baselineCartridge() {
 }
 /**
  * Would the cell `cell` ({ mapper, mirroring }) running game type `gameType` need a refusal lift? Exactly when production REFUSES that board / mirroring / game type:
- * `!streamRingAdmitted(...)` read from BASELINE's shared/cartridge.js (the datum validateProject itself asks). At f3833db the answer is false for all 18 cell x game-type pairs (checkNoLiftNeeded), and the
+ * `!streamRingAdmitted(...)` read from BASELINE's shared/cartridge.js (the datum validateProject itself asks). At BASELINE (as at f3833db before it) the answer is false for all 18 cell x game-type pairs (checkNoLiftNeeded), and the
  * lift is retired: this is the GUARD every runner and the audit call (a true answer makes makeCellTree throw and the audit fail), none restates a board list. `gameType` is required.
  */
 export function liftNeeded(cell, gameType) {

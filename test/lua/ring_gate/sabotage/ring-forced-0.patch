@@ -1,8 +1,8 @@
 diff --git a/a/main/build/generate.js b/b/main/build/generate.js
-index 31f2411..90e728f 100644
+index 8338600..7885f59 100644
 --- a/a/main/build/generate.js
 +++ b/b/main/build/generate.js
-@@ -4093,7 +4093,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+@@ -4260,7 +4260,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
    // Phase 3b S2/S3: the streamed ring's geometry, from ONE predicate (streamplacement.js projectStreamRing -> shared/cartridge.js
    // streamRingMode): 1 vertical, 2 horizontal. validateProject admits action games and RPGs on MMC3, MMC1 and UNROM 512 on a ring (S4a / S4b / S4c / S5, streamRingAdmitted),
    // so a two-nametable build on any other board is reachable only through the test-only bypass copy (test/lib/ringbypass.js).

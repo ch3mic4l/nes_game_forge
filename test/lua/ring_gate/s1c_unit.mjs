@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { renderSections } from './ringsections.mjs';
 import { vblankMargin, modelNmi, judgeNmi, splitArmed, parseNmiOutput, GEOM, planCases, requiredCover, worstMetatiles, queueShape, packetsFor, SHAPE_A, SHAPE_B } from './ringnmi.mjs';
 import { parseQueue, queueProblems, judgeClose, parseCloseOutput, closeShape } from './ringclose.mjs';
-import { analyze, judgeSplit, judgeLifecycle, foldLifecycle, parseSplitOutput, SPLIT_SABOTAGES, harnessPsb } from './ringsplit.mjs';
+import { analyze, judgeSplit, judgeLifecycle, foldLifecycle, parseSplitOutput, SPLIT_SABOTAGES, harnessPsb, buildSplitRing, checkHarnessReservation, hdLayout, HD, HD_RESERVATION } from './ringsplit.mjs';
 import { CONTROLS, controlIds, declaredFor, controlBuilds, controlFlags, controlHasForm, CELL_IDS, MMC3_CELLS, positiveLabel, controlLabel, REQUIRED_ITEMS, requiredItems } from './s1ccontrols.mjs';
 import { validateS1cResult, decodeLabel, recomputeVerdict } from './s1caudit.mjs';
 import zlib from 'node:zlib';
@@ -26,7 +26,7 @@ import { longestPath, nmiBound, maxQSum, certifiedMargin, decode, fixedBank, swe
 import { buildNmiRing, wcetFor } from './ringnmi.mjs';
 import { makeCellTree } from './ringtree.mjs';
 import { sabotageRings } from './ringsabotage.mjs';
-import { CELLS } from './ringworld.mjs';
+import { CELLS, cellById } from './ringworld.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -1453,4 +1453,53 @@ test('S5 C3: a row-8 RPG stamp retains the three-invocation session (plain run, 
   assert.ok(audit([rpg], { [rpg.label]: (st) => { st.plan.lifecycle.romSha256 = st.romSha256; st.plan.sha256 = sha256(JSON.stringify((({ sha256: _s, ...q }) => q)(st.plan))); } }).some((m) => /does not name its lifecycle ROM/.test(m)), 'the lifecycle ROM is the plain ROM');
   assert.ok(audit([act], { [act.label]: (st) => { st.plan.lifecycle = { romSha256: H64b, luaSha256: H64, purposes: [] }; st.plan.sha256 = sha256(JSON.stringify((({ sha256: _s, ...q }) => q)(st.plan))); } }).some((m) => /only a row-8 RPG session carries a lifecycle/.test(m)), 'a lifecycle on an action stamp');
   assert.ok(audit([r5], { [r5.label]: (st) => { st.mesenChain.push({ ...st.mesenChain[0], n: 2, purpose: 'row8-split-lc-a', spec: 'row8-split-lc-a' }); } }).some((m) => /exactly its 1 Mesen invocation/.test(m)), 'a second invocation on a row-5 run');
+});
+
+// ---- the row-8 harness RAM reservation (E20): one declaration, a guard that resolves the build's own allocation names ------------------------------------------------------------
+// The pilot failed 36 of 36 row-8 jobs because Equipment C3 put pc_eq_atk..pc_eq_mdef on the old $07E0-$07EF reservation. The wrong implementations these controls name: a guard that reads only
+// literal-$hex equates (missed every expression-based address), one that reads an unresolved @size as one byte, one that tests only the START of an allocation, and an HD that stops following its reservation.
+const synthText = (lines) => lines.join('\n');
+const synthSyms = (extra = []) => {
+  const m = new Map(Array.from({ length: 60 }, (_, i) => [`filler_${i}`, 0x0300 + i]));
+  for (const [n, a] of extra) m.set(n, a);
+  return m;
+};
+test('HD derives from the one reservation: $07C0-$07CF, preLo $07C0, preHi $07C1, gaps $07C2-$07C6; a layout outside its reservation is refused', () => {
+  assert.deepEqual(HD_RESERVATION, { base: 0x07c0, length: 16 });
+  assert.deepEqual(HD, { preLo: 0x07c0, preHi: 0x07c1, gap: [0x07c2, 0x07c3, 0x07c4, 0x07c5, 0x07c6] });
+  assert.deepEqual(hdLayout({ base: 0x0400, length: 16 }), { preLo: 0x0400, preHi: 0x0401, gap: [0x0402, 0x0403, 0x0404, 0x0405, 0x0406] }, 'moving the declaration moves every harness byte');
+  assert.throws(() => hdLayout({ base: 0x0400, length: 4 }), /outside its reservation/);
+});
+test('checkHarnessReservation: the full interval of each allocation is tested against the full reservation (boundaries, a start below that reaches in, a start inside)', () => {
+  const run = (addr, size) => checkHarnessReservation({ constantsText: synthText([`edge_arr = $${addr.toString(16)} ; @size=${size}`]), symbols: synthSyms([['edge_arr', addr]]) });
+  assert.ok(run(0x07bf, 1) > 50, 'one byte just below passes');
+  assert.ok(run(0x07d0, 4), 'just above passes');
+  assert.ok(run(0x07b0, 16), 'a block ending at $07BF passes');
+  assert.throws(() => run(0x07c0, 1), /collides with edge_arr/);
+  assert.throws(() => run(0x07cf, 1), /collides with edge_arr/, 'the last reserved byte');
+  assert.throws(() => run(0x07b0, 17), /collides with edge_arr/, 'a start below the reservation whose size reaches its first byte (a start-only test passes this)');
+  assert.throws(() => run(0x07c8, 1), /collides with edge_arr/, 'a start inside');
+  assert.throws(() => checkHarnessReservation({ constantsText: '', symbols: synthSyms([['edge_arr', 0x07c0]]) }), /collides with edge_arr/, 'an allocation with no @size is one byte');
+});
+test('checkHarnessReservation: an unresolved @size is refused, never read as one byte; an unresolved address is refused; only RAM-named equates are allocations', () => {
+  const sym = synthSyms([['wide_arr', 0x07b8]]);
+  assert.throws(() => checkHarnessReservation({ constantsText: 'wide_arr = $07B8 ; @size=NO_SUCH_COUNT', symbols: sym }), /@size=NO_SUCH_COUNT did not resolve/, 'a one-byte fallback would pass this and miss a 16-byte array reaching the reservation');
+  assert.throws(() => checkHarnessReservation({ constantsText: 'UPPER_ARR = $0700 ; @size=NO_SUCH_COUNT', symbols: synthSyms() }), /did not resolve/, 'every annotation must resolve, whatever its name');
+  assert.throws(() => checkHarnessReservation({ constantsText: 'wide_arr = $07B8 ; @size=0', symbols: sym }), /did not resolve to a positive integer/);
+  assert.throws(() => checkHarnessReservation({ constantsText: '', symbols: synthSyms([['bad_addr', NaN]]) }), /bad_addr did not resolve to a non-negative integer address/);
+  // a symbolic size resolves through the table, and an UPPER_CASE constant at the address is not a RAM allocation
+  assert.throws(() => checkHarnessReservation({ constantsText: 'wide_arr = $07B8 ; @size=ARR_LEN', symbols: synthSyms([['wide_arr', 0x07b8], ['ARR_LEN', 16]]) }), /collides with wide_arr \(\$07B8 \+16\)/);
+  assert.ok(checkHarnessReservation({ constantsText: '', symbols: synthSyms([['SOME_CONSTANT', 0x07c0]]) }), 'a constant that is not a RAM name (UPPER_CASE) is not an allocation');
+  assert.throws(() => checkHarnessReservation({ constantsText: '', symbols: new Map([['only_one', 0x0300]]) }), /read the wrong table/, 'a near-empty table is a wrong read, not a pass');
+});
+test('the real build: the old $07E0-$07EF reservation collides with pc_eq_atk (the pilot failure), the new $07C0-$07CF one passes, and the HD addresses reach the generated Lua', async () => {
+  const b = await buildSplitRing({ cell: cellById('MMC3-V'), gt: 'rpg', placement: 'resident', label: 's1c-unit-reservation' });
+  try {
+    const constantsText = fs.readFileSync(path.join(b.built.dir, 'build/constants.asm'), 'utf8');
+    assert.ok(checkHarnessReservation({ constantsText, symbols: b.built.symbols }) > 50, 'the new reservation passes (buildSplitRing already ran it)');
+    assert.throws(() => checkHarnessReservation({ constantsText, symbols: b.built.symbols, reservation: { base: 0x07e0, length: 16 } }), /collides with pc_eq_atk \(\$07E0 \+4\)/, 'the old reservation against the current tree');
+    const lua = fs.readFileSync(b.luaPath, 'utf8');
+    assert.ok(lua.includes(`hd_pre_lo=${0x07c0}`) && lua.includes(`hd_pre_hi=${0x07c1}`) && lua.includes(`hd_g={${HD.gap.join(',')}}`), 'the rendered Lua carries the new addresses');
+    assert.ok(!/2016\b|0x07e0|0x7e0/i.test(lua), 'and none of the old $07E0');
+  } finally { b.dispose(); }
 });
