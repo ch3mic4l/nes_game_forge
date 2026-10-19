@@ -85,6 +85,19 @@ than a copy — two editing surfaces for one record is the drift this codebase r
 before the splice. `animationPickerOptions` answers a stale id with "Missing animation N", not a
 rewrite.
 
+**Equipment ownership (ROADMAP item 5, `docs/design-equipment.md` sections 5 and 6).** A party member's starting gear is `project.party[n].startEquip`
+(one item id or `null` per slot, `EQUIP_SLOTS` order); a piece's wearers are bits of `project.items[].equip.usableBy` (bit `n` = party member
+`n`). Both are indexes, so both have a deletion owner. `renumberItemDeletion` owns every item-id reference, `startEquip` included: the deleted
+piece becomes `null`, a higher id shifts down. `renumberPartyMemberDeletion` drops the removed member's bit from every `usableBy` (an index
+outside 0-7 leaves a mask unchanged), and `grantNewMember(project, index)` is its mirror, called in the **same** `store.commit` as the Character
+Forge's Add: a piece whose `usableBy` covered everyone gains the newcomer, so "everyone" keeps meaning everyone. `releaseEquipment(project,
+itemId, newSlot)` clears every `startEquip` entry naming `itemId` in any slot other than `newSlot` (omitted = the item stopped being a piece); the Items
+Forge calls it in the commit that changes a piece, because `commit()` never runs `normalizeProject`. The save field is `pc_equip` (12 bytes, slot-major), present **only** when `projectUsesEquipment`
+(`saveFields(project)` in `shared/save.js`); `saveIdentity` folds in a `1` only for such a project, so every other project's identity is
+byte-identical and an equipment save is refused by a build without equipment and vice versa. **`SAVE_LAYOUT_VERSION` is not bumped for it.**
+`save_check_valid` bounds each saved id (`NO_ITEM` or an item of this build) and `equip_recalc` is the second line of defence; the bonus arrays are
+never saved (`docs/reference-battle-system.md`).
+
 **`SAVE_LAYOUT_VERSION` is 3**, bumped 1→2 when `inv_items`' own bytes started meaning an item
 id rather than an actor id, then 2→3 when name entry (phase 1) added `pc_name_ram` to the body —
 both cases `saveIdentity`'s own derived sizes cannot catch and what the version byte exists for. A

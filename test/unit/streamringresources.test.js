@@ -166,7 +166,7 @@ for (const id of SIX_CELLS) {
 
 // ---- (i) the RPG depth pin: the structural region ceiling, not the workload one ----
 // RPG_CEILING = 62 regions (UNROM 512; MMC1 and MMC3 keep CHR in ROM: their own counts) - 1 minimum CHR payload - 1 RPG code region, for ANY RPG project. RPG_CERTIFIED = the N of
-// the ring gate's RPG cells in the S5 C3 certificate (handoff-next/s5-c3-logs-final/s1b-<MMC1|MMC3|U512>-H-rpg-{resident,banked}.json, field `n`). Hardcoded on purpose: a test that
+// the ring gate's RPG cells in the C6 certificate (unchanged from S5 C3) (handoff-next/equip/c6/logs-final/s1b-<MMC1|MMC3|U512>-H-rpg-{resident,banked}.json, field `n`). Hardcoded on purpose: a test that
 // read the ceiling from the code under test proves nothing. The UNROM 512 difference (60 vs 59) is the one-tileset RPG, which the S5 C3 gate measured; RPG_TWO_TILESET is the depth
 // of the default two-tileset workload (the S4c C2 certificate's U512-H cells, and the gate's campaign scenes still).
 const RPG_CEILING = { 'MMC1-H': 13, 'MMC3-H': 29, 'U512-H': 60 };

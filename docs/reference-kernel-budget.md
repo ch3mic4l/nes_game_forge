@@ -844,13 +844,17 @@ across the three boards and two game types is a measured result, not an assumpti
 **code** for the Equip screen (its strings and labels are another 112 emitted bytes and `eq_start` 12 more, 124 together, counted by
 `battleTableBytes`, not by this term). It is measured on MMC1, MMC3 and UNROM 512 in every cell of `BANKED_CELLS` (`test/lib/equipcells.js`,
 which includes hit feedback, miss, battle animation and the streamed worlds the earlier figures only conjoined) and identical to the byte on
-all three boards, so it is one flat term, not `*_BY_MAPPER`. Magic and Magic defence are 25 bytes each, charged only while a piece sets them
-(50 with both). `EQUIP_KERNEL_ALLOWANCE` is **30** bytes of kernel-lo (the `ACT_EQUIP` chain entry, 4, `do_action_equip`, 20, and the 6-byte
+all three boards, so it is one flat term, not `*_BY_MAPPER`. Magic and Magic defence are `EQUIP_MAG_BATTLE_ALLOWANCE` and `EQUIP_MDEF_BATTLE_ALLOWANCE` (`main/build/battletables.js`), 25 bytes each,
+charged only while a piece sets them (50 with both). `EQUIP_KERNEL_ALLOWANCE` is **30** bytes of kernel-lo (the `ACT_EQUIP` chain entry, 4, `do_action_equip`, 20, and the 6-byte
 stop that ends the `dispatch_input` pass after an action opened the screen), plus `EQUIP_SAVE_KERNEL_ALLOWANCE` 19 with Save, 49 in all;
 kernel real equals model in every `KERNEL_CELLS` cell (`kernelbytes.test.js`). The two fix-round additions were measured, not estimated:
 the dispatch stop is +6 kernel (24 -> 30) and the Equip row's deferral test (E12, `docs/reference-engine.md`) +6 banked (1,068 -> 1,074).
 Neither is charged to an equipment-free RPG or to an action project, whose ROM is byte-identical to before (`equipidentity.test.js`,
 including an action project that carries `equip` data and an `equip` binding).
+The B-press fix that shipped with equipment (C1b, `docs/reference-battle-system.md`) is **not** an equipment term: its 6 kernel-lo bytes are
+folded into `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER` (`{1: 239, 4: 250, 30: 239}` for MMC1, MMC3 and UNROM 512), are charged on every RPG board
+whether or not it uses equipment, and are why every RPG board has 6 fewer free kernel-lo bytes than before (the ring certificate's 924 RPG ROMs
+all differ by exactly that, `docs/design-streamed-worlds-phase3b.md` section 21).
 
 **The 49 bytes refuse a world that fitted.** On UNROM 512 a streamed world with Save, and the compact streamed world with Save and the battle
 features, are **20 and 8 bytes over** with one equipment piece (the opener's 49 against the 10 and 22 bytes of kernel-lo the C3 equipment

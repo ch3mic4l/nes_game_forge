@@ -373,7 +373,7 @@ It has 22 entry points
   abandoned the fight and its screen before the battle code read the pad. Battle controls are fixed:
   the battle phases read the pad themselves, and any binding in the battle row, including a
   hand-edited one, is ignored during a fight. Cost: 6 bytes of kernel-lo on every RPG
-  board, folded into `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER`. Held by test/unit/battleinput.test.js
+  board, folded into `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER`. Held by `test/unit/battleinput.test.js`
   (a real fight, its control with the skip cut, field B, the action-ROM byte identity, the 6 bytes on
   each board).
 
@@ -393,8 +393,24 @@ It has 22 entry points
   takes the old one). The opener ends the `dispatch_input` pass (R1): once `do_action_equip` has set `ST_BATTLE` no later button in
   the same pass runs, because the next button would read the *battle* input row (B -> `cancel`, an authored Start -> `pause`) against
   a screen whose intro has not run. A frame that already holds a flip and Flash (more than 35 bytes queued) publishes no row (E12): the
-  bit stays dirty and the row goes out the next frame. Held by test/unit/equipscreen.test.js, which names the wrong
-  implementation each case catches, and by test/lua/run_equip_nmi_check.sh (Mesen: NMI deadline and the MMC3 register file).
+  bit stays dirty and the row goes out the next frame. Held by `test/unit/equipscreen.test.js`, which names the wrong
+  implementation each case catches, and by `test/lua/run_equip_nmi_check.sh` (Mesen: NMI deadline and the MMC3 register file).
+  The screen's exit is `battle_end` (`engine/rpg.asm`, via `eq_leave` above), the same exit a won fight takes, so it redraws the field
+  and releases the freeze; nothing equipment-specific is left running after it.
+
+- **`pc_equip` and the bonus arrays** (equipment C3, `docs/design-equipment.md` sections 3 and 5). `pc_equip` (`engine/constants.asm`,
+  `EQUIP_BYTES` = `RPG_LIMITS.equipSlots * RPG_LIMITS.party` = 12 bytes) is **slot-major**: member `m`'s piece in slot `s` is the byte at
+  index `s * MAX_PARTY + m`, and `NO_ITEM` means empty. `pc_eq_atk`, `pc_eq_def`, `pc_eq_mag` and `pc_eq_mdef` (four bytes each, one per
+  member) are the summed bonuses of the worn pieces: derived data, written only by `equip_recalc` and **never saved**. The `combatant_*`
+  lookups add the member's bonus after the level row (`adc pc_eq_*,x` in `engine/battleturn.asm`, attack, defence, magic and magic
+  defence) and **saturate at 255** rather than wrap; a monster (combatant 4-7) has no bonus. `equip_recalc` runs at exactly three
+  *persistent* triggers: `equip_set` (a wear or take-off on the Equip screen), `equip_init` (a new game copies the generated `eq_start` table into
+  `pc_equip`) and `party_restore` (every member's stats after a load; **Continue is the restore caller**). The Equip screen's preview, `eq_preview_stat`, also
+  recalculates, temporarily: it wears the candidate piece, reads the stat, restores the worn piece and recalculates back. A new
+  *persistent* change to `pc_equip` that does not recalculate would be a stale-bonus bug, and a stored bonus array would be a
+  second copy of the truth. `equip_recalc` is also the sanitizer: an id that
+  names no item of this build, from a save that passed `save_check_valid`'s bound, is emptied rather than trusted. Held by
+  `test/unit/equipengine.test.js`.
 
 ### Topic list moved from CLAUDE.md, The battle system
 

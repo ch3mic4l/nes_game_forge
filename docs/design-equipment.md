@@ -1,7 +1,7 @@
 # Design: equipment (ROADMAP item 5, the next piece)
 
-Status: **proposed** -- design round D3 (D1 returned FIX with F1-F8, answered and E5-E8 recorded in D2; D2's review returned FIX on F1 only, which D3 answers, and D3 records Chris's ruling E9).
-**No product code is written by this document.** It settles what ROADMAP item 5's equipment piece builds, with Chris's nine
+Status: **built** (2026-10-19; commits C1 `37ca96f`, C1b `720d976`, C2 `dd7af55`, C3 `31e7fff`, C3b `7294592`, C4 `a5336b3`, C5 `f2e4ebe`, C5b `3ca7b54`, C6a `0e59c68`, C6b `ce7d009`, C6c `afbbc26`, C6d; the **Built** section at the end records what changed from the design below). Originally proposed in design round D3 (D1 returned FIX with F1-F8, answered and E5-E8 recorded in D2; D2's review returned FIX on F1 only, which D3 answers, and D3 records Chris's ruling E9).
+**No product code was written by the design itself.** It settles what ROADMAP item 5's equipment piece builds, with Chris's nine
 rulings (quoted at the end) held fixed. Items (`project.items[]`, their
 effects, the Items Forge) and skills/status effects (the Magic Forge) have shipped; nothing about weapons, armor or slots
 exists anywhere in `shared/`, `main/build/`, `engine/` or `renderer/`.
@@ -633,7 +633,7 @@ harness-only commit sets `BASELINE` in `test/lua/ring_gate/ringtree.mjs` to C5's
 CODE-ACCEPT; (4) **one** full run, `node test/lua/ring_gate/run_matrix.mjs --jobs=18` (about 90 minutes); (5)
 `node test/lua/ring_gate/ringprovindex.mjs --verify` and `test/lua/run_sw_ring_gate.sh <provenance-dir> <matrix-log-dir>`; (6)
 the identity pins (`identitycert`, `identitymatrix`) and the design record's certificate history get the new fingerprint and
-a dated section. **E4 makes this checkable early**: no fixture and no ring cell uses equipment, so the six ROM hashes the certificate stamps into
+a dated section. **[Corrected as built: the identity pins bind to the S3b parent and the sweep stage files, not to the ring fingerprint, so no identity certificate was reissued; the dated section is `docs/design-streamed-worlds-phase3b.md` section 21.]** **E4 makes this checkable early**: no fixture and no ring cell uses equipment, so the six ROM hashes the certificate stamps into
 every record must equal the post-C1b values (the RPG hashes changed once, on purpose, at C1b under E9; the action ones equal the
 previous certificate's). `node test/lua/ring_gate/fixture-hashes.mjs` (a few minutes; it builds the six from
 `mkdtemp` copies) prints them, `fixture-hashes-before.txt` is the precedent for recording the before-state, and a difference means E4 is
@@ -794,3 +794,28 @@ Chris, 2026-10-17 (the briefs' wording, verbatim; E5-E8 were given after D1, E9 
 - **E9 The B-press battle-input bug (2026-10-17):** the B-press battle-input bug is fixed repo-wide, as its own commit right after
   C1 and before any equipment commit. It deliberately changes every RPG ROM and the pinned RPG hashes, and the one certificate
   renewal at the end covers it.
+
+## Built (2026-10-19)
+
+What the build did differently from, or added to, the design above. Commit references are in the Status line.
+
+- **C1 review (F1-F3), as built.** The diagnostic `counts` vector no longer counts quantities its message never states (F1); an aggregate animation
+  error keeps the locations it names (F2); and the producer scan in `test/lib/sourcescan.js` follows returned values, including expression-bodied
+  arrows, conditional and logical branches and spreads of literal arrays, so the two diagnostic producers this change added are found (F3; scope
+  limits are explicit: `return list.map(...)` stays outside it).
+- **E9 / C1b: the B-press fix.** Under `ST_BATTLE` the new `beq dispatch_done` in `dispatch_input` skips the old button-dispatch loop, so a B at the
+  battle command menu no longer runs `do_action_cancel`. It costs 6 kernel-lo bytes on every RPG board (folded into
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER`) and deliberately changed every RPG ROM; the ring certificate's per-cell timing attribution for it is in
+  `docs/design-streamed-worlds-phase3b.md` section 21.
+- **E11 / C3b: the physical-damage fix** is its own commit (two zero-page operands in `physical_damage`), found by the equipment-free high-ATK monster
+  regression, not folded into C3.
+- **E12: the Equip frame's NMI `rti` settles before scanline 257**, not 260. `eq_flush` publishes no row into a frame already holding more than
+  `EQ_QUEUE_MAX` (35) bytes; `docs/reference-engine.md` has the measured scanlines per board.
+- **C5b: the stat preview shows `>`** between the current and candidate value; the glyph is the generated `EQ_CMP_TILE`.
+- **Section 9(6) corrected** (above): the identity pins do not bind to the ring fingerprint.
+- **C6: the certificate renewal** took the `exact` route (the bound curve's figures were unchanged), issued no new identity certificate, and moved the
+  ring gate to baseline `ce7d009` with additive no-flag rebaselines (`s1b-ce7d009.json`, `s1c-ce7d009.json`). Everything it found, decided and
+  proved is in `docs/design-streamed-worlds-phase3b.md` section 21: the matrix (385 jobs, 0 unexpected, GATE PASS 146/54/232/0/0), the row-8 harness
+  RAM collision with `pc_eq_*` and its relocation to `$07C0-$07CF`, the 44-item counterfactual attributing every moved RPG margin to C1b's six bytes and
+  none to C3b, and the `prov_unit.mjs` and `split_prebuild.mjs` checks the release run must include.
+- **Not built (E1):** classes and selectable growth profiles, and encounter groups, remain open on `ROADMAP.md`.

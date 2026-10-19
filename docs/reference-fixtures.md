@@ -55,6 +55,14 @@ the engine behaving as specified, but making the restored bag impossible to asse
 load that came back empty and one that came back correctly both read as "something in the bag" once
 the re-run has refilled it.
 
+## Equipment in tests
+
+**No checked-in fixture gets equipment.** Every equipment test loads `sample-rpg/` (or a streamed variant) with `loadProject()`, edits it in memory and builds it in its own
+`mkdtemp` directory (`test/unit/equipsave.test.js`, `equipengine.test.js`, `equipidentity.test.js`); `equipidentity.test.js` pins that an action project
+and an equipment-free RPG still build byte-for-byte as before. The flash equipment case is a variant of the same kind (`test/lua/build_flash_roms.mjs`).
+Giving a fixture equipment would change its ROM hash and its save identity, so the six keep their hashes (the C3b record is
+handoff-next/equip/c3b/fixture-hashes-after.txt, an ignored evidence file).
+
 ## In-game naming in tests
 
 Moved verbatim out of `CLAUDE.md` on 2026-10-09 (the size trim); the text below is unchanged.

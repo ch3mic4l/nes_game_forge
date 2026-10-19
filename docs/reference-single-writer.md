@@ -99,3 +99,18 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
 
 `shared/` modules must stay free of DOM and Node APIs: they are imported by the main process, the
 renderer, and `node:test` alike.
+
+### Equipment (ROADMAP item 5)
+
+- **The slot list** is `EQUIP_SLOTS = ['weapon', 'armor', 'accessory']` (`shared/project.js`); its length is `RPG_LIMITS.equipSlots` (3), the one
+  number the RAM layout (`pc_equip`'s `EQUIP_BYTES` = `equipSlots * party`, in `config.inc`) and the save field's size both derive from.
+  Never write `3` or `12` anywhere else.
+- **The stat list** is atk / def / mag / mdef: the editor's `EQUIP_STATS` (`renderer/forges/items/equipui.js`) and the engine's
+  `EQUIP_STAT_LABELS` (`main/build/battletables.js`) are the two ends of it, and the `combatant_*` bonus arrays (`pc_eq_*`) a third; a fifth stat
+  is edited in all of them in one change.
+- **Diagnostics** carry `rule`, `subject` and `counts` as structured fields, and a test asserts on those, never on parsed message text. The
+  equipment rules are `equip-ignored-action-game`, `equip-piece-has-effect`, `equip-unbound`, `start-equip-not-a-piece`,
+  `start-equip-wrong-slot` and `start-equip-not-allowed`.
+- **`EQUIP_SAVE_SHIFT`** is generated into `assets/cartridge.inc`, not `config.inc` (`equipSaveShift`, `main/build/generate.js`): it is a
+  cartridge/save-record fact that moves the streamed `sw_*` block, and the harness's own scene builders must scan `cartridge.inc` for it
+  (there is no fallback; a build without the file fails).

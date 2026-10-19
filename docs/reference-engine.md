@@ -418,11 +418,20 @@ on every board and in every mode; the 260 the three sibling checks judge is not 
 row (33) settled on scanline 257 on MMC3, so `eq_flush` publishes no row into a frame that already holds more than `EQ_QUEUE_MAX` (35)
 bytes: the dirty bit stays set and the row goes out next frame (one frame of delay on a static screen; the flip and Flash last a few
 frames). The worst frames it can share are therefore Flash 35 + row 33 + terminator = 69 and flip 10 + row 33 + 1 = 44; the flip + Flash
-frame is 46 with no row. Measured by test/lua/run_equip_nmi_check.sh against Mesen on all three RPG boards (judged `rti` scanline, dot
+frame is 46 with no row. Measured by `test/lua/run_equip_nmi_check.sh` against Mesen on all three RPG boards (judged `rti` scanline, dot
 ~): Equip alone 250 / 251 / 250 (MMC1 / MMC3 / UNROM 512), + flip 252, + Flash 255 (dot ~105 / ~315 / ~140), flip + Flash (row deferred) 252.
 Without the deferral that frame settles on 256 (MMC1, UNROM 512) and 257 (MMC3, dot ~35), which the strict judge rejects (control
 `nodefer`). The unchanged sibling checks and the published 88-byte frame keep their 260 judges. Negative control (an Equip tick that
-publishes every dirty row in one frame) overruns on every board. The MMC3 pins (R6/R7 the field's
+publishes every dirty row in one frame) overruns on every board.
+
+**Equipment's RAM** (equipment C3-C5, all in `engine/constants.asm`, the single allocation map): `pc_equip` `$07D4` (`@size=EQUIP_BYTES`, 12
+bytes, slot-major, saved only when the project uses equipment), `eq_dirty` `$07D2` and `eq_cur_slot` `$07D3` (the Equip screen's dirty-row
+mask and cursor, not saved), and the four derived bonus arrays `pc_eq_atk` `$07E0`, `pc_eq_def` `$07E4`, `pc_eq_mag` `$07E8`, `pc_eq_mdef`
+`$07EC` (four bytes each, not saved; the equates exist even when `EQUIP_ENABLED` is false). A flash save record that stages `pc_equip`
+grows by 12, so the streamed `sw_*` block is placed at `SW_BLK_BASE + EQUIP_SAVE_SHIFT`; `EQUIP_SAVE_SHIFT` is generated into
+`assets/cartridge.inc`, **not** `config.inc` (`main/build/generate.js`, `equipSaveShift`), and is 12 only when stages are in RAM *and* the
+project uses equipment, 0 otherwise. The ring gate's row-8 split harness reserves `$07C0-$07CF` for its own bytes, below `eq_dirty`, and
+its build guard resolves every allocation's `@size` against that range (`docs/design-streamed-worlds-phase3b.md` section 21). The MMC3 pins (R6/R7 the field's
 screen bank, R0-R5 the battle tileset while open and the field's after exit, R1 the font page's bytes at the box's top border and the
 battle tileset's art when idle -- both derived from the build's own `config.inc` and ROM -- the split armed while open and off after)
 are judged in the same script, with a `battle_end` that no longer redraws the field and a split handler that selects the wrong font page
