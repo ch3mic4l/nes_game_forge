@@ -258,11 +258,71 @@ test('judgeSplit: the exact mapper-write totals are asserted, not an interval (o
   assert.equal(byId(items, 'r8:totals').status, 'FAIL');
 });
 test('parseSplitOutput reads frame lines into events in order', () => {
-  const p = parseSplitOutput('F 1 N,100,241,5,36864,0,1,1,0,0,2 S,245,10 U,245,12 W,8000,1,2010,245,10,120 Z,1,1,0,1,1\nDONE ok\nTRIALS planned=2 consumed=2 skipped=0 done=2\n');
+  const p = parseSplitOutput('F 1 N,100,241,5,36864,0,1,1,0,0,2 S,245,10 U,245,12 W,8000,1,2010,245,10,120 Z,1,1,0,1,1\nTRIALS planned=2 consumed=2 skipped=0 done=2\nDONE ok\n'); // the recorder prints TRIALS, then DONE: the DONE line ends what is judged
   assert.deepEqual(p.events.map((e) => e.t), ['N', 'S', 'U', 'W', 'Z']);
   assert.equal(p.events[3].addr, 0x8000);
   assert.equal(p.done, true);
   assert.deepEqual(p.trials, { planned: 2, consumed: 2, skipped: 0, done: 2 });
+});
+// ---- the recorder's terminal line (FU1): the judge sees what was printed up to the first DONE, and what it leaves out is counted
+const F1 = 'F 1 N,100000,241,5,36864,0,1,1,0,0,2 S,245,10 U,245,12 W,8000,1,2010,245,10,100007 Z,1,1,0,1,1';
+const F2 = 'F 2 N,129000,241,5,36864,1,1,1,0,0,2 W,8001,2,2012,245,12,129010 Z,2,1,0,1,1';
+const FLATE = 'F 3 N,158000,241,5,36864,1,1,1,0,0,2 W,e000,0,2014,245,14,158010 Z,3,1,0,1,1'; // a frame that ended after the recorder had already said DONE
+const T2 = 'TRIALS planned=2 consumed=2 skipped=0 done=2';
+test('parseSplitOutput: the F lines after the first DONE are not judged but are counted (post-DONE callbacks must not move the judge, the cut must not be silent)', () => {
+  const clean = [F1, F2, T2, 'DONE frames=2'].join('\n') + '\n';
+  const late = [F1, F2, T2, 'DONE frames=2', FLATE, T2.replace('consumed=2', 'consumed=3'), 'DONE frames=3'].join('\n') + '\n';
+  const p = parseSplitOutput(late), q = parseSplitOutput(clean);
+  assert.equal(p.frames, 2);
+  assert.deepEqual(p.events, q.events, 'the events are the clean stream\'s: the late frame\'s N and W are gone');
+  assert.deepEqual(p.trials, { planned: 2, consumed: 2, skipped: 0, done: 2 }, 'the first TRIALS line, not the late one');
+  assert.equal(p.postDone, 1, 'the dropped F line is observable');
+  assert.equal(p.postDoneLines, 2, 'and so are the late TRIALS and DONE lines');
+  assert.equal(q.postDone, 0); assert.equal(q.postDoneLines, 0);
+  assert.deepEqual(judgeSplit(p, CTX), judgeSplit(q, CTX), 'the judge cannot tell the two streams apart');
+});
+test('parseSplitOutput: an ERROR before DONE is the run\'s error; an ERROR after it is counted and not judged', () => {
+  const before = parseSplitOutput([F1, 'ERROR lifecycle: the battle never ended', 'DONE frames=1'].join('\n') + '\n');
+  assert.equal(before.error, 'lifecycle: the battle never ended');
+  assert.equal(byId(judgeSplit(before, CTX), 'r8:run').status, 'FAIL');
+  assert.match(byId(judgeSplit(before, CTX), 'r8:run').detail, /recorder error: lifecycle: the battle never ended/);
+  const after = parseSplitOutput([F1, F2, T2, 'DONE frames=2', 'ERROR timed out in stage done trial 3'].join('\n') + '\n');
+  assert.equal(after.error, null, 'a post-DONE ERROR is not the run\'s error (Mesen\'s exit status still reports a failed run: run:exit)');
+  assert.equal(after.postDoneLines, 1);
+});
+test('parseSplitOutput: a stream with no DONE line is parsed whole, as before (a cut with no terminal line cuts nothing)', () => {
+  const p = parseSplitOutput([F1, F2, 'ERROR never reached ST_GAMEPLAY within 400 frames'].join('\n') + '\n');
+  assert.equal(p.frames, 2); assert.equal(p.events.length, 8); assert.equal(p.done, false);
+  assert.equal(p.error, 'never reached ST_GAMEPLAY within 400 frames'); assert.equal(p.trials, null);
+  assert.equal(p.postDone, 0); assert.equal(p.postDoneLines, 0);
+  const empty = parseSplitOutput('');
+  assert.equal(empty.frames, 0); assert.equal(empty.done, false);
+});
+test('parseSplitOutput: a lifecycle session is two scripts, each parsed whole from its own stdout (part B is not post-DONE of part A); the retained-raw blob handed over unsplit is visible as post-DONE', () => {
+  const partA = [F1, 'F 2 L,save,2,2,0,0,56,0,0,120,120 Z,2,1,0,1,1', 'TRIALS planned=2 consumed=2 skipped=0 done=2', 'DONE frames=2 sram=128', FLATE].join('\n') + '\n';
+  const partB = ['F 1 N,100000,241,5,36864,0,0,0,0,0,2 L,cont-out,1,2,0,0,56,0,0,120,120 Z,1,1,0,0,0', 'TRIALS planned=0 consumed=0 skipped=0 done=0', 'DONE frames=1 sram=0'].join('\n') + '\n';
+  const a = parseSplitOutput(partA), b = parseSplitOutput(partB);
+  assert.equal(a.frames, 2); assert.equal(a.sram, 128); assert.equal(a.postDone, 1);
+  assert.deepEqual(a.events.map((e) => e.t), ['N', 'S', 'U', 'W', 'Z', 'L', 'Z'], 'part A is parsed completely up to its DONE; the late frame (N, W, Z) is not in it');
+  assert.equal(b.frames, 1); assert.equal(b.done, true); assert.equal(b.postDone, 0);
+  assert.deepEqual(b.events.map((e) => e.t), ['N', 'L', 'Z'], 'part B is parsed completely');
+  // the retained blob (run_s1c.mjs) is `#### part main / lc-a / lc-b` markers around the three stdouts; parsed as ONE stream, part B would be post-DONE of part A and silently absent unless counted
+  const blob = `#### part lc-a\n${partA}\n#### part lc-b\n${partB}`;
+  const whole = parseSplitOutput(blob);
+  assert.equal(whole.frames, a.frames, 'only part A is judged');
+  assert.equal(whole.postDone, 2, 'part A\'s late frame and part B\'s whole frame are counted as dropped, so the misuse shows');
+});
+test('the split recorder (sw_split_ring.lua.template) ends once: emu.stop is called only from halt(), every callback it registers goes through guarded(), and both DONE sites and fail() halt', () => {
+  const lua = fs.readFileSync(path.join(ROOT, 'test/lua/sw_split_ring.lua.template'), 'utf8');
+  const stops = [...lua.matchAll(/emu\.stop\(/g)].length;
+  assert.equal(stops, 1, 'emu.stop appears once (inside halt): a second stop site would end the run without marking it finished');
+  assert.match(lua, /local function halt\(code\) finished = true; stage = "done"; emu\.stop\(code\) end/);
+  const regs = [...lua.matchAll(/emu\.add(?:Event|Memory)Callback\((.*)/g)].map((m) => m[1]);
+  assert.equal(regs.length, 14, 'the 14 registrations: sram, $2001, endFrame, inputPolled, 8 exec, split_lock write, the mapper-register loop');
+  for (const r of regs) assert.ok(r.startsWith('guarded('), `an unguarded callback keeps running after DONE: emu.addXCallback(${r.slice(0, 40)}`);
+  assert.equal([...lua.matchAll(/\bhalt\(0\)/g)].length, 2, 'both DONE sites (plain onFrame, lifecycle script) halt');
+  assert.match(lua, /local function fail\(code, msg\) say\("ERROR " \.\. msg\); halt\(code\) end/);
+  assert.ok(!/say\("ERROR " \.\. tostring\(err\)\)/.test(lua), 'the lifecycle coroutine\'s error goes through fail() too');
 });
 test('the split sabotage edits still apply to the stock engine source exactly once, and the harness PSB replaces the stock block exactly once', () => {
   for (const [id, s] of Object.entries(SPLIT_SABOTAGES)) if (s.edit) { const src = fs.readFileSync(path.join(ROOT, 'engine', s.file ?? 'split.asm'), 'utf8'); assert.notEqual(s.edit(src), src, `${id} changed nothing`); }

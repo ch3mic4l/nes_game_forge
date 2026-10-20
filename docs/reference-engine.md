@@ -437,6 +437,12 @@ battle tileset's art when idle -- both derived from the build's own `config.inc`
 are judged in the same script, with a `battle_end` that no longer redraws the field and a split handler that selects the wrong font page
 as its controls.
 
+The row-8 recorder (`test/lua/sw_split_ring.lua.template`) suppresses callbacks after DONE or ERROR, and `parseSplitOutput`
+(`test/lua/ring_gate/ringsplit.mjs`) parses each script through its first DONE (or the whole stream if none), preserves earlier errors, and
+counts later F lines in postDone and later ERROR/TRIALS/DONE lines in postDoneLines; the plain script and lifecycle parts A and B are parsed
+separately. The saved C6 certificate remains historical evidence for its recorded harness; after this harness change it fails the current
+fingerprint check until renewed.
+
 **The row-arm guard keeps a row strip off a Flash publication body (phase 3a slice S1).** A row arm queues
 a strip whose vblank drawing competes with a Flash packet's 35-byte `vram_buf` publication, and the
 frame gate (29,780 cycles) has no room for both. `sw_win_arm_flash_guard` (`engine/streamworld.asm`,

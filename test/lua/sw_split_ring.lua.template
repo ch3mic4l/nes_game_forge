@@ -31,7 +31,12 @@ local frame, stage, held = 0, "boot", {}
 local ev = {}
 local function put(s) ev[#ev + 1] = s end
 local function say(s) print(s) end
-local function fail(code, msg) say("ERROR " .. msg); emu.stop(code) end
+-- The run ends exactly once: halt() (the DONE sites, fail) stops Mesen and marks the recording finished. Mesen can still run callbacks between emu.stop and the process's exit, and
+-- whatever they printed (a trailing "F" line) would be a frame that is no trial's; every callback registered below goes through guarded(), so after halt() none of them does anything.
+local finished = false
+local function halt(code) finished = true; stage = "done"; emu.stop(code) end
+local function guarded(fn) return function(...) if not finished then return fn(...) end end end
+local function fail(code, msg) say("ERROR " .. msg); halt(code) end
 
 local gameplayFrame = nil
 local trialIdx, pending, pendingAge, live = 1, nil, 0, nil
@@ -231,7 +236,7 @@ local function onFrame()
     if tailLeft <= 0 then
       say(string.format("TRIALS planned=%d consumed=%d skipped=%d done=%d", #PLAN.trials, consumed, skipped, done))
       say(string.format("DONE frames=%d", frame))
-      emu.stop(0); stage = "done"; return
+      halt(0); return
     end
   end
   if frame > PLAN.maxFrames then fail(99, "timed out in stage " .. stage .. " trial " .. trialIdx); return end
@@ -300,34 +305,34 @@ local function lcScript()
   end
   say(string.format("TRIALS planned=%d consumed=%d skipped=%d done=%d", #PLAN.trials, consumed, skipped, done))
   say(string.format("DONE frames=%d sram=%d", frame, sramWrites))
-  emu.stop(0); stage = "done"
+  halt(0)
   lcHalt()
 end
 function lcResume()
   if not lcCo then lcCo = coroutine.create(lcScript) end
   if coroutine.status(lcCo) == "dead" then return end
   local ok, err = coroutine.resume(lcCo)
-  if not ok then say("ERROR " .. tostring(err)); emu.stop(3) end
+  if not ok then fail(3, tostring(err)) end
 end
 if LC then
-  emu.addMemoryCallback(function() sramWrites = sramWrites + 1 end, emu.callbackType.write, 0x6000, 0x7fff)
+  emu.addMemoryCallback(guarded(function() sramWrites = sramWrites + 1 end), emu.callbackType.write, 0x6000, 0x7fff)
   -- rendering on/off ($2001 bits 3-4): a battle's entry, a warp's redraw and the power-on write the mapper registers legitimately under forced blank; the judge needs to know when the picture was off
   local renderOn = false
-  emu.addMemoryCallback(function(_, value)
+  emu.addMemoryCallback(guarded(function(_, value)
     local on = (value & 0x18) ~= 0
     if on ~= renderOn then renderOn = on; put(on and "B,1" or "B,0") end
-  end, emu.callbackType.write, 0x2001, 0x2001)
+  end), emu.callbackType.write, 0x2001, 0x2001)
 end
 
-emu.addEventCallback(onFrame, emu.eventType.endFrame)
-emu.addEventCallback(function() emu.setInput(held, 0) end, emu.eventType.inputPolled)
-emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, C.main_loop_ready)
-emu.addMemoryCallback(onNmi, emu.callbackType.exec, C.nmi)
-emu.addMemoryCallback(onSplitArm, emu.callbackType.exec, C.split_arm)
-emu.addMemoryCallback(onUnlocked, emu.callbackType.exec, C.split_arm_unlocked)
-emu.addMemoryCallback(onIrq, emu.callbackType.exec, C.irq)
-emu.addMemoryCallback(onPsb, emu.callbackType.exec, C.psb)
-emu.addMemoryCallback(onCheck, emu.callbackType.exec, C.hd_check)
-emu.addMemoryCallback(onPsbEnd, emu.callbackType.exec, C.psb_end)
-emu.addMemoryCallback(onLockWrite, emu.callbackType.write, A.split_lock)
-for _, a in ipairs({ 0x8000, 0x8001, 0xC000, 0xC001, 0xE000, 0xE001 }) do emu.addMemoryCallback(mapperWrite(a), emu.callbackType.write, a) end
+emu.addEventCallback(guarded(onFrame), emu.eventType.endFrame)
+emu.addEventCallback(guarded(function() emu.setInput(held, 0) end), emu.eventType.inputPolled)
+emu.addMemoryCallback(guarded(onMainLoopReady), emu.callbackType.exec, C.main_loop_ready)
+emu.addMemoryCallback(guarded(onNmi), emu.callbackType.exec, C.nmi)
+emu.addMemoryCallback(guarded(onSplitArm), emu.callbackType.exec, C.split_arm)
+emu.addMemoryCallback(guarded(onUnlocked), emu.callbackType.exec, C.split_arm_unlocked)
+emu.addMemoryCallback(guarded(onIrq), emu.callbackType.exec, C.irq)
+emu.addMemoryCallback(guarded(onPsb), emu.callbackType.exec, C.psb)
+emu.addMemoryCallback(guarded(onCheck), emu.callbackType.exec, C.hd_check)
+emu.addMemoryCallback(guarded(onPsbEnd), emu.callbackType.exec, C.psb_end)
+emu.addMemoryCallback(guarded(onLockWrite), emu.callbackType.write, A.split_lock)
+for _, a in ipairs({ 0x8000, 0x8001, 0xC000, 0xC001, 0xE000, 0xE001 }) do emu.addMemoryCallback(guarded(mapperWrite(a)), emu.callbackType.write, a) end

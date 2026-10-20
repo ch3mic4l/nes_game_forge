@@ -322,13 +322,24 @@ export async function buildSplitRing({ cell, gt = 'action', placement = 'residen
 
 // ---- parse ------------------------------------------------------------------------------------------------------------------------------------------
 const NUM = (s) => Number(s);
-/** stdout -> { events, frames, error, done, trials }. Event order is the order of occurrence. */
+/**
+ * ONE script's stdout -> { events, frames, error, done, sram, trials, postDone, postDoneLines }. Event order is the order of occurrence.
+ * What is judged is what the recorder printed up to and including its first DONE line (the terminal line: the recorder stops the run there, and a callback that still ran
+ * before Mesen's process exit is not part of the recording). The rest is not judged but is counted, so the cut is never silent: `postDone` the F lines after DONE, `postDoneLines`
+ * the ERROR / TRIALS / DONE lines after it. A stream with no DONE line is parsed whole. An ERROR before DONE is `error`; one after it is only counted (a failed run is still caught
+ * by Mesen's exit status, which run:exit judges). A lifecycle session is TWO scripts and run_s1c.mjs parses each one's stdout on its own (part A, part B): never hand this a
+ * concatenation of them, which would read part B as post-DONE (postDone says so).
+ */
 export function parseSplitOutput(stdout) {
   const events = [];
   let frames = 0;
-  const err = /^ERROR (.*)$/m.exec(stdout);
-  const tr = /^TRIALS planned=(\d+) consumed=(\d+) skipped=(\d+) done=(\d+)/m.exec(stdout);
-  for (const line of stdout.split('\n')) {
+  const lines = stdout.split('\n');
+  const cut = lines.findIndex((l) => /^DONE /.test(l));
+  const head = cut < 0 ? lines : lines.slice(0, cut + 1), tail = cut < 0 ? [] : lines.slice(cut + 1);
+  const judged = head.join('\n');
+  const err = /^ERROR (.*)$/m.exec(judged);
+  const tr = /^TRIALS planned=(\d+) consumed=(\d+) skipped=(\d+) done=(\d+)/m.exec(judged);
+  for (const line of head) {
     const m = /^F (\d+) (.*)$/.exec(line);
     if (!m) continue;
     frames++;
@@ -355,8 +366,11 @@ export function parseSplitOutput(stdout) {
       }
     }
   }
-  const dn = /^DONE frames=\d+(?: sram=(\d+))?/m.exec(stdout);
-  return { events, frames, error: err ? err[1] : null, done: /^DONE /m.test(stdout), sram: dn?.[1] === undefined ? null : Number(dn[1]), trials: tr ? { planned: +tr[1], consumed: +tr[2], skipped: +tr[3], done: +tr[4] } : null };
+  const dn = /^DONE frames=\d+(?: sram=(\d+))?/m.exec(judged);
+  return {
+    events, frames, error: err ? err[1] : null, done: cut >= 0, sram: dn?.[1] === undefined ? null : Number(dn[1]), trials: tr ? { planned: +tr[1], consumed: +tr[2], skipped: +tr[3], done: +tr[4] } : null,
+    postDone: tail.filter((l) => /^F \d+ /.test(l)).length, postDoneLines: tail.filter((l) => /^(ERROR |TRIALS |DONE )/.test(l)).length
+  };
 }
 
 // ---- the judge --------------------------------------------------------------------------------------------------------------------------------------
