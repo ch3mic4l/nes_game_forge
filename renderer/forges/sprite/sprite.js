@@ -27,6 +27,7 @@ import {
   metaspriteKernelBytes
 } from '../../../shared/project.js';
 import { resolveMapper } from '../../../shared/cartridge.js';
+import { groupsNamingActor } from '../../../shared/encountergroups.js';
 import { moverSpeedNote } from '../../../shared/streamlayout.js';
 import { paintMetasprite as paintMetaspriteShared } from '../../widgets/metasprite.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
@@ -907,10 +908,12 @@ export function mount(container, app) {
               // overCapDeleteWarning (shared/project.js) is empty for every
               // ordinary project, so this reads exactly as it always did.
               const overCap = overCapDeleteWarning(store.project);
+              const inGroups = groupsNamingActor(store.project, state.actor);
               if (
                 !(await confirmModal(
                   'Delete actor',
                   `Delete "${actor.name}"? Anywhere it was placed on a map will be cleared too.` +
+                    (inGroups ? ` It will also be removed from ${inGroups} encounter ${inGroups === 1 ? 'group' : 'groups'}.` : '') +
                     (overCap ? ` ${overCap}` : ''),
                   'Delete'
                 ))

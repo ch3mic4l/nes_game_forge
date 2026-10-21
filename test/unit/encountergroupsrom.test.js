@@ -168,6 +168,27 @@ test('C3: nonzero noncontiguous group ids, repeated actors and padding; rows are
   checkMap(bootRom(built.romPath), built, { flat: 0 }, (roll) => lawPick(thr, forms, roll), 'L3');
 });
 
+// ---------------------------------------------------------------------------------------------------------------------- C3b
+
+test('C3b: a group of FOUR distinct live monsters emits all four bytes and starts all four runtime slots (the fourth slot is not dropped)', { skip }, async (t) => {
+  const project = await rpgBase(1);
+  const ids = addMonsters(project, 4);
+  assert.deepEqual(ids, [4, 5, 6, 7], 'sample-rpg has four actors, so the new monsters are 4..7');
+  pushGroup(project, 'Quad', [4, 5, 6, 7]);
+  pushGroup(project, 'Solo', [0]);
+  groupMap(project.maps[0], 1, [[0, 1], [1, 1]]);
+  const thr = [127, 255]; // floor(1 * 255 / 2), then the $FF stop
+  const built = await buildTo(t, project, 'c3b');
+  assert.deepEqual(dbBytes(built.maps, 'enc_thr'), thr);
+  assert.deepEqual(dbBytes(built.maps, 'enc_grp'), [0, 1]);
+  // Hand-written bytes: row 0 holds all four ids, the last one included; row 1 is [Slime, $FF x3].
+  assert.deepEqual(dbBytes(built.maps, 'enc_group_actors'), [4, 5, 6, 7, 0, FF, FF, FF]);
+  const forms = [[4, 5, 6, 7], pad([0])];
+  const seen = checkMap(bootRom(built.romPath), built, { flat: 0 }, (roll) => lawPick(thr, forms, roll), 'L3b');
+  assert.equal(seen.size, 2, 'both the four-monster fight and the single fight occur');
+  assert.ok([...seen].includes('4,5,6,7'), 'a fight started with all four monster slots live');
+});
+
 // ---------------------------------------------------------------------------------------------------------------------- C4
 
 test('C4: several group maps with different tables at nonzero entry offsets, a rate-0 group map and a legacy map between them', { skip }, async (t) => {

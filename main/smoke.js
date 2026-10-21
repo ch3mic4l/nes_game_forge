@@ -9339,6 +9339,159 @@ const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
   }
   step('monster forge available for an RPG project', 'present in forgeIds and mounted during the sweep above');
 
+  // Encounter groups, Monster Forge "Groups" tab (handoff-next/encgroups, slice C3): create, pick monsters, rename, delete
+  // (through the real confirm, since a map's table names the group), undo and redo -- the store checked after each action.
+  {
+    const groupsStore = window.__app.store;
+    const encountersBefore = structuredClone(groupsStore.project.maps[0].encounters);
+    const groupsBefore = structuredClone(groupsStore.project.encounterGroups);
+    const names = () => groupsStore.project.encounterGroups.map((group) => group.name);
+    const pane = () => document.querySelector('#stage');
+    const click = (selector) => {
+      const node = pane().querySelector(selector);
+      if (!node) throw new Error('Groups tab: nothing matches ' + selector);
+      node.click();
+    };
+    const choose = (selector, value) => {
+      const node = pane().querySelector(selector);
+      if (!node) throw new Error('Groups tab: nothing matches ' + selector);
+      node.value = String(value);
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    await window.__app.goTo('monster', { tab: 'groups' });
+    await until('the Groups tab', () => pane().querySelector('[data-group-add]'));
+    if (!pane().querySelector('[data-monster-tab="groups"].active')) throw new Error('goTo(monster, {tab: groups}) did not open the Groups tab');
+    if (pane().querySelector('[data-monster-tab="monsters"].active')) throw new Error('the Monsters tab is still marked active on the Groups tab');
+    const monsterPaneNode = pane().querySelector('[data-spell-slot]');
+    if (monsterPaneNode && !monsterPaneNode.closest('[hidden]')) throw new Error('the Monsters tab content is still shown on the Groups tab');
+    const baseCount = groupsBefore.length;
+    const undoBase = groupsStore.undoStack.length;
+    if (!/[0-9]+ of 32 groups/.test(pane().querySelector('[data-group-count]').textContent)) throw new Error('the group count line does not name the 32 limit');
+
+    // Create.
+    click('[data-group-add]');
+    await wait(150);
+    if (groupsStore.project.encounterGroups.length !== baseCount + 1) throw new Error('+ Add group did not add exactly one group');
+    const mine = baseCount;
+    if (JSON.stringify(groupsStore.project.encounterGroups[mine]) !== JSON.stringify({ name: 'Group 1', monsters: [] })) {
+      throw new Error('the new group is not an empty "Group 1": ' + JSON.stringify(groupsStore.project.encounterGroups[mine]));
+    }
+    if (groupsStore.undoStack.length !== undoBase + 1) throw new Error('adding a group was not exactly one undo entry');
+    if (!pane().querySelector('[data-group-warning="dead"]')) throw new Error('an empty group shows no "starts no fight" warning');
+
+    // Add monsters: slot 0 offers the catalog, and a second slot appears only once the first is filled.
+    if (pane().querySelector('[data-group-slot="1"]')) throw new Error('an empty group already offers a second monster slot');
+    const slotOptionIds = () => [...pane().querySelector('[data-group-slot="0"]').options].filter((o) => o.value !== '').map((o) => Number(o.value));
+    const catalog = slotOptionIds();
+    if (catalog.length < 2) throw new Error('the monster picker offers fewer than two monsters: ' + catalog);
+    choose('[data-group-slot="0"]', catalog[0]);
+    await wait(100);
+    choose('[data-group-slot="1"]', catalog[1]);
+    await wait(100);
+    choose('[data-group-slot="2"]', catalog[0]); // a duplicate is a legal group
+    await wait(100);
+    const picked = [catalog[0], catalog[1], catalog[0]];
+    if (JSON.stringify(groupsStore.project.encounterGroups[mine].monsters) !== JSON.stringify(picked)) {
+      throw new Error('picked monsters ' + JSON.stringify(picked) + ' but the group holds ' + JSON.stringify(groupsStore.project.encounterGroups[mine].monsters));
+    }
+    if (pane().querySelector('[data-group-warning]')) throw new Error('a group of live monsters still shows a warning');
+
+    // Rename.
+    choose('[data-group-name]', '  Slime   pack ');
+    await wait(100);
+    if (names()[mine] !== 'Slime pack') throw new Error('rename stored ' + JSON.stringify(names()[mine]));
+    const blankRevision = groupsStore.revision;
+    const blankUndo = groupsStore.undoStack.length;
+    choose('[data-group-name]', '   ');
+    await wait(100);
+    if (names()[mine] !== 'Slime pack' || pane().querySelector('[data-group-name]').value !== 'Slime pack') {
+      throw new Error('an empty rename should change nothing and restore the field');
+    }
+    if (groupsStore.revision !== blankRevision || groupsStore.undoStack.length !== blankUndo) {
+      throw new Error('a blank rename reached store.commit: revision ' + blankRevision + ' -> ' + groupsStore.revision + ', undo ' + blankUndo + ' -> ' + groupsStore.undoStack.length);
+    }
+    const afterEdits = structuredClone(groupsStore.project.encounterGroups);
+
+    // Duplicate copies the selected group (not a fresh empty one), as one undoable commit.
+    click('[data-group-duplicate]');
+    await wait(150);
+    const copied = groupsStore.project.encounterGroups[mine + 1];
+    if (groupsStore.project.encounterGroups.length !== baseCount + 2 || !copied) throw new Error('Duplicate did not add exactly one group');
+    if (JSON.stringify(copied.monsters) !== JSON.stringify(picked) || copied.name !== 'Slime pack copy') {
+      throw new Error('the duplicate is not a copy of the selected group: ' + JSON.stringify(copied));
+    }
+    if (copied.monsters === groupsStore.project.encounterGroups[mine].monsters) throw new Error('the duplicate shares its monster array with the source');
+    if (groupsStore.undoStack.length !== blankUndo + 1) throw new Error('Duplicate was not exactly one undo entry');
+    groupsStore.undo();
+    await wait(150);
+    if (JSON.stringify(groupsStore.project.encounterGroups) !== JSON.stringify(afterEdits)) throw new Error('undoing Duplicate did not restore the groups');
+    step('Groups tab: create, pick monsters, rename', 'one group "Slime pack" holding ' + JSON.stringify(picked) + ', one undo entry per action');
+
+    // The limit is named and enforced in the UI: a project at 32 groups disables Add and Duplicate and says why.
+    groupsStore.commit('smoke: fill to the group limit', (project) => {
+      while (project.encounterGroups.length < 32) project.encounterGroups.push({ name: 'Fill ' + project.encounterGroups.length, monsters: [] });
+    });
+    await wait(150);
+    if (!pane().querySelector('[data-group-add]').disabled || !pane().querySelector('[data-group-duplicate]').disabled) {
+      throw new Error('Add group / Duplicate are enabled at the 32-group limit');
+    }
+    if (!/32 of 32 groups — the limit/.test(pane().querySelector('[data-group-count]').textContent)) {
+      throw new Error('the count line does not name the limit: ' + pane().querySelector('[data-group-count]').textContent);
+    }
+    const undoAtLimit = groupsStore.undoStack.length;
+    click('[data-group-add]'); // a disabled button: nothing may happen
+    await wait(100);
+    if (groupsStore.project.encounterGroups.length !== 32 || groupsStore.undoStack.length !== undoAtLimit) throw new Error('adding at the limit changed the project');
+    groupsStore.undo();
+    await wait(150);
+    if (JSON.stringify(groupsStore.project.encounterGroups) !== JSON.stringify(afterEdits)) throw new Error('undoing the fill did not restore the edited groups');
+    step('Groups tab: the 32-group limit is named and disables Add', '32 of 32 groups — the limit; undo returns to ' + afterEdits.length);
+
+    // Delete: a map's table names the group, so the real confirm shows, names the map, and the commit rewrites the table.
+    groupsStore.commit('smoke: a map table names the new group', (project) => {
+      project.maps[0].encounters = { ...project.maps[0].encounters, mode: 'groups', table: [{ group: mine, weight: 3 }] };
+    });
+    await wait(150);
+    if (!/Used by the encounter table of /.test(pane().querySelector('[data-group-usage]').textContent)) throw new Error('the group does not say a map uses it');
+    const beforeDelete = structuredClone(groupsStore.project);
+    click('[data-group-delete]');
+    await until('the delete-group confirmation', () => document.querySelector('#modalHost p'));
+    const confirmText = document.querySelector('#modalHost p').textContent;
+    if (confirmText.indexOf('"Slime pack"') === -1 || confirmText.indexOf(groupsStore.project.maps[0].name) === -1) {
+      throw new Error('the delete confirmation does not name the group and the map: ' + confirmText);
+    }
+    [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Delete').click();
+    await wait(200);
+    if (names().length !== baseCount || names().includes('Slime pack')) throw new Error('Delete did not remove the group: ' + names());
+    if (JSON.stringify(groupsStore.project.maps[0].encounters.table) !== '[]') {
+      throw new Error('the map table still names the deleted group: ' + JSON.stringify(groupsStore.project.maps[0].encounters.table));
+    }
+    if (groupsStore.project.maps[0].encounters.mode !== 'groups') throw new Error('deleting the last group changed the map out of group mode');
+    const afterDelete = structuredClone(groupsStore.project);
+
+    // Undo and redo: whole-project snapshots, so the group and the table row come back, then go again.
+    groupsStore.undo();
+    await wait(150);
+    if (JSON.stringify(groupsStore.project) !== JSON.stringify(beforeDelete)) throw new Error('undo did not restore the group and the table row');
+    if (!pane().querySelector('[data-group-name]') || pane().querySelector('[data-group-name]').value !== 'Slime pack') throw new Error('the Groups tab did not redraw after undo');
+    groupsStore.redo();
+    await wait(150);
+    if (JSON.stringify(groupsStore.project) !== JSON.stringify(afterDelete)) throw new Error('redo did not repeat the delete');
+    step('Groups tab: delete rewrites the map table; undo and redo', 'confirm named the group and map; undo restored both, redo removed both');
+
+    // Leave the shared project as this block found it.
+    groupsStore.commit('smoke: restore the groups block', (project) => {
+      project.encounterGroups = structuredClone(groupsBefore);
+      project.maps[0].encounters = structuredClone(encountersBefore);
+    });
+    await wait(100);
+    if (JSON.stringify(groupsStore.project.encounterGroups) !== JSON.stringify(groupsBefore)) throw new Error('the Groups block did not restore the project');
+    await window.__app.goTo('monster');
+    await until('the Monsters tab', () => pane().querySelector('[data-monster-tab="monsters"].active'));
+    step('Groups tab: back to the Monsters tab', 'the monster catalog select is the first select again');
+  }
+
   const rpgStore = window.__app.store;
 
   // The phase-1 reproduction fixture, verbatim from

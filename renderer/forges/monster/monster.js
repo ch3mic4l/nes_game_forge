@@ -6,16 +6,21 @@
 // see docs/design-monster.md §2 for the full boundary argument.
 //
 // The catalog this Forge lists is not "every hostile actor" — an actor
-// still named by a map's encounter table or a Start a battle command stays
-// listed and marked stranded even after its contact damage is cleared to
-// zero, because that authored reference is still real, editable data. See
-// monsterActorIds (shared/project.js).
+// still named by a map's encounter table, an encounter group or a Start a
+// battle command stays listed and marked stranded even after its contact
+// damage is cleared to zero, because that authored reference is still real,
+// editable data. See monsterActorIds (shared/project.js).
+//
+// The Groups tab authors the project's encounter groups (up to four monsters
+// each), which a map's group-mode table in the Map Forge then picks among. Its
+// editing moves live in shared/encountergroups.js; this file only draws them.
 
 import { store } from '../../store.js';
-import { el, fill, field, showModal, toast } from '../../ui.js';
+import { el, fill, field, showModal, confirmModal, toast } from '../../ui.js';
 import {
   ELEMENTS,
   RPG_LIMITS,
+  AUTHOR_NAME_MAX,
   isMonsterActor,
   itemPickerOptions,
   monsterActorIds,
@@ -26,6 +31,17 @@ import {
   applyMonsterGrowth,
   ACTOR_BATTLE_DEFAULTS
 } from '../../../shared/project.js';
+import {
+  groupRoom,
+  planAddGroup,
+  applyAddGroup,
+  commitGroupRename,
+  setGroupMonster,
+  deleteEncounterGroup,
+  mapsUsingGroup,
+  groupProblems,
+  groupSlotOptions
+} from '../../../shared/encountergroups.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
 import { mountBattleFxPreview, animationSelect } from '../../widgets/battlefxpreview.js';
@@ -320,7 +336,7 @@ function artPicker(battle, set) {
 }
 
 export function mount(container, app) {
-  const state = { selectedActorId: null };
+  const state = { selectedActorId: null, tab: 'monsters', group: 0 };
   // Set by destroy() below, read by openDeriveModal's own post-await guard
   // (docs/design-monster-level-scaling.md §3.8) -- a per-mount closure
   // variable, never module scope, so a fresh mount after destroy always
@@ -410,6 +426,10 @@ export function mount(container, app) {
   if (Number.isInteger(context?.actorId)) {
     state.selectedActorId = context.actorId;
   }
+  if (context?.tab === 'groups') {
+    state.tab = 'groups';
+    if (Number.isInteger(context.group)) state.group = context.group;
+  }
 
   // A persistent fields/preview split (docs/design-battle-animation.md
   // §15.5, §15.8): fieldsHost is replaceable on every render(), previewHost
@@ -418,9 +438,11 @@ export function mount(container, app) {
   // insertion inside battleSection (which would be rebuilt and lost on
   // every render, §15.8's own corrected cost).
   const body = el('div.panel-body');
+  const tabsHost = el('div.tabs');
+  const groupsHost = el('div');
   const fieldsHost = el('div');
   const previewHost = el('div', { style: { marginTop: '16px', maxWidth: '360px' } });
-  fill(body, fieldsHost, previewHost);
+  fill(body, tabsHost, fieldsHost, previewHost, groupsHost);
 
   const preview = mountBattleFxPreview(previewHost, {
     getProject: () => store.project,
@@ -449,8 +471,8 @@ export function mount(container, app) {
       el(
         'p.hint',
         { style: { marginBottom: '12px', maxWidth: '640px' } },
-        'Every actor that currently fights, or is named by a map’s encounter table or a Start a battle ' +
-          'command, is listed here. To add, rename or delete a monster, or change its overworld sprite, ' +
+        'Every actor that currently fights, or is named by a map’s encounter table, an encounter group or a ' +
+          'Start a battle command, is listed here. To add, rename or delete a monster, or change its overworld sprite, ' +
           'hit points, contact damage or animations, use the Sprite Forge.'
       ),
       state.selectedActorId === null
@@ -520,20 +542,244 @@ export function mount(container, app) {
               : el(
                   'p.hint',
                   { style: { marginBottom: '8px' } },
-                  'Harmless — a map’s encounter table or a Start a battle command still names this actor, ' +
-                    'so it stays listed here, whether or not that reference currently reaches a fight.'
+                  'Harmless — a map’s encounter table, an encounter group or a Start a battle command still names ' +
+                    'this actor, so it stays listed here, whether or not that reference currently reaches a fight.'
                 ),
             battleSection(actor, state.selectedActorId, render, openDeriveModal)
           )
         : el(
             'p.hint',
             null,
-            'No actor currently fights, and none is named by a map’s encounter table or a Start a battle ' +
-              'command. Give an actor contact damage in the Sprite Forge to make it a monster.'
+            'No actor currently fights, and none is named by a map’s encounter table, an encounter group or a ' +
+              'Start a battle command. Give an actor contact damage in the Sprite Forge to make it a monster.'
           )
     );
 
     preview.sync();
+  }
+
+  // ---------------------------------------------------------------- Groups tab
+
+  // Re-rendered whole on every change, like render() above. The Groups tab is drawn only while it is showing, so
+  // the Monsters tab's own selects are the only ones in the DOM until an author asks for groups.
+  function renderGroups() {
+    if (state.tab !== 'groups') {
+      fill(groupsHost);
+      return;
+    }
+    const project = store.project;
+    const groups = project.encounterGroups ?? [];
+    state.group = Math.max(0, Math.min(state.group, groups.length - 1));
+    const room = groupRoom(project);
+    const group = groups[state.group] ?? null;
+
+    const addGroup = (copyOf) => {
+      // Plan, refuse and commit in one synchronous run (the planEncounterConversion precedent): a refusal never
+      // reaches store.commit, so it adds no undo entry and does not mark the project dirty.
+      const plan = planAddGroup(store.project, copyOf);
+      if (!plan.ok) {
+        toast(plan.message, 'error');
+        return;
+      }
+      let added = 0;
+      store.commit(copyOf === null ? 'Add encounter group' : 'Duplicate encounter group', (draft) => {
+        added = applyAddGroup(draft, plan);
+      });
+      state.group = added;
+      renderGroups();
+    };
+
+    const deleteGroup = async () => {
+      const index = state.group;
+      const using = mapsUsingGroup(store.project, index);
+      if (using.length) {
+        const revisionAtOpen = store.revision;
+        const names = using.map((mapIndex) => store.project.maps[mapIndex].name).join(', ');
+        const confirmed = await confirmModal(
+          'Delete group',
+          `Delete "${group.name}"? It will also be removed from the encounter ${using.length === 1 ? 'table' : 'tables'} of ${names}.`,
+          'Delete'
+        );
+        if (!confirmed || destroyed) return;
+        if (store.revision !== revisionAtOpen) {
+          toast('The project changed while this dialog was open — try again.', 'error');
+          return;
+        }
+      }
+      store.commit('Delete encounter group', (draft) => {
+        deleteEncounterGroup(draft, index);
+      });
+      state.group = Math.max(0, index - 1);
+      renderGroups();
+    };
+
+    const problems = group ? groupProblems(project, state.group) : null;
+    const using = group ? mapsUsingGroup(project, state.group) : [];
+    const slotCount = group ? Math.min(RPG_LIMITS.encounterActors, group.monsters.length + 1) : 0;
+
+    fill(
+      groupsHost,
+      el(
+        'p.hint',
+        { style: { marginBottom: '12px', maxWidth: '640px' } },
+        'A group is a set of up to four monsters that fight together. A map’s encounter table in the Map ' +
+          'Forge (Battles here → Convert to groups) picks among groups, by weight, each time an encounter starts.'
+      ),
+      el(
+        'div.field-row',
+        { style: { alignItems: 'center', marginBottom: '12px', gap: '8px' } },
+        el(
+          'button.btn.btn-sm',
+          {
+            'data-group-add': '',
+            disabled: room.full,
+            title: room.full ? room.message : 'Add an empty encounter group',
+            onclick: () => addGroup(null)
+          },
+          '+ Add group'
+        ),
+        el('span.hint', { 'data-group-count': '' }, `${room.count} of ${room.limit} groups` + (room.full ? ' — the limit' : ''))
+      ),
+      el(
+        'div.field-row',
+        { style: { marginBottom: '12px' } },
+        el(
+          'select',
+          {
+            'data-group-list': '',
+            size: Math.min(10, Math.max(4, groups.length)),
+            style: { minWidth: '220px' },
+            onchange: (event) => {
+              state.group = Number(event.target.value);
+              renderGroups();
+            }
+          },
+          groups.length
+            ? groups.map((entry, index) =>
+                el('option', { value: index, selected: index === state.group }, `${entry.name} (${entry.monsters.length})`)
+              )
+            : [el('option', null, 'No groups yet')]
+        )
+      ),
+      !group
+        ? el('p.hint', null, 'No groups yet. Add one, then choose the monsters that fight together.')
+        : el(
+            'div',
+            null,
+            row(
+              field(
+                'Name',
+                el('input', {
+                  'data-group-name': '',
+                  type: 'text',
+                  maxlength: AUTHOR_NAME_MAX,
+                  value: group.name,
+                  onchange: (event) => {
+                    // A blank, unchanged or stale rename answers false without touching the store (no phantom undo entry).
+                    if (!commitGroupRename(store, state.group, event.target.value)) event.target.value = group.name;
+                    renderGroups();
+                  }
+                })
+              )
+            ),
+            row(
+              ...Array.from({ length: slotCount }, (_, slot) => {
+                const current = group.monsters[slot];
+                const options = groupSlotOptions(project, current);
+                return field(
+                  `Monster ${slot + 1}`,
+                  el(
+                    'select',
+                    {
+                      'data-group-slot': String(slot),
+                      onchange: (event) => {
+                        const index = state.group;
+                        const chosen = event.target.value === '' ? null : Number(event.target.value);
+                        store.commit('Change encounter group', (draft) => {
+                          setGroupMonster(draft, index, slot, chosen);
+                        });
+                        renderGroups();
+                      }
+                    },
+                    el('option', { value: '', selected: current === undefined }, 'Nothing'),
+                    options.map((option) =>
+                      el('option', { value: option.value, selected: option.value === current }, option.missing ? `${option.label} (missing)` : option.label)
+                    )
+                  )
+                );
+              })
+            ),
+            problems.missing.length
+              ? el(
+                  'p.hint',
+                  { 'data-group-warning': 'missing', style: { color: 'var(--accent)', marginBottom: '8px' } },
+                  `This group names an actor that no longer exists (${problems.missing.map((id) => `#${id}`).join(', ')}). ` +
+                    'Choose another monster for that slot, or clear it.'
+                )
+              : null,
+            problems.dead
+              ? el(
+                  'p.hint',
+                  { 'data-group-warning': 'dead', style: { color: 'var(--accent)', marginBottom: '8px' } },
+                  (group.monsters.length
+                    ? 'None of this group’s monsters exists, so an encounter that picks it starts no fight.'
+                    : 'This group has no monsters yet, so an encounter that picks it starts no fight.')
+                )
+              : null,
+            el(
+              'p.hint',
+              { 'data-group-usage': '', style: { marginBottom: '8px' } },
+              using.length
+                ? `Used by the encounter ${using.length === 1 ? 'table' : 'tables'} of ${using.map((mapIndex) => project.maps[mapIndex].name).join(', ')}.`
+                : 'No map’s encounter table uses this group yet.'
+            ),
+            row(
+              el(
+                'button.btn.btn-sm',
+                {
+                  'data-group-duplicate': '',
+                  disabled: room.full,
+                  title: room.full ? room.message : 'Add a copy of this group',
+                  onclick: () => addGroup(state.group)
+                },
+                'Duplicate'
+              ),
+              el('button.btn.btn-sm', { 'data-group-delete': '', title: 'Delete', onclick: deleteGroup }, 'Delete')
+            )
+          )
+    );
+  }
+
+  function renderTabs() {
+    fill(
+      tabsHost,
+      ...[
+        ['monsters', 'Monsters'],
+        ['groups', 'Groups']
+      ].map(([id, label]) =>
+        el(
+          'button.tab',
+          {
+            'data-monster-tab': id,
+            class: state.tab === id ? 'active' : '',
+            onclick: () => {
+              state.tab = id;
+              renderAll();
+            }
+          },
+          label
+        )
+      )
+    );
+  }
+
+  // Both tabs re-derive from the store on every change (undo, redo and navigation included), so one entry point
+  // keeps the tab strip, the visible pane and the hidden pane in step.
+  function renderAll() {
+    renderTabs();
+    fieldsHost.hidden = previewHost.hidden = state.tab !== 'monsters';
+    render();
+    renderGroups();
   }
 
   const root = el(
@@ -543,7 +789,7 @@ export function mount(container, app) {
   );
 
   container.append(root);
-  render();
+  renderAll();
   app.setMeta('Monster Forge');
 
   return {
@@ -552,7 +798,7 @@ export function mount(container, app) {
       preview.destroy();
       app.setMeta('');
     },
-    onProjectChange: render,
+    onProjectChange: renderAll,
     stepPreview: () => preview.stepPreview()
   };
 }
