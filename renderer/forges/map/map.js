@@ -37,13 +37,27 @@ import {
   DOOR_LANDING_DEFAULT,
   RPG_LIMITS,
   isMonsterActor,
-  mapEncounterFormation,
+  mapUsesEncounterGroups,
   screenSpriteBudget,
   fieldScanlineDensity,
   describeScreenSpriteWarning,
   describeFieldDensityWarning
 } from '../../../shared/project.js';
 import { saveCapable, resolveMapper } from '../../../shared/cartridge.js';
+import {
+  addRowState,
+  battleTestOffer,
+  commitConvertEncounters,
+  encounterEditorVisible,
+  commitTableAdd,
+  commitTableGroup,
+  commitTableRemove,
+  commitTableWeight,
+  planUseLegacyList,
+  tableGroupChoices,
+  tableRows
+} from '../../../shared/encountergroups.js';
+import { confirmUseActorListAgain } from './encounterway.js';
 import { createMetatilePanel } from './metatiles.js';
 import {
   describeCommand,
@@ -192,6 +206,8 @@ export function mount(container, app) {
   // A refusal the settings panel shows once, on its next render (a refused toggle or resize reaches no
   // commit, so nothing else would redraw the field back to the real value or say why).
   let settingsNote = null;
+  // Set by destroy(): an awaited handler that wakes after the Forge left must neither commit nor render.
+  let destroyed = false;
 
   const state = {
     mapIndex: 0,
@@ -1970,47 +1986,8 @@ export function mount(container, app) {
         )
       );
 
-    return el(
-      'div',
-      null,
-      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Battles here'),
-      field('Sky tile', tilePicker(map.battleSkyTile ?? 0, (value) => setMap('Change battle sky', { battleSkyTile: value }))),
-      field(
-        'Ground tile',
-        tilePicker(map.battleGroundTile ?? 0, (value) => setMap('Change battle ground', { battleGroundTile: value }))
-      ),
-      field(
-        'Steps between encounters',
-        el('input', {
-          type: 'number',
-          min: 0,
-          max: 255,
-          value: encounters.rate,
-          title: 'Zero turns wandering monsters off for this map',
-          onchange: (event) =>
-            setMap('Change encounter rate', {
-              encounters: { ...encounters, rate: Math.max(0, Math.min(255, Number(event.target.value))) }
-            })
-        })
-      ),
-      el(
-        'p.hint',
-        null,
-        encounters.rate
-          ? 'A roll every this many steps, and the formation is picked from the list below.'
-          : 'No wandering monsters on this map. Walking into a placed monster still starts a fight — one you cannot run from.'
-      ),
-      // Only hostile actors are offered as new choices: a formation slot
-      // pointing at a gem would compile, and then stand there being a gem.
-      // The rows themselves are shown whenever there is anything to add OR
-      // anything already there to see or clear -- not only when hostile is
-      // non-empty. mapEncounterFormation (shared/project.js), the compiler's
-      // own single writer for this table, does not filter by damage at all:
-      // an actor already sitting in a slot keeps compiling into real
-      // wandering encounters after its damage is edited down to zero, so
-      // collapsing these rows to a hint in that case would strand an author
-      // unable to see or clear what the ROM still ships -- the same trap
-      // battleTestSection below was fixed against.
+    // The four-slot actor list a legacy map keeps (and a converted map retains, dormant), plus the Convert action.
+    const legacyList = () => [
       hostile.length || encounters.actorIds.length
         ? Array.from({ length: RPG_LIMITS.encounterActors }, (_, slot) => {
             const slotId = encounters.actorIds[slot];
@@ -2039,8 +2016,202 @@ export function mount(container, app) {
             );
           })
         : el('p.hint', { style: { color: 'var(--accent)' } }, 'No actor deals damage yet, so none can be added to this table.'),
+      el(
+        'div.field-row',
+        { style: { marginBottom: '6px' } },
+        el(
+          'button.btn.btn-sm',
+          {
+            'data-encounter-convert': '',
+            title: 'Turn this list into a weighted table of named groups, keeping the same odds',
+            onclick: () => convertEncounters()
+          },
+          'Convert to groups'
+        )
+      )
+    ];
+
+    return el(
+      'div',
+      null,
+      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Battles here'),
+      field('Sky tile', tilePicker(map.battleSkyTile ?? 0, (value) => setMap('Change battle sky', { battleSkyTile: value }))),
+      field(
+        'Ground tile',
+        tilePicker(map.battleGroundTile ?? 0, (value) => setMap('Change battle ground', { battleGroundTile: value }))
+      ),
+      field(
+        'Steps between encounters',
+        el('input', {
+          type: 'number',
+          min: 0,
+          max: 255,
+          value: encounters.rate,
+          title: 'Zero turns wandering monsters off for this map',
+          onchange: (event) =>
+            setMap('Change encounter rate', {
+              encounters: { ...encounters, rate: Math.max(0, Math.min(255, Number(event.target.value))) }
+            })
+        })
+      ),
+      el(
+        'p.hint',
+        null,
+        encounters.rate
+          ? mapUsesEncounterGroups(map)
+            ? 'A roll every this many steps, and the fight is picked from the table below by weight.'
+            : 'A roll every this many steps, and the formation is picked from the list below.'
+          : 'No wandering monsters on this map. Walking into a placed monster still starts a fight — one you cannot run from.'
+      ),
+      // Only hostile actors are offered as new choices: a formation slot
+      // pointing at a gem would compile, and then stand there being a gem.
+      // The rows themselves are shown whenever there is anything to add OR
+      // anything already there to see or clear -- not only when hostile is
+      // non-empty. mapEncounterFormation (shared/project.js), the compiler's
+      // own single writer for this table, does not filter by damage at all:
+      // an actor already sitting in a slot keeps compiling into real
+      // wandering encounters after its damage is edited down to zero, so
+      // collapsing these rows to a hint in that case would strand an author
+      // unable to see or clear what the ROM still ships -- the same trap
+      // battleTestSection below was fixed against.
+      encounterEditorVisible(store.project, mapIndex) ? encounterTableEditor(map) : legacyList(),
       battleTestSection(map, hostile)
     );
+  }
+
+  /** Runs a shared/encountergroups.js commit, shows its refusal as a toast, and redraws the settings box. */
+  function runEncounterEdit(result) {
+    if (!result.ok) toast(result.message, 'error');
+    renderMapSettings();
+  }
+
+  /** "Convert to groups": the shared caller plans first and never calls store.commit for a refused plan. */
+  function convertEncounters() {
+    runEncounterEdit(commitConvertEncounters(store, state.mapIndex));
+  }
+
+  /**
+   * The group-mode table editor. Shown whenever the selected map is in group mode -- never gated on how many groups
+   * the project has, on hostile actors, or on the retained actor list (deleting the only group must not hide the
+   * empty-table warning or the way back to the actor list).
+   */
+  function encounterTableEditor(map) {
+    const mapIndex = state.mapIndex;
+    const rows = tableRows(store.project, mapIndex);
+    const add = addRowState(store.project, mapIndex);
+    const anyLive = rows.some((row) => row.live);
+    return el(
+      'div',
+      { 'data-encounter-table': '' },
+      rows.map((row) =>
+        el(
+          'div.field-row',
+          { 'data-encounter-row': row.row, style: { marginBottom: '4px' } },
+          el(
+            'select',
+            {
+              'data-table-group': row.row,
+              onchange: (event) => runEncounterEdit(commitTableGroup(store, mapIndex, row.row, Number(event.target.value)))
+            },
+            tableGroupChoices(store.project, mapIndex, row.group).map((choice) =>
+              el('option', { value: choice.value, selected: choice.value === row.group }, choice.label)
+            ),
+            store.project.encounterGroups[row.group]
+              ? null
+              : el('option', { value: row.group, selected: true }, row.name)
+          ),
+          el('input', {
+            type: 'number',
+            min: 1,
+            max: RPG_LIMITS.encounterWeightMax,
+            value: row.weight,
+            'data-table-weight': row.row,
+            title: `Weight 1 to ${RPG_LIMITS.encounterWeightMax}: a row's share of the table`,
+            style: { width: '56px' },
+            onchange: (event) => runEncounterEdit(commitTableWeight(store, mapIndex, row.row, event.target.value))
+          }),
+          el(
+            'span.hint',
+            { 'data-table-odds': row.row, title: 'Chance of this group when a wandering fight starts' },
+            row.live ? `${row.percent.toFixed(1)}%` : 'never (no live monster)'
+          ),
+          el(
+            'button.btn.btn-sm',
+            {
+              'data-table-remove': row.row,
+              title: 'Remove this row',
+              onclick: () => runEncounterEdit(commitTableRemove(store, mapIndex, row.row))
+            },
+            '✕'
+          )
+        )
+      ),
+      anyLive
+        ? null
+        : el(
+            'p.hint',
+            { 'data-table-empty': '', style: { color: 'var(--accent)' } },
+            "This map's table has no group with a live monster, so a wandering roll here starts no fight. " +
+              'Add a group below, or use the actor list again.'
+          ),
+      el(
+        'div.field-row',
+        { style: { marginBottom: '4px' } },
+        el(
+          'select',
+          {
+            'data-table-add': '',
+            disabled: add.disabled,
+            title: add.message ?? 'Add a group to this table',
+            onchange: (event) => {
+              if (event.target.value === '') return;
+              runEncounterEdit(commitTableAdd(store, mapIndex, Number(event.target.value)));
+            }
+          },
+          el('option', { value: '', selected: true }, '+ Add group'),
+          tableGroupChoices(store.project, mapIndex).map((choice) => el('option', { value: choice.value }, choice.label))
+        )
+      ),
+      el(
+        'div.field-row',
+        { style: { marginBottom: '4px' } },
+        el(
+          'button.btn.btn-sm',
+          {
+            'data-table-legacy': '',
+            title: 'Discard this table and go back to the four-slot actor list this map kept',
+            onclick: () => useActorListAgain(mapIndex)
+          },
+          'Use the actor list again'
+        )
+      ),
+      add.disabled ? el('p.hint', { 'data-table-add-note': '' }, add.message) : null,
+      el(
+        'p.hint',
+        null,
+        `A table holds up to ${RPG_LIMITS.encounterTableEntries} groups. The chance beside each row is its weight over the live rows' total.`
+      )
+    );
+  }
+
+  /**
+   * The way back: behind a confirm. confirmUseActorListAgain re-checks the store revision, this Forge's lifetime and the
+   * selected map after the wait and before committing; a destroyed Forge is never rendered into.
+   */
+  async function useActorListAgain(mapIndex) {
+    const outcome = await confirmUseActorListAgain(store, mapIndex, {
+      isCurrent: () => !destroyed && state.mapIndex === mapIndex,
+      confirm: () =>
+        confirmModal(
+          'Use the actor list again?',
+          "This map's group table is discarded and its four-slot actor list becomes its encounter list again. Your encounter groups stay.",
+          'Use the list'
+        )
+    });
+    if (destroyed) return;
+    if (outcome === 'refused') return runEncounterEdit({ ok: false, message: planUseLegacyList(store.project, mapIndex).message });
+    if (outcome === 'stale') toast('The project or the selected map changed while the confirmation was open, so nothing was changed.', 'error');
+    renderMapSettings();
   }
 
   /**
@@ -2068,10 +2239,8 @@ export function mount(container, app) {
    * formation") than "what does this map's table actually contain".
    */
   function battleTestSection(map, hostile) {
-    const actorCount = store.project.sprites.actors.length;
-    const tableFormation = mapEncounterFormation(map, actorCount);
-    const tableEmpty = tableFormation.every((id) => id === 0xff);
-    if (tableEmpty && !hostile.length) return null; // genuinely nothing either entry point could fire
+    const offer = battleTestOffer(store.project, state.mapIndex, hostile.length);
+    if (!offer.visible) return null; // genuinely nothing either entry point could fire
     const nameOf = (id) => hostile.find((entry) => entry.id === id)?.actor.name ?? `#${id}`;
 
     const picks = state.battleTestPicks.filter((id) => hostile.some((entry) => entry.id === id));
@@ -2086,19 +2255,48 @@ export function mount(container, app) {
       { style: { marginTop: '10px' } },
       el('div.panel-head', { style: { paddingLeft: '0' } }, 'Battle-test'),
       el('p.hint', { style: { marginBottom: '6px' } }, 'Fires a fight right now, from ⚑ Start — nothing about the project changes.'),
-      el(
-        'div.field-row',
-        { style: { marginBottom: '10px' } },
-        el(
-          'button.btn.btn-sm',
-          {
-            disabled: tableEmpty,
-            title: tableEmpty ? "This map's encounter table has no monster it would actually place" : '',
-            onclick: () => battleTest(tableFormation, `${map.name}'s encounter table`)
-          },
-          "▶ This map's table"
-        )
-      ),
+      offer.tableButton
+        ? [
+            el(
+              'div.field-row',
+              { style: { marginBottom: '4px' } },
+              el(
+                'button.btn.btn-sm',
+                {
+                  disabled: offer.tableButton.empty,
+                  title: offer.tableButton.empty ? "This map's encounter table has no monster it would actually place" : '',
+                  onclick: () => battleTest(offer.tableButton.formation, `${map.name}'s encounter table`)
+                },
+                "▶ This map's table"
+              )
+            ),
+            el(
+              'p.hint',
+              { style: { marginBottom: '10px' } },
+              'This button fires the whole list at once. A wandering roll starts only its first one to four actors: all four about 1 time in 4 for a list of four.'
+            )
+          ]
+        : el(
+            'div',
+            { 'data-battle-test-groups': '', style: { marginBottom: '10px' } },
+            offer.groupButtons.map((entry) =>
+              el(
+                'div.field-row',
+                { style: { marginBottom: '4px' } },
+                el(
+                  'button.btn.btn-sm',
+                  {
+                    'data-battle-test-group': entry.group,
+                    onclick: () => battleTest(entry.formation, `${map.name}: ${entry.name}`)
+                  },
+                  `▶ ${entry.name}`
+                )
+              )
+            ),
+            offer.emptyNote
+              ? el('p.hint', { 'data-battle-test-empty': '' }, "This map's table has no group with a live monster, so there is no group to fire.")
+              : null
+          ),
       hostile.length
         ? [
             el(
@@ -2720,6 +2918,7 @@ export function mount(container, app) {
 
   return {
     destroy() {
+      destroyed = true;
       stopWatchingStage();
       worldView?.destroy();
       app.setMeta('');

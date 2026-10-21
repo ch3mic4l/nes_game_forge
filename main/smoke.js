@@ -9492,6 +9492,256 @@ const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
     step('Groups tab: back to the Monsters tab', 'the monster catalog select is the first select again');
   }
 
+  // Encounter groups, Map Forge table editor (handoff-next/encgroups, slice C4): a refused Convert, a real Convert, table edits, the
+  // way back, the empty-catalog case (the only group deleted in the Monster Forge) with undo and redo, and a per-group battle-test.
+  {
+    const encStore = window.__app.store;
+    const pane = () => document.querySelector('#stage');
+    const encountersBefore = structuredClone(encStore.project.maps[0].encounters);
+    const groupsBefore = structuredClone(encStore.project.encounterGroups);
+    const toastTexts = () => [...document.querySelectorAll('#toastHost .toast')].map((n) => n.textContent);
+    const click = (selector) => {
+      const node = pane().querySelector(selector);
+      if (!node) throw new Error('Map Forge encounters: nothing matches ' + selector);
+      node.click();
+    };
+    const choose = (selector, value) => {
+      const node = pane().querySelector(selector);
+      if (!node) throw new Error('Map Forge encounters: nothing matches ' + selector);
+      node.value = String(value);
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    // The harness's own SMOKE_SHOT request (runSmoke's console-message handler): it waits 800 ms for the paint, writes
+    // <FORGE_WORLD_SHOT_DIR>/<name>.png when that is set, and answers through window.__shotDone either way.
+    let encShots = 9100;
+    // Asked twice: an unexposed window's capturePage answers with the frame of the PREVIOUS request, so the second one is the picture.
+    const shot = async (name) => {
+      for (let again = 0; again < 2; again++) {
+        const n = ++encShots;
+        console.log('SMOKE_SHOT ' + n + ' ' + name);
+        await until('the screenshot ' + name, () => window.__shotDone === n, 8000);
+      }
+    };
+    const tableButton = () => [...pane().querySelectorAll('button')].find((b) => b.textContent.includes("This map's table"));
+
+    await window.__app.goTo('map');
+    await until('the legacy encounter section', () => pane().querySelector('[data-encounter-convert]'));
+    if (pane().querySelector('[data-encounter-table]')) throw new Error('a legacy map shows the group table editor');
+    if (!pane().querySelector('[data-encounter-slot]')) throw new Error('a legacy map lost its four actor slots');
+    if (!tableButton()) throw new Error('a legacy map lost its table battle-test button');
+
+    // A refused Convert: 32 groups leave no room for the one new group [Slime]; the text is shown and nothing is committed.
+    encStore.commit('smoke: fill the group list', (project) => {
+      project.encounterGroups = Array.from({ length: 32 }, (_, i) => ({ name: 'Fill ' + i, monsters: [] }));
+    });
+    await wait(150);
+    const refusalBefore = [encStore.revision, encStore.undoStack.length, encStore.redoStack.length, encStore.dirty, JSON.stringify(encStore.project)];
+    click('[data-encounter-convert]');
+    await wait(150);
+    const refusalAfter = [encStore.revision, encStore.undoStack.length, encStore.redoStack.length, encStore.dirty, JSON.stringify(encStore.project)];
+    if (JSON.stringify(refusalAfter) !== JSON.stringify(refusalBefore)) throw new Error('a refused Convert changed the project, history, dirty flag or revision');
+    if (!toastTexts().some((t) => /needs 1 new groups; the project has room for 0/.test(t))) {
+      throw new Error('a refused Convert did not show its message: ' + JSON.stringify(toastTexts()));
+    }
+    encStore.undo(); // the fill
+    await wait(150);
+    if (encStore.project.encounterGroups.length !== groupsBefore.length) throw new Error('undoing the fill did not restore the groups');
+    step('Map Forge Convert: a refusal shows its message and commits nothing', 'revision, undo/redo lengths, dirty and project unchanged');
+
+    // A real Convert: one commit, the editor replaces the slots, the table button goes, a per-group button appears.
+    const undoBeforeConvert = encStore.undoStack.length;
+    click('[data-encounter-convert]');
+    await until('the group table editor', () => pane().querySelector('[data-encounter-table]'));
+    if (encStore.undoStack.length !== undoBeforeConvert + 1) throw new Error('Convert was not exactly one commit');
+    const converted = encStore.project.maps[0].encounters;
+    if (converted.mode !== 'groups' || JSON.stringify(converted.table) !== JSON.stringify([{ group: groupsBefore.length, weight: 4 }])) {
+      throw new Error('Convert wrote the wrong table: ' + JSON.stringify(converted));
+    }
+    if (pane().querySelector('[data-encounter-slot]')) throw new Error('the legacy slots are still shown in group mode');
+    if (tableButton()) throw new Error('a group map still offers a table battle-test button');
+    const groupButtons = [...pane().querySelectorAll('[data-battle-test-group]')];
+    if (groupButtons.length !== 1) throw new Error('expected one per-group battle-test button, saw ' + groupButtons.length);
+    if (!/100[.]0%/.test(pane().querySelector('[data-table-odds="0"]').textContent)) {
+      throw new Error('the only row should read 100.0%: ' + pane().querySelector('[data-table-odds="0"]').textContent);
+    }
+    step('Map Forge Convert: one commit, table editor shown, no table battle-test button', 'row Slime 4, 100.0%, one per-group battle-test button');
+
+    // Table edits: add a second group from the menu, change its weight, odds follow, remove it again.
+    encStore.commit('smoke: two spare groups', (project) => {
+      project.encounterGroups.push({ name: 'Snakes', monsters: [3] }, { name: 'Pair', monsters: [0, 3] });
+    });
+    await wait(150);
+    const spare = encStore.project.encounterGroups.length - 2;
+    choose('[data-table-add]', spare);
+    await until('the added row', () => pane().querySelector('[data-encounter-row="1"]'));
+    if (JSON.stringify(encStore.project.maps[0].encounters.table) !== JSON.stringify([{ group: groupsBefore.length, weight: 4 }, { group: spare, weight: 1 }])) {
+      throw new Error('Add group wrote ' + JSON.stringify(encStore.project.maps[0].encounters.table));
+    }
+    choose('[data-table-weight="1"]', 4);
+    await wait(150);
+    if (encStore.project.maps[0].encounters.table[1].weight !== 4) throw new Error('the weight field did not commit 4');
+    // thresholds floor(4 * 255 / 8) = 127, then 255: widths 127 and 128 of the 255 rolls
+    if (!/49[.]8%/.test(pane().querySelector('[data-table-odds="0"]').textContent) || !/50[.]2%/.test(pane().querySelector('[data-table-odds="1"]').textContent)) {
+      throw new Error('weights 4:4 should read 49.8% and 50.2%: ' + pane().querySelector('[data-table-odds="0"]').textContent + ' / ' + pane().querySelector('[data-table-odds="1"]').textContent);
+    }
+    choose('[data-table-add]', spare + 1);
+    await wait(150);
+    click('[data-table-remove="2"]');
+    await wait(150);
+    if (encStore.project.maps[0].encounters.table.length !== 2) throw new Error('Remove did not drop the third row');
+    step('Map Forge table editor: add, weight, odds and remove', 'one commit each; 4:4 reads 49.8% and 50.2% (thresholds 127, 255)');
+    pane().querySelector('[data-encounter-table]').scrollIntoView({ block: 'center' });
+    await shot('map-table');
+    await window.__app.goTo('monster', { tab: 'groups' });
+    await until('the Groups tab for the screenshot', () => pane().querySelector('[data-group-name]'));
+    await shot('groups-tab');
+    await window.__app.goTo('map');
+    await until('the table editor again', () => pane().querySelector('[data-encounter-table]'));
+
+    // A full table names the limit and disables Add.
+    encStore.commit('smoke: eight groups in the table', (project) => {
+      while (project.encounterGroups.length < 8) project.encounterGroups.push({ name: 'More ' + project.encounterGroups.length, monsters: [0] });
+      project.maps[0].encounters.table = project.encounterGroups.slice(0, 8).map((_, group) => ({ group, weight: 1 }));
+    });
+    await wait(200);
+    if (!pane().querySelector('[data-table-add]').disabled) throw new Error('Add group is enabled on a full table');
+    if (!/at most 8 groups/.test(pane().querySelector('[data-table-add-note]').textContent)) throw new Error('the full-table note does not name the limit');
+    step('Map Forge table editor: a full table disables Add and names the limit', '8 of 8');
+
+    // Per-group battle-test: the group button fires the group's own formation, never the retained actor list.
+    encStore.commit('smoke: a one-row table of the Slime+Snake pair', (project) => {
+      project.maps[0].encounters.table = [{ group: spare + 1, weight: 1 }];
+    });
+    await wait(200);
+    const pairButton = pane().querySelector('[data-battle-test-group="' + (spare + 1) + '"]');
+    if (!pairButton) throw new Error('the Pair group has no battle-test button');
+    pairButton.click();
+    await until('group battle-test to build and boot', () => window.__app.current?.player?.emulator, 60000);
+    const groupEmu = window.__app.current.player.emulator;
+    if (groupEmu.peek(0x0025) !== 5) throw new Error('group battle-test did not land in ST_BATTLE, game_state is ' + groupEmu.peek(0x0025));
+    const groupFormation = [0, 1, 2, 3].map((slot) => groupEmu.peek(0x03bc + slot));
+    if (groupFormation.join(',') !== '0,3,255,255') throw new Error('group battle-test formation was [' + groupFormation.join(',') + '], expected [0,3,255,255]');
+    step('battle-test: a group button fires the group', 'Slime + Snake landed in ST_BATTLE (the retained actor list is [Slime] only)');
+    await window.__app.goTo('map');
+    await until('the Map Forge again', () => pane().querySelector('[data-encounter-table]'));
+
+    // A stale way back: the confirmation opened on map 0 must do nothing once the selected map changed or the Forge was left
+    // (neither bumps the store revision, so the revision guard alone cannot see them).
+    encStore.commit('smoke: a second map to switch to', (project) => {
+      project.maps.push({ ...structuredClone(project.maps[0]), id: project.maps.length, name: 'Elsewhere' });
+    });
+    await wait(200);
+    const mapSelect = () =>
+      [...pane().querySelectorAll('select')].find(
+        (node) => node.options.length === encStore.project.maps.length && node.options[0].textContent === encStore.project.maps[0].name
+      );
+    const staleWayBack = async (label, leave) => {
+      const snapshot = JSON.stringify(encStore.project);
+      const undoLength = encStore.undoStack.length;
+      const revision = encStore.revision;
+      click('[data-table-legacy]');
+      await until('the way-back confirmation (' + label + ')', () => document.querySelector('#modalHost p'));
+      await leave();
+      [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Use the list').click();
+      await wait(250);
+      if (JSON.stringify(encStore.project) !== snapshot || encStore.undoStack.length !== undoLength || encStore.revision !== revision) {
+        throw new Error('a way-back confirmed after ' + label + ' changed the project, history or revision');
+      }
+    };
+    await staleWayBack('the selected map changed', async () => {
+      const select = mapSelect();
+      if (!select) throw new Error('no map selector found');
+      select.value = '1';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(200);
+    });
+    if (!toastTexts().some((t) => /selected map changed while the confirmation/.test(t))) throw new Error('a stale way-back did not say why nothing changed');
+    mapSelect().value = '0';
+    mapSelect().dispatchEvent(new Event('change', { bubbles: true }));
+    await until('map 0 selected again', () => pane().querySelector('[data-encounter-table]'));
+    await staleWayBack('the Forge was left', async () => {
+      await window.__app.goTo('monster');
+      await until('the Monster Forge', () => pane().querySelector('[data-monster-tab]'));
+    });
+    await window.__app.goTo('map');
+    await until('the Map Forge again', () => pane().querySelector('[data-encounter-table]'));
+    encStore.undo(); // the second map
+    await wait(200);
+    if (encStore.project.maps.length !== 1) throw new Error('undo did not remove the second map');
+    step('Map Forge way back: stale confirmations do nothing', 'confirming after a map switch, or after leaving the Forge, left project, undo stack and revision unchanged');
+
+    // The way back: behind a confirm; mode and table go, groups and the actor list stay; undo returns the table.
+    const groupsBeforeWayBack = JSON.stringify(encStore.project.encounterGroups);
+    click('[data-table-legacy]');
+    await until('the way-back confirmation', () => document.querySelector('#modalHost p'));
+    [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Use the list').click();
+    await until('the legacy slots', () => pane().querySelector('[data-encounter-slot]'));
+    const back = encStore.project.maps[0].encounters;
+    if ('mode' in back || 'table' in back) throw new Error('the way back left mode/table behind: ' + JSON.stringify(back));
+    if (JSON.stringify(encStore.project.encounterGroups) !== groupsBeforeWayBack) throw new Error('the way back changed the groups');
+    if (JSON.stringify(back.actorIds) !== JSON.stringify(encountersBefore.actorIds)) throw new Error('the retained actor list did not return');
+    encStore.undo();
+    await until('the editor after undo', () => pane().querySelector('[data-encounter-table]'));
+    step('Map Forge way back: Use the actor list again', 'confirm; mode and table removed, groups kept, undo restores the table');
+
+    // Empty catalog (RC2.3): the project's only group is the map's only row; delete it in the Monster Forge; the editor stays.
+    encStore.commit('smoke: one group, one row', (project) => {
+      project.encounterGroups = [{ name: 'Only', monsters: [0] }];
+      project.maps[0].encounters = { ...project.maps[0].encounters, mode: 'groups', table: [{ group: 0, weight: 3 }] };
+    });
+    await window.__app.goTo('monster', { tab: 'groups' });
+    await until('the Groups tab', () => pane().querySelector('[data-group-delete]'));
+    pane().querySelector('[data-group-delete]').click();
+    await until('the delete confirmation', () => document.querySelector('#modalHost p'));
+    [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Delete').click();
+    await wait(200);
+    if (encStore.project.encounterGroups.length !== 0) throw new Error('Delete did not remove the only group');
+    await window.__app.goTo('map');
+    const expectEmptyCatalogEditor = (label) => {
+      if (!pane().querySelector('[data-encounter-table]')) throw new Error(label + ': the group-mode editor is gone with zero groups');
+      if (!pane().querySelector('[data-table-empty]')) throw new Error(label + ': the empty-table warning is missing');
+      if (!pane().querySelector('[data-table-legacy]')) throw new Error(label + ': "Use the actor list again" is missing');
+      if (!pane().querySelector('[data-table-add]').disabled) throw new Error(label + ': Add group is enabled with zero groups');
+      if (!/Monster Forge/.test(pane().querySelector('[data-table-add-note]').textContent)) throw new Error(label + ': Add does not point at the Monster Forge');
+    };
+    await until('the empty-catalog editor', () => pane().querySelector('[data-table-empty]'));
+    expectEmptyCatalogEditor('after the delete');
+    // Zero groups AND zero hostile actors: the editor, warning and way back stay, and the Battle-test section is the only thing that goes.
+    encStore.commit('smoke: no actor deals damage', (project) => {
+      for (const actor of project.sprites.actors) actor.damage = 0;
+    });
+    await wait(250);
+    expectEmptyCatalogEditor('with no group and no hostile actor');
+    if ([...pane().querySelectorAll('.panel-head')].some((h) => h.textContent.trim() === 'Battle-test')) {
+      throw new Error('the Battle-test section is shown with no group formation and no hostile actor');
+    }
+    encStore.undo(); // the damage edit
+    await wait(200);
+    encStore.undo();
+    await wait(200);
+    if (encStore.project.encounterGroups.length !== 1) throw new Error('undo did not return the group');
+    await window.__app.goTo('map');
+    await until('the editor after undo', () => pane().querySelector('[data-encounter-row="0"]'));
+    encStore.redo();
+    await wait(200);
+    await window.__app.goTo('map');
+    await until('the empty-catalog editor after redo', () => pane().querySelector('[data-table-empty]'));
+    expectEmptyCatalogEditor('after redo');
+    step('Map Forge empty catalog: the editor, warning and way back survive deleting the only group', 'zero groups; undo returns the row, redo empties it again; Add disabled with Monster Forge guidance');
+
+    // Leave the shared project as this block found it.
+    encStore.commit('smoke: restore the encounter block', (project) => {
+      project.encounterGroups = structuredClone(groupsBefore);
+      project.maps[0].encounters = structuredClone(encountersBefore);
+    });
+    await wait(100);
+    if (JSON.stringify(encStore.project.maps[0].encounters) !== JSON.stringify(encountersBefore)) throw new Error('the encounter block did not restore the map');
+    // The group battle-test above built the project, which saved the group table to this copy's directory; the store is back to
+    // the original, so write that back too or the later "pristine" reopen of sample-rpg reads the group-mode map from disk.
+    const encRestoreSave = await window.forge.project.save(encStore.dir, encStore.project);
+    if (!encRestoreSave.ok) throw new Error('could not write the restored sample-rpg back: ' + encRestoreSave.error);
+  }
+
   const rpgStore = window.__app.store;
 
   // The phase-1 reproduction fixture, verbatim from
@@ -15856,6 +16106,10 @@ export async function runSmoke(window) {
       (async () => {
         if (process.env.FORGE_WORLD_SHOT_DIR) {
           await new Promise((resolve) => setTimeout(resolve, 800)); // a capture taken at once misses the stage's paint
+          // A window the desktop has not exposed is not repainted on its own, and capturePage then hands back the last frame it
+          // did paint (an earlier Forge, an earlier toast): schedule a full repaint and give it a moment before reading.
+          window.webContents.invalidate();
+          await new Promise((resolve) => setTimeout(resolve, 400));
           const image = await window.webContents.capturePage();
           await fs.mkdir(process.env.FORGE_WORLD_SHOT_DIR, { recursive: true });
           await fs.writeFile(path.join(process.env.FORGE_WORLD_SHOT_DIR, `${shotRequest[2]}.png`), image.toPNG());
