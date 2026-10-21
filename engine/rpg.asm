@@ -69,9 +69,13 @@ check_encounter_live:
   sta <enc_step
   ; A formation from this map's encounter list, one to four of them.
   jsr rng_next
+  .if ENC_GROUPS
+  sta <bt_tmp2               ; the raw roll (1..255): start_encounter turns it into a count or a pick
+  .else
   and #3
   sta <bt_tmp2
   inc <bt_tmp2
+  .endif
   lda #1
   sta <bt_esc                ; a wandering monster can be run from
   jmp start_encounter
@@ -121,6 +125,22 @@ start_encounter_ord_screen:
   lda screen_map,y
 start_encounter_have_map:
 start_encounter_ord:
+  .if ENC_GROUPS
+  ; bt_tmp2 = the raw roll here. A legacy map ($FF) turns it into today's
+  ; (roll & 3) + 1 leading slots and runs the code below unchanged; a group
+  ; map picks a row by threshold instead (encounter groups, design 3.2).
+  tay
+  lda map_enc_off,y
+  cmp #$FF
+  bne enc_group_path
+  lda <bt_tmp2
+  and #3
+  clc
+  adc #1
+  sta <bt_tmp2
+  tya                       ; the map index again
+start_encounter_legacy:     ; (a label only when ENC_GROUPS: a groups-off build keeps HEAD's symbol table)
+  .endif
   asl a
   asl a                     ; four formation slots per map
   sta <bt_tmp
@@ -140,12 +160,43 @@ start_encounter_next:
   inx
   cpx #MAX_MONSTERS
   bne start_encounter_slot
+  .if ENC_GROUPS
+start_encounter_first:
+  .endif
   lda mon_slot_actor
   cmp #$FF
   beq start_encounter_none  ; the map lists a rate but no monsters
   jmp battle_begin
 start_encounter_none:
   rts
+  .if ENC_GROUPS
+; A = this map's first entry in enc_thr/enc_grp. Take the first entry whose
+; threshold is >= the roll (the map's last is $FF, so the scan ends), then copy
+; that entry's row of enc_group_actors (4 ids, $FF padded; an all-$FF row is
+; "roll, start nothing", which start_encounter_first turns into a return).
+enc_group_path:
+  tay
+enc_pick:
+  lda enc_thr,y
+  cmp <bt_tmp2
+  bcs enc_picked
+  iny
+  bne enc_pick
+enc_picked:
+  lda enc_grp,y
+  asl a
+  asl a                     ; four ids per row
+  tay
+  ldx #0
+enc_copy:
+  lda enc_group_actors,y
+  sta mon_slot_actor,x
+  iny
+  inx
+  cpx #MAX_MONSTERS
+  bne enc_copy
+  jmp start_encounter_first
+  .endif
 
 ; Freeze the world and hand over. The bank draws its own screen on the first
 ; tick, under forced blank, exactly as redraw_screen does for the field.

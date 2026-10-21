@@ -428,8 +428,11 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // screen reference exists (a group names actors, a table names groups), so referenceInventory needs no change.
 // Re-pinned for encounter groups fix 1: audited -- the diff is planEncounterConversion's entry-total refusal only (existing total + cost > 255,
 // zero-cost conversions included); remapScreenReferences, projectEvents and allCommands are untouched and no stored screen reference is added.
+// Re-pinned for encounter groups C2: audited -- the diff to shared/project.js adds projectWithoutEncounterGroups (a clone with every map's
+// encounters.mode/table removed) and one validateEncounterGroups rule (encounter-groups-code-override, a read of project.code.overrides names);
+// remapScreenReferences, projectEvents and allCommands are untouched and no stored screen reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': '0c834ae4856124dfed185e9b61a0be81fb4e2ff0d8e89d91aa98ea1e5e8eadbf',
+  'shared/project.js': '71d958bbd399a79ae5770d19bf8647a3e79cef81c80248046c7554f64fac8c79',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

@@ -100,6 +100,7 @@ import {
   projectEvents,
   allCommands,
   mapEncounterFormation,
+  NO_ACTOR,
   itemMissing,
   canBackItem,
   ITEM_EFFECT_KINDS,
@@ -118,6 +119,14 @@ import {
   projectWithoutJoinNaming,
   projectWithoutNameToken,
   projectWithoutEquipment,
+  projectWithoutEncounterGroups,
+  projectUsesEncounterGroups,
+  mapUsesEncounterGroups,
+  mapEncounterEntries,
+  encounterThresholds,
+  encounterGroupFormation,
+  encounterRowPlan,
+  encounterEntryTotal,
   projectNeedsHeroDefault,
   projectNeedsNameSeed,
   streamedBoardProblems,
@@ -921,6 +930,13 @@ export const EQUIP_SAVE_KERNEL_ALLOWANCE = 19;
  * test/unit/kernelbytes.test.js on MMC1, MMC3 and UNROM 512 in every cell of test/lib/equipcells.js that has a kernel half.
  */
 export const EQUIP_KERNEL_ALLOWANCE = 30;
+
+// Encounter groups (docs/design: handoff-next/encgroups/design.md section 3.4, ROADMAP item 5): the per-map dispatch in
+// start_encounter (the `map_enc_off` read and the legacy branch) plus the picker (`enc_group_path`..`enc_copy`), net of the
+// `and #3` / `inc` pair check_encounter hands to the legacy branch. Gated on projectUsesEncounterGroups AND the battle base,
+// the predicate rpg.asm's `.if ENC_GROUPS` sits inside. MEASURED (kernelbytes.test.js, equality-asserted): 48 on MMC1, MMC3 and
+// UNROM 512, ordinary and streamed -- equal to the hand-counted prediction, and mapper-independent, so flat.
+export const ENCGROUP_KERNEL_ALLOWANCE = 48;
 // move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
 // move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
 // Turn/Wait first slice), so this dropped from the 395 bytes it measured
@@ -2169,6 +2185,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesSaveBattle ? SAVE_BATTLE_KERNEL_ALLOWANCE : 0) +
     (projectUsesEquipment(project) ? EQUIP_KERNEL_ALLOWANCE : 0) +
+    (usesBattleBase && projectUsesEncounterGroups(project) ? ENCGROUP_KERNEL_ALLOWANCE : 0) +
     (usesSave && projectUsesEquipment(project) ? EQUIP_SAVE_KERNEL_ALLOWANCE : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
@@ -2652,6 +2669,10 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (projectUsesEquipment(project)) {
     active.push({ label: 'every equipment piece', strip: (p) => projectWithoutEquipment(p) });
   }
+  // Encounter groups: the picker's code and the four tables, priced by the same full occupancy.
+  if (projectUsesEncounterGroups(project)) {
+    active.push({ label: 'the encounter groups (the maps go back to their actor lists)', strip: (p) => projectWithoutEncounterGroups(p) });
+  }
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
   // can switch off", and a title screen is content on a map, not a command --
@@ -2784,6 +2805,42 @@ const PLACEHOLDER_FRAMES = [
 ];
 
 const hex = (value) => `$${(value & 0xff).toString(16).padStart(2, '0').toUpperCase()}`;
+
+/**
+ * The encounter-group tables of maps.inc (design 3.2), as emitted blocks; `[]` unless the project can roll a group.
+ * `map_enc_off` is $FF for a legacy map (it runs today's prefix path), the map's first entry in enc_thr/enc_grp for a
+ * rate>0 group map, and 0 for a rate-0 group map (never read: the rate gate returns first). A rate>0 group map with no
+ * live entry gets one fallback entry {$FF, the shared empty row}. enc_grp holds the UNSCALED row index.
+ */
+function encounterGroupTables(project) {
+  if (!projectUsesEncounterGroups(project)) return [];
+  const { groups, fallback } = encounterRowPlan(project);
+  const rowOf = new Map(groups.map((group, row) => [group, row]));
+  const thresholds = [];
+  const rowIndices = [];
+  const offsets = project.maps.map((map, mapIndex) => {
+    if (!mapUsesEncounterGroups(map)) return 0xff;
+    if ((map.encounters.rate ?? 0) <= 0) return 0;
+    const first = thresholds.length;
+    const entries = mapEncounterEntries(project, mapIndex);
+    if (entries.length) {
+      thresholds.push(...encounterThresholds(entries.map((entry) => entry.weight)));
+      rowIndices.push(...entries.map((entry) => rowOf.get(entry.group)));
+    } else {
+      thresholds.push(0xff);
+      rowIndices.push(groups.length);
+    }
+    return first;
+  });
+  const rows = groups.flatMap((group) => encounterGroupFormation(project, group));
+  if (fallback) rows.push(...new Array(RPG_LIMITS.encounterActors).fill(NO_ACTOR));
+  return [
+    `map_enc_off:\n${dbBlock(offsets)}`,
+    `enc_thr:\n${dbBlock(thresholds)}`,
+    `enc_grp:\n${dbBlock(rowIndices)}`,
+    `enc_group_actors:\n${dbBlock(rows, RPG_LIMITS.encounterActors)}`
+  ];
+}
 
 function dbBlock(values, perLine = 16) {
   const lines = [];
@@ -3394,8 +3451,13 @@ export function kernelTableBytes(project, mapper) {
     : flat.length;
   const streamedBytes = streamedMapCount ? 6 * streamedMapCount + mapTypeTableBytes(project.maps.length) : 0;
   const boundTileBytes = boundTilesEnabled ? 2 * ordinaryScreens : 0;
+  // Encounter groups (design 3.2/3.4): map_enc_off 1 B per map, enc_group_actors 4 B per row, enc_thr + enc_grp 2 B per compiled
+  // entry. Rows and entries come from the shared helpers the emitter uses, so the charge and the bytes cannot disagree.
+  const encounterGroupBytes = projectUsesEncounterGroups(project)
+    ? project.maps.length + 4 * encounterRowPlan(project).count + 2 * encounterEntryTotal(project)
+    : 0;
   const tableBytes =
-    13 * ordinaryScreens + 9 * project.maps.length + streamedBytes + spriteBytes + itemBytes + boundTileBytes;
+    13 * ordinaryScreens + 9 * project.maps.length + streamedBytes + spriteBytes + itemBytes + boundTileBytes + encounterGroupBytes;
   return { fixedBytes, tableBytes };
 }
 
@@ -3803,6 +3865,30 @@ export function resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, f
   return { kind: 'screen', flatIndex: Math.min(entity.props?.toScreen ?? 0, Math.max(0, flatLength - 1)) };
 }
 
+/**
+ * Defensive re-assertion of validateProject's encounter-entries-over / encounter-rows-over, called by generateAssets before any
+ * byte is emitted: the normalizer makes the rows limit unreachable for a loaded project, and checkCapacity's validateProject has
+ * already refused an entry overflow with its advice, so this only fires for a caller that skips both (a test hands it an
+ * un-normalized project). Exported for that reason.
+ */
+export function assertEncounterGroupBounds(project) {
+  if (!projectUsesEncounterGroups(project)) return;
+  const entryTotal = encounterEntryTotal(project);
+  if (entryTotal > RPG_LIMITS.encounterEntriesTotal) {
+    throw new Error(
+      `Map Forge: the encounter tables compile to ${entryTotal} entries; the limit is ${RPG_LIMITS.encounterEntriesTotal}. ` +
+        "Remove rows from the maps' tables, or set their encounter rate to 0."
+    );
+  }
+  const rowCount = encounterRowPlan(project).count;
+  if (rowCount > RPG_LIMITS.encounterGroups + 1) {
+    throw new Error(
+      `Monster Forge: the encounter groups in use need ${rowCount} table rows; the limit is ${RPG_LIMITS.encounterGroups + 1}. ` +
+        'Delete unused groups in the Monster Forge.'
+    );
+  }
+}
+
 export async function generateAssets({ dir, project, log = () => {} }) {
   const { problems, capacity, reserveFlashSave, screenCount, streamedPlan } = checkCapacity(project);
   const errors = problems.filter((problem) => problem.severity === 'error');
@@ -3811,6 +3897,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     error.problems = problems;
     throw error;
   }
+
+  assertEncounterGroupBounds(project);
 
   const buildDir = path.join(dir, 'build');
   const assetsDir = path.join(buildDir, 'assets');
@@ -4423,6 +4511,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `TITLE_PROMPT_ROW  = ${TITLE_PROMPT_ROW}`,
     // The banked code region, and the PRG bank the trampoline switches in.
     `BATTLE_ENABLED = ${codeSlots.length ? 1 : 0}`,
+    // Encounter groups (design 3.2): rpg.asm's per-map dispatch and picker, and the four tables in maps.inc. Always defined.
+    `ENC_GROUPS = ${projectUsesEncounterGroups(project) ? 1 : 0}`,
     `BATTLE_BANK    = ${codeSlots.length ? codeSlots[0].prgBank : 0}`,
     // The CHR bank a battle switches to, which is where the monster artwork
     // lives. Clamped to what survived the mapper's tileset limit.
@@ -4893,6 +4983,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
         project.maps.flatMap((map) => mapEncounterFormation(map, actorCount)),
         RPG_LIMITS.encounterActors
       )}`,
+      ...encounterGroupTables(project),
       `map_battle_sky:\n${dbBlock(project.maps.map((map) => map.battleSkyTile ?? 0))}`,
       `map_battle_ground:\n${dbBlock(project.maps.map((map) => map.battleGroundTile ?? 0))}`,
       // The song a map plays, in the same NO_SONG-for-Silence byte a Play

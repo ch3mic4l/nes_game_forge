@@ -39,6 +39,7 @@ import {
   BATTLE_KERNEL_ALLOWANCE_BY_MAPPER,
   TITLE_KERNEL_ALLOWANCE_BY_MAPPER,
   KERNEL_SLACK,
+  ENCGROUP_KERNEL_ALLOWANCE,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   SAVE_BATTLE_KERNEL_ALLOWANCE,
   EQUIP_SAVE_KERNEL_ALLOWANCE,
@@ -8276,5 +8277,78 @@ test('the uncompacted streamed + Save + Move helper project (After map and 2x2 t
     const mapper = resolveMapper(mapperId);
     const bare = equipStreamedProject({ mapper: mapperId, save: true, move: true, items: [{ id: 0, name: 'Tonic', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 20 } }] });
     await assert.rejects(() => measureKernelLoBank(t, mapper, bare), /lookup tables need/, `${mapper.name}: refused without any equipment`);
+  }
+});
+
+// --- Encounter groups (handoff-next/encgroups design 3.4, ROADMAP item 5, commit C2) -------------------------------------------
+//
+// ENCGROUP_KERNEL_ALLOWANCE: the per-map dispatch in start_encounter (map_enc_off read, legacy branch) plus the picker, net of the
+// `and #3` / `inc` pair check_encounter hands to the legacy branch. Mapper-independent code, MEASURED (predicted 48 by hand count):
+// 48 on MMC1, MMC3 and UNROM 512, ordinary and streamed, so a flat constant, not a *_BY_MAPPER table. Gated on
+// projectUsesEncounterGroups AND the battle base. The isolation is the same project with its one rate>0 map legacy vs converted
+// (planEncounterConversion); the table bytes that differ (map_enc_off, enc_thr, enc_grp, enc_group_actors) are subtracted using the
+// generator's own kernelTableBytes, so what is left is code, and the whole-bank model (nesasm's total vs kernelCodeBytes +
+// kernelTableBytes) is held on BOTH builds -- a code-only delta cannot validate the table term.
+import { planEncounterConversion, applyEncounterConversion } from '../../shared/project.js';
+
+const ENC_CELLS = [
+  { shape: 'ordinary', boards: [1, 4, 30] },
+  { shape: 'streamed', boards: [1, 4, 30] }
+];
+
+async function encGroupProject(shape, mapperId) {
+  let project;
+  if (shape === 'ordinary') {
+    project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = mapperId;
+  } else {
+    // A streamed map is one screen tall on MMC1/MMC3 (they stream side to side), two on UNROM 512's four-screen board.
+    project = createStreamedProject({ gameType: 'rpg', mapper: mapperId, mirroring: mapperId === 30 ? 'fourscreen' : 'vertical', gridH: mapperId === 30 ? 2 : 1 });
+    project.sprites.actors.push({ name: 'Slime', behavior: 'monster', hp: 5, damage: 1 });
+  }
+  const target = project.maps.length - 1;
+  project.maps[target].encounters = { rate: 10, actorIds: [0] };
+  return { project, target };
+}
+
+for (const { shape, boards } of ENC_CELLS) {
+  test(`ENCGROUP_KERNEL_ALLOWANCE (${shape}) equals the real kernel-lo code growth of converting a map to groups, on MMC1, MMC3 and UNROM 512; whole-bank model holds on both builds`, { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+    assert.equal(ENCGROUP_KERNEL_ALLOWANCE, 48, 'the hand-written figure: measured 48 on every board (predicted 48)');
+    for (const mapperId of boards) {
+      const mapper = resolveMapper(mapperId);
+      const { project: off, target } = await encGroupProject(shape, mapperId);
+      const on = structuredClone(off);
+      const plan = planEncounterConversion(on, target);
+      assert.equal(plan.ok, true, plan.message);
+      applyEncounterConversion(on, plan);
+      const label = `${mapper.name} (${shape})`;
+      const tableDelta = kernelTableBytes(on, mapper).tableBytes - kernelTableBytes(off, mapper).tableBytes;
+      assert.equal(tableDelta, 1 * on.maps.length + 4 * 1 + 2 * 1, `${label}: tables = 1 per map + 4 per row + 2 per entry (one group, one entry, no fallback = 7 for a one-map project)`);
+      const usedOff = await measureKernelLoBank(t, mapper, off);
+      const usedOn = await measureKernelLoBank(t, mapper, on);
+      assert.equal(usedOn - usedOff - tableDelta, ENCGROUP_KERNEL_ALLOWANCE, `${label}: real code growth`);
+      assert.equal(kernelCodeBytes(on, mapper) - kernelCodeBytes(off, mapper), ENCGROUP_KERNEL_ALLOWANCE, `${label}: kernelCodeBytes charge`);
+      const marginOff = await measureWholeBank(t, mapper, off);
+      const marginOn = await measureWholeBank(t, mapper, on);
+      assert.equal(marginOn, marginOff, `${label}: converting moves the whole-bank margin (${marginOff} -> ${marginOn}): the byte model and nesasm disagree`);
+      assert.ok(marginOn >= KERNEL_SLACK && marginOn <= KERNEL_SLACK * 2, `${label}: absolute whole-bank margin ${marginOn} outside [KERNEL_SLACK, 2*KERNEL_SLACK]`);
+    }
+  });
+}
+
+test('ENCGROUP_KERNEL_ALLOWANCE is not charged to an action build, and a group-mode map in an action project changes no byte (the game-type trap)', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  for (const mapper of ACTION_MEASURED_MAPPERS) {
+    const plain = await loadProject(SAMPLE);
+    plain.cartridge.mapper = mapper.id;
+    const forced = structuredClone(plain);
+    forced.encounterGroups = [{ name: 'G', monsters: [0] }];
+    forced.maps[0].encounters = { rate: 5, actorIds: [], mode: 'groups', table: [{ group: 0, weight: 1 }] };
+    assert.equal(kernelCodeBytes(forced, mapper), kernelCodeBytes(plain, mapper), `${mapper.name}: no encounter-group charge on an action project`);
+    assert.deepEqual(kernelTableBytes(forced, mapper), kernelTableBytes(plain, mapper), `${mapper.name}: no table charge either`);
+    const usedPlain = await measureKernelLoBank(t, mapper, plain);
+    const usedForced = await measureKernelLoBank(t, mapper, forced);
+    assert.equal(usedForced, usedPlain, `${mapper.name}: nesasm's kernel-lo usage is identical (ENC_GROUPS = 0)`);
+    const margin = await measureWholeBank(t, mapper, forced);
+    assert.ok(margin >= KERNEL_SLACK && margin <= KERNEL_SLACK * 2, `${mapper.name}: absolute action whole-bank margin ${margin}`);
   }
 });

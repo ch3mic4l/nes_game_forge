@@ -7102,6 +7102,19 @@ export function projectWithoutEquipment(project) {
   for (const item of clone.items ?? []) item.equip = null;
   return clone;
 }
+/**
+ * The counterfactual the kernel-lo advice prices: every group-mode map goes
+ * back to its retained actor list (`mode` and `table` removed). Groups stay;
+ * nothing else changes, so `map_enc_actors` is byte-identical.
+ */
+export function projectWithoutEncounterGroups(project) {
+  const clone = structuredClone(project);
+  for (const map of clone.maps ?? []) {
+    delete map.encounters.mode;
+    delete map.encounters.table;
+  }
+  return clone;
+}
 export function projectWithoutEquipmentMag(project) {
   const clone = structuredClone(project);
   for (const item of clone.items ?? []) if (item.equip) item.equip.mag = 0;
@@ -7584,6 +7597,17 @@ function validateEncounterGroups(project, add) {
       'Map Forge',
       `The encounter tables compile to ${total} entries; the limit is ${limit}, so ${over} must go. ${advice}`,
       'encounter-entries-over', { maps: rollers.map((roller) => roller.mapIndex) }, [total, limit]
+    );
+  }
+  // A replacement rpg.asm cannot be known to honour the group picker: a conservative incompatibility, not a proof of breakage.
+  if (projectUsesEncounterGroups(project) && (project.code?.overrides ?? []).some((file) => file.name === 'rpg.asm')) {
+    add(
+      'error',
+      'Code Forge',
+      'This project overrides rpg.asm and also uses encounter groups. The group picker lives in rpg.asm, and a replacement ' +
+        'cannot be known to honour it: remove the rpg.asm override in the Code Forge, or set the maps back to their actor ' +
+        'lists ("Use the actor list again") or their encounter rate to 0 in the Map Forge.',
+      'encounter-groups-code-override', {}, []
     );
   }
   const rows = encounterRowPlan(project).count;
