@@ -27,6 +27,9 @@ Three rules hold it together:
   `docs/design-kernel-diet.md` §3) never catches this ahead of time — it audits the
   stock repository source, not a project's build-time copy — so a
   mismatched override is caught by the assembler, not this guard.
+- **An override of `rpg.asm` is refused when the project uses encounter groups.** `validateProject` raises the error `encounter-groups-code-override` (naming the Code Forge and the Map Forge) when
+  `projectUsesEncounterGroups` and `code.overrides` holds `rpg.asm`: a replacement cannot be known to honour the new per-map picker. It is a conservative policy, not a proof of breakage;
+  an override of any other file, or of `rpg.asm` in a project with only legacy or rate-zero maps, is unaffected (`docs/design-encounter-groups.md`).
 - **Overrides are copied in at their own name and their own line numbers.** The generator writes
   the stock engine in first and the overrides over the top, so nesasm's `file:line` refers to
   exactly what the editor shows, and the Build panel's error line can open it. `build/` is

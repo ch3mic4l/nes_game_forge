@@ -110,6 +110,7 @@ before touching any of these.
 - Rewriting every stored flat-screen reference after a map/screen structural edit →
   `remapScreenReferences(project, translate)` in `shared/project.js`.
 - Growing the flash save record moves the `sw_*` block by `EQUIP_SAVE_SHIFT` (generated into `cartridge.inc`), and `pc_equip` is slot-major and recalculated persistently at exactly three triggers -- `equip_set`, `equip_init` and `party_restore` (Continue is the restore caller) -- plus `eq_preview_stat`'s temporary trial wear; depth: `docs/reference-battle-system.md`.
+- A map's encounter mode is `map.encounters.mode` and nothing else -- read it through `mapUsesEncounterGroups`, never `table.length` or `actorIds` -- and a legacy map keeps its exact `(rng&3)+1` path and its `map_enc_actors` row in every project; depth: `docs/reference-single-writer.md`, `docs/design-encounter-groups.md`.
 - Engine RAM addresses → `engine/constants.asm`. Shipping tooling *parses* them (`parseEquates`,
   `shared/enginesyms.js`) out of the `constants.asm` in `build/`; tests hardcode addresses with a
   `; from engine/constants.asm` comment, because a test that reads the file it is checking proves

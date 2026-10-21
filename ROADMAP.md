@@ -422,10 +422,10 @@ Reusing actors as monsters and items is a genuinely clever economy, and it will 
 system grows. Distinct compact records for:
 
 - Items and key items
-- ~~Weapons and armor, and equipment slots~~ — **built** (equipment, `docs/design-equipment.md`; classes, growth profiles and encounter groups remain)
+- ~~Weapons and armor, and equipment slots~~ — **built** (equipment, `docs/design-equipment.md`; classes and growth profiles remain)
 - Skills and their effects
 - Status conditions (poison is already a status bit; this generalizes it)
-- Enemy groups / encounter tables
+- ~~Enemy groups / encounter tables~~ — **built** (encounter groups, `docs/design-encounter-groups.md`)
 - Classes, or selectable growth profiles
 
 Start with **items, equipment and a few general status effects**. Not RPG Maker's whole database —
@@ -530,7 +530,8 @@ and still owes an author-facing sentence.
   amount) and the linked Pickup actor ("Collected from") are all authored there. **Equipment was built afterwards** (weapons, armor and accessories in three
   slots per party member, ATK/DEF/MAG/MDEF bonuses, a bindable Equip action that opens an in-game
   Equip screen, the authoring UI, and the B-press and physical-damage fixes it carried; commits C1b to
-  C6d, `docs/design-equipment.md`). Skills, status-condition generalization, encounter tables and
+  C6d, `docs/design-equipment.md`). **Encounter groups were built after that** (named groups in the Monster Forge, a per-map weighted table in the Map Forge,
+  per-map legacy dispatch; `docs/design-encounter-groups.md`). Skills, status-condition generalization and
   classes/selectable growth profiles — the rest of this phase's original scope (line-for-line,
   above) — are not built and stay open roadmap items of their own if this generalizes further.
 - **6. Docs** — **done**. The developer-facing half (CLAUDE.md, this file) is current as of phase
@@ -1961,7 +1962,7 @@ passage in *The battle system* carry the mechanism; it is not repeated here. Fix
 2. ~~Variables, branching, choices, triggers, common events — item 1~~ — **done**: `EVENT_COMMANDS`
    and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, 21 commands to seven
 3. ~~SRAM save/load — item 4~~ — **done**, one slot
-4. ~~Items, equipment, status effects, battle testing — item 5~~ — **done** (equipment shipped last; classes, growth profiles and encounter groups remain)
+4. ~~Items, equipment, status effects, battle testing — item 5~~ — **done** (encounter groups shipped last; classes and growth profiles remain)
 5. ~~Movement routes and the audiovisual cutscene commands — item 6~~ — **done**
 
 Item 7 (map organization and reuse) is not part of this kernel-bank-ordered sequence: it landed

@@ -114,3 +114,16 @@ renderer, and `node:test` alike.
 - **`EQUIP_SAVE_SHIFT`** is generated into `assets/cartridge.inc`, not `config.inc` (`equipSaveShift`, `main/build/generate.js`): it is a
   cartridge/save-record fact that moves the streamed `sw_*` block, and the harness's own scene builders must scan `cartridge.inc` for it
   (there is no fallback; a build without the file fails).
+
+### Encounter groups (ROADMAP item 5)
+
+- **Which mode a map is in** is `map.encounters.mode`, and only that (`'groups'`, absent otherwise). Every consumer reads `mode` through `mapUsesEncounterGroups` /
+  `projectUsesEncounterGroups`, never `table.length` or `actorIds`; the generator, validation, the UI, `duplicateMapCore` and the capacity model all agree on it. A map's mode changes
+  only by an explicit action in one `store.commit`: `applyEncounterConversion` or `useLegacyEncounterList`.
+- **A group map's compiled entries** are `mapEncounterEntries`; **the weight-to-byte rule** is `encounterThresholds` (the Map Forge's chance column reads it too, never a
+  second division); **the row and entry accounting** is `encounterRowPlan` / `encounterEntryTotal`, shared by validation, `encounterGroupTables` in the generator and
+  `kernelTableBytes`. A legacy map's formation is still `mapEncounterFormation`, and its bytes ship in `map_enc_actors` for every map regardless of mode.
+- **The limits** are `RPG_LIMITS.encounterGroups`, `encounterTableEntries`, `encounterWeightMax` and `encounterEntriesTotal`; the Monster and Map Forges, the conversion preflight and
+  validation all read them.
+- **Authoring moves** for both Forges live in `shared/encountergroups.js` (DOM-free); the Forges hold no rule of their own, and a refusal is decided before `store.commit`.
+- **`ENC_GROUPS`** is generated into `config.inc` (always defined, 0 or 1) from `projectUsesEncounterGroups`; the engine's labels that only make sense with the picker exist only under it.

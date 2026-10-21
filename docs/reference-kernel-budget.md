@@ -865,3 +865,21 @@ smaller projects and are **measured there** (review R3 of C4): the streamed + Sa
 compact streamed + Save + battle-feature world with the unplaced Iris NPC removed, both UNROM 512 in `BANKED_CELLS` and `KERNEL_CELLS`
 (1,074 / +25 / +25 / +50 and kernel 49, model gap 0). `test/lua/build_flash_roms.mjs`'s streamed equipment board shrinks its title map
 to one screen (13 lookup bytes per screen) so that the flash save check keeps a streamed world with Save and equipment.
+
+### Encounter group allowance (ROADMAP item 5, encounter groups C2)
+
+`ENCGROUP_KERNEL_ALLOWANCE` is **48** bytes of kernel-lo, charged when `usesBattleBase && projectUsesEncounterGroups(project)` (an RPG with at least one group-mode map
+at rate above zero): the per-map dispatch in `start_encounter` (the `map_enc_off` read and the legacy branch) plus the picker (`enc_group_path`..`enc_copy`), net of the
+4 bytes `check_encounter` no longer spends. It is **measured**, not just predicted, and equals the design's hand count exactly on MMC1, MMC3 and UNROM 512,
+ordinary and streamed (six cells in `kernelbytes.test.js`, `ENCGROUP_KERNEL_ALLOWANCE`), so it is one flat term, not `*_BY_MAPPER`. An action project pays **0**,
+even one forced to carry a group-mode map, and its `config.inc` has `ENC_GROUPS = 0`.
+
+The tables are priced in `kernelTableBytes` as `1*maps + 4*rows + 2*entries` (`map_enc_off`, `enc_group_actors`, `enc_thr` and `enc_grp`), rows and entries from
+`encounterRowPlan` and `encounterEntryTotal`, flat when no map uses groups. The gates differ by one condition on purpose: the tables are emitted whenever
+`projectUsesEncounterGroups` holds, the code allowance additionally needs the battle base. Measured: the `sample-rpg` shape (one map, one group, one entry) costs 7 table bytes
+(55 with the code); 32 maps x 7 entries over 32 live groups costs 608 (656); the bound fixture (33 rows and 255 entries at the largest M capacity accepts, 51 on a bare MMC3
+RPG) emits `M + 4*33 + 2*255` = 693 table bytes at whole-bank margin 20. Converting a map moves the whole-bank margin by 0 (20 to 20 ordinary, 22 to 22 and 20 to 20
+streamed). `checkCapacity` refuses an overflow as `kernel-lo-tables-over`, and `kernelShortfallAdvice` offers the lever "the encounter groups (the maps go back to their
+actor lists)", priced by full occupancy through `projectWithoutEncounterGroups`; the freed-bytes figure equals the counterfactual occupancy difference. The entry and row
+bounds (255 compiled entries, 33 rows) are refused by `validateProject` before any byte is emitted, and `assertEncounterGroupBounds` re-asserts them defensively after the
+capacity gate. No free-space assurance is given: some supported conjunctions already have only 20-44 bytes free. Record: `docs/design-encounter-groups.md`.

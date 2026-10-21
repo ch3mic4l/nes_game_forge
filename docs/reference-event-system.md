@@ -98,6 +98,13 @@ byte-identical and an equipment save is refused by a build without equipment and
 `save_check_valid` bounds each saved id (`NO_ITEM` or an item of this build) and `equip_recalc` is the second line of defence; the bonus arrays are
 never saved (`docs/reference-battle-system.md`).
 
+**Encounter group references** (`docs/design-encounter-groups.md`) are indexes too, with two owners. `renumberActorDeletion` also walks `project.encounterGroups[].monsters` exactly as it walks
+`battle.monsters` and every map's `actorIds` (delete, shift higher ids, `NO_ACTOR` fixed); an emptied group stays, and an entry whose group has no live actor compiles to nothing.
+`renumberEncounterGroupDeletion(project, index)` is a sibling of the other `renumber*Deletion` helpers for `map.encounters.table[].group`: it removes the entries naming the group and
+shifts higher ids down, **never touches `mode`**, and leaves a table that ends up empty empty and group-mode (only "Use the actor list again", `useLegacyEncounterList`, goes
+back). The Monster Forge's delete (`deleteEncounterGroup`) calls it in one `store.commit`. No event command references a group: `battle` keeps its own inline formation, and group references in
+events are a deferred follow-up, so `shared/eventrules.js` walks nothing new.
+
 **`SAVE_LAYOUT_VERSION` is 3**, bumped 1→2 when `inv_items`' own bytes started meaning an item
 id rather than an actor id, then 2→3 when name entry (phase 1) added `pc_name_ram` to the body —
 both cases `saveIdentity`'s own derived sizes cannot catch and what the version byte exists for. A

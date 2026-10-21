@@ -64,8 +64,8 @@ hand-maintained list — the drift that nearly shipped the Items Forge unvisited
 — every other entry is unconditional, so the field is additive. `monsterActorIds(project)`
 (`shared/project.js`) is the Monster Forge's single catalog predicate: it reads `allCommands`
 (mentioned, disabled branches included), not `liveCommands` (compiles), and raw
-`command.monsters`/`map.encounters.actorIds`, not `battleFormationSlice`/`mapEncounterFormation` —
-so an over-cap or rate-zero monster still appears, never hiding an actor an author is watching.
+`command.monsters`, `map.encounters.actorIds` and `encounterGroups[].monsters` (unused groups included), not `battleFormationSlice`/`mapEncounterFormation`/`encounterGroupFormation` —
+the authored references, never the live or compiled formations, so an over-cap or rate-zero monster, or one named only by a group, still appears, never hiding an actor an author is watching.
 `battle.level` is the one Monster-Forge-only field with no compiled reader: it normalizes to `null`
 or `clamp(1, RPG_LIMITS.maxLevel)` — the fixed constant, never `project.rpg.maxLevel`, so a lowered
 Build-panel level cap can't silently reclamp an already-authored bestiary (`docs/design-monster.md`

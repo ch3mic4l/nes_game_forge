@@ -88,6 +88,16 @@ everything else in `engine/battle.asm` + `battleui.asm` + `battleturn.asm` on th
 Calling *out* of the bank is free — the kernel is permanently mapped — so the battle system uses
 `vram_open`/`vram_push`, `draw_metasprite` and `add_item` directly.
 
+**Encounter dispatch is per map** (encounter groups, `docs/design-encounter-groups.md`). Under `ENC_GROUPS` (generated into `config.inc`, `projectUsesEncounterGroups`)
+`check_encounter` leaves the raw `rng_next` roll (1..255) in `bt_tmp2` and `start_encounter` reads `map_enc_off` for the owning map: `$FF` is a legacy map, which turns the roll into
+today's `(roll & 3) + 1` leading slots and runs the unchanged copy loop (`start_encounter_legacy`), so a legacy map's per-seed outcome is the same in a project where
+other maps use groups; anything else is a group map's first-entry offset, and `enc_group_path` takes the first `enc_thr` entry >= the roll, scales `enc_grp` once and copies four ids
+of `enc_group_actors` into `mon_slot_actor`. An all-`$FF` row is "roll, start nothing" through the existing `cmp #$FF / beq start_encounter_none`. The tables live in
+kernel-lo, never the battle bank, because `start_encounter` is kernel code; the battle bank still reads only `mon_slot_actor`. `map_enc_actors` keeps
+`mapEncounterFormation`'s bytes for **every** map in every mode, because the legacy lookup is 8-bit and map 64 reads row 0's bytes. The weight-to-threshold rule is
+`encounterThresholds`. The streamed dispatch bracket `*_dispatch`..`*_ord` is untouched; `start_encounter_legacy` and `start_encounter_first` exist only under `ENC_GROUPS`, so
+a groups-off build keeps its symbol table. Cost: `docs/reference-kernel-budget.md`.
+
 **That region has a capacity check, and unlike the kernel's it is exact.** Nothing bounded it
 until `battleRegionBytes`/`battleRegionCeiling` (`main/build/battletables.js`) — overflowing it
 used to surface as raw nesasm output attributed to whatever line fell past the end, which this

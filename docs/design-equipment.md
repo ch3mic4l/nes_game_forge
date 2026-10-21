@@ -819,3 +819,9 @@ What the build did differently from, or added to, the design above. Commit refer
   RAM collision with `pc_eq_*` and its relocation to `$07C0-$07CF`, the 44-item counterfactual attributing every moved RPG margin to C1b's six bytes and
   none to C3b, and the `prov_unit.mjs` and `split_prebuild.mjs` checks the release run must include.
 - **Not built (E1):** classes and selectable growth profiles, and encounter groups, remain open on `ROADMAP.md`.
+
+## Encounter groups, built afterwards (2026-10-21)
+
+The "encounter groups remain" lines above (section 12, E1 and the Built list) are history. Encounter groups shipped as their own
+piece of ROADMAP item 5 (commits `fa0fa3d`, `8a14dcd`, `4b5d17b`, `bf03b65` and the docs commit); the design record is `docs/design-encounter-groups.md`.
+Classes and selectable growth profiles are the part of item 5 that remains open.

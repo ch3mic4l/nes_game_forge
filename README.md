@@ -24,7 +24,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Items Forge** | Done — name, effect (None for a key item, or Heals/Damages with an amount) and, optionally, the linked Pickup actor; also reachable via a scripted Give item command or a monster's drop. In an RPG project an item can instead be a weapon, armor or accessory piece with ATK/DEF/MAG/MDEF bonuses and a set of party members who may wear it (see Equipment) |
 | **Equipment** | Done — weapons, armor and accessories in three slots per party member, bonuses to attack, defence, magic and magic defence, who may wear each piece (authored on the Items Forge), each member's starting gear (the Character Forge) and a bindable Equip action that opens an in-game Equip screen with a before/after stat preview, for turn-based RPG projects only; the worn pieces are saved, the bonuses are recalculated from them; classes and growth profiles are not built |
 | **Magic Forge** | Done — name, kind, a min/max damage or heal range, MP cost, element and scope, for turn-based RPG projects only; a party member's own learned spells stay on the Sprite Forge's Party tab |
-| **Monster Forge** | Done — combat stats, magic weakness/resistance, which spell it casts, XP/gold, item drop and drop chance, an optional reference level (display-only — it does not affect battle stats), and battle artwork, for turn-based RPG projects only; an actor's hit points, contact damage, sprites and animations stay on the Sprite Forge, reachable from the Monster Forge by a link (and back) |
+| **Monster Forge** | Done — combat stats, magic weakness/resistance, which spell it casts, XP/gold, item drop and drop chance, an optional reference level (display-only — it does not affect battle stats), and battle artwork, for turn-based RPG projects only; an actor's hit points, contact damage, sprites and animations stay on the Sprite Forge, reachable from the Monster Forge by a link (and back). Its **Groups** tab names formations of up to four monsters (up to 32 groups) for a map's encounter table |
 | **Sound Forge** | Done — tracker for all four channels, instruments, order list, preview through the same replayer the ROM agrees with |
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
 | **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files; two files at once in split panes with a draggable divider, including an overridden file beside the stock original it diverges from |
@@ -461,7 +461,8 @@ Fantasy shipped on.
 | Sprite Forge ▸ *Party* | Up to four members: base stats, growth per level, which spells they learn and when |
 | Magic Forge | The spell list — cost, a min/max damage or heal range, element, one target or all |
 | Monster Forge | A monster's attack, defence, speed, accuracy, evasion, magic points, experience, gold, weakness, resistance, which spell it casts, what it drops and at what chance, its battle artwork, and an optional reference level |
-| Map Forge ▸ *Battles here* | The sky and ground a battle is fought against, how many steps between encounters, and which monsters turn up |
+| Monster Forge ▸ *Groups* | Named encounter groups: up to four monsters each, up to 32 per project, used by a map's encounter table |
+| Map Forge ▸ *Battles here* | The sky and ground a battle is fought against, how many steps between encounters, and which monsters turn up: either a plain list of up to four monsters, or an **encounter table** of up to eight weighted groups (see below) |
 | Build ▸ *RPG progression* | The experience curve, the level cap, and which tileset holds the monster art |
 
 An actor becomes a monster by having **contact damage above zero** — the same
@@ -475,6 +476,19 @@ something you author: it is already a game over, exactly like running out of
 hearts, so there is no lose branch to build — whatever you put *after* the
 command (turning on a switch named `Boss defeated`, say) only ever runs when
 the player wins, because that is the only way control comes back to it.
+
+**Encounter tables.** A map's wandering fights come from its *Battles here* list unless you press **Convert to groups**. The list picks the first one to
+four monsters in order (a four-monster list gives four-monster fights about a quarter of the time). Converting makes the same odds out of groups instead:
+each prefix of the list becomes a group (reusing any group that already holds exactly those monsters) and a weighted row in the map's table. For a map whose
+own list the game reads (every one of the first 64 maps), that keeps the *distribution* of fight sizes the list gave, though not the exact
+sequence of fights from a given starting state; the 65th map and later are the exception, because the game has always read its list from an earlier map's row
+(`docs/design-encounter-groups.md`, section 3), so converting it uses its own authored list instead. You can then add, remove and re-weight rows (up to eight
+rows, weights 1-16, with the chance of each shown beside it). The whole project is limited to 255 compiled table entries: a map at encounter rate 0 counts none, a
+group with no live monster is not counted, and a map with a rate and no live row counts one. Groups are authored in the Monster Forge's **Groups** tab. **Use the actor list again**
+turns a map back into a plain list. Maps you never convert behave exactly as before, in the same project as converted ones, and the RPG starter and sample
+projects stay plain lists. An event's **Start a battle…** still names its own monsters; it cannot pick a group yet. In the Map Forge's battle-test, a
+plain-list map keeps its **This map's table** button (it fires the whole list, which the game itself produces only some of the time), while a map with a
+table gets one button per distinct live group in its table.
 
 Members past the first are recruited in play with an event's **Party member
 joins** command — the sample's Iris waits in a corner of the field for exactly
