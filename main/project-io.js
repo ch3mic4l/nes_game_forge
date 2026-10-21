@@ -158,6 +158,8 @@ async function saveProjectNow(dir, data) {
   // never given a write line for.
   await writeJson(path.join(dir, 'items.json'), project.items);
   await writeJson(path.join(dir, 'sfx.json'), project.sfx);
+  // Always written, empty array included, like sfx.json above: a project with no groups reads back as none.
+  await writeJson(path.join(dir, 'encounterGroups.json'), project.encounterGroups ?? []);
   await writeJson(path.join(dir, 'input.json'), project.input);
   await writeJson(path.join(dir, 'party.json'), project.party);
   await writeJson(path.join(dir, 'spells.json'), project.spells);
@@ -348,6 +350,8 @@ export async function loadProject(dir) {
     // fallback runs, which it does identically either way -- there is no
     // migration to trigger here, only the ordinary empty default.
     sfx: await readJson(path.join(dir, 'sfx.json')),
+    // Missing (a project saved before groups existed) reads back as null; normalizeProject makes it [].
+    encounterGroups: await readJson(path.join(dir, 'encounterGroups.json')),
     input: await readJson(path.join(dir, 'input.json')),
     party: await readJson(path.join(dir, 'party.json')),
     spells: await readJson(path.join(dir, 'spells.json')),

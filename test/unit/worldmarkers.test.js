@@ -422,8 +422,14 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // Re-pinned for equipment C3: audited -- the diff to shared/project.js adds only the two exported predicates projectUsesEquipmentMag /
 // projectUsesEquipmentMdef (a read of item.equip.mag / .mdef); nothing stores a screen reference and remapScreenReferences, projectEvents
 // and allCommands are untouched.
+// Re-pinned for encounter groups (data layer): audited -- the diff to shared/project.js adds the group limits, the encounter-group helpers,
+// planner and normalizers, a group walk in monsterActorIds and renumberActorDeletion, renumberEncounterGroupDeletion, group-mode handling in
+// battleFormations, and four validateProject rules. remapScreenReferences, projectEvents and allCommands are untouched and no new stored
+// screen reference exists (a group names actors, a table names groups), so referenceInventory needs no change.
+// Re-pinned for encounter groups fix 1: audited -- the diff is planEncounterConversion's entry-total refusal only (existing total + cost > 255,
+// zero-cost conversions included); remapScreenReferences, projectEvents and allCommands are untouched and no stored screen reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': '6ddef81cbd69d9cc382e0c558ea93052800b37112929298efc88c0941d294f4f',
+  'shared/project.js': '0c834ae4856124dfed185e9b61a0be81fb4e2ff0d8e89d91aa98ea1e5e8eadbf',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

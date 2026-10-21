@@ -795,9 +795,13 @@ const CANONICAL_HASHES = {
   // Re-pinned again (equipment C2, docs/design-equipment.md section 1): createPartyMember gained `startEquip: [null, null, null]`,
   // so every shape's party carries it. That is the whole change -- the canonical JSON of each shape with that one key deleted from
   // its party hashes to the previous three values (action 775ea179..., rpg e4b99f66..., action-mixed 27933007...).
-  action: '720aa40aca6cb942180280222f278150731543d6eed500c73199208277c219c9',
-  rpg: '134c82661ca7dec2d186d0a3f7c4a921fa47a3b6e8175cac583ad5c063bf9c6e',
-  'action-mixed': '51165bea673608dbc6ba67022c5778edfbb1e313fa3db54d390c5b3754290420'
+  //
+  // Re-pinned again (encounter groups, data layer): createProject gained `encounterGroups: []`. That is the whole change -- the
+  // canonical JSON of each shape with that one key deleted hashes to the previous three values (action 720aa40a..., rpg 134c8266...,
+  // action-mixed 51165bea...).
+  action: 'd8765e023b14b6b0bc1a6dfaf6fc6380c54a2114d2eab5a9ea648cf17a598cc9',
+  rpg: '541a36c065638cd058cf5a43146b05470a52c6f02731f37e41c129b9323c6aca',
+  'action-mixed': '8a7b9764247b46262146bf124252fd0727ae550bf65679b9711d322c692d2537'
 };
 
 test('test/lib/streamedproject.js: the canonical JSON of each generator shape hashes to a pinned SHA-256', () => {

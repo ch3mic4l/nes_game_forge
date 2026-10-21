@@ -327,7 +327,7 @@ test('a rule never embeds a count: raising or lowering a number leaves the rule 
 // ----------------------------------------------------------------------------------------------- (7) the source scan
 
 const PRODUCER_FILES = {
-  'shared/project.js': { add: 60, addFrom: 7, push: 4, return: 7 },
+  'shared/project.js': { add: 64, addFrom: 7, push: 4, return: 7 },
   'main/build/generate.js': { push: 14, 'return-array': 2 },
   'main/build/battletables.js': { push: 5 },
   'main/build/textcompile.js': { push: 4 }

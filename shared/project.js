@@ -1176,6 +1176,14 @@ export const RPG_LIMITS = {
   equipSlots: 3,
   maxLevel: 15,
   encounterActors: 4,
+  // Encounter groups (a map's weighted table of named formations): groups per
+  // project, table rows per map, the weight each row carries, and the project-wide
+  // bound on compiled rows (`$FF` is spent as the legacy-map marker in the ROM's
+  // per-map offset byte, so a first-entry offset has to be 0..254).
+  encounterGroups: 32,
+  encounterTableEntries: 8,
+  encounterWeightMax: 16,
+  encounterEntriesTotal: 255,
   battleArtTiles: 12, // the widest/tallest monster block, in 8x8 tiles
   // Names are padded to this in the compiled tables, so the engine needs no
   // length byte — and it is what the battle box's message area has room for.
@@ -1225,6 +1233,189 @@ export const mapEncounterFormation = (map, actorCount) => {
   return [...ids, ...new Array(RPG_LIMITS.encounterActors - ids.length).fill(NO_ACTOR)];
 };
 
+// ---------------------------------------------------------------------------
+// Encounter groups. A map's `encounters.mode` is the one discriminator: absent
+// = legacy (the four-slot actor list above), 'groups' = a weighted `table` of
+// project-level `encounterGroups`, even when that table is empty. Everything
+// below reads `mode`, never `table.length` or `actorIds`.
+// ---------------------------------------------------------------------------
+
+/** Whether this map's encounters are a group table (true for an empty table too). */
+export const mapUsesEncounterGroups = (map) => map?.encounters?.mode === 'groups';
+
+/**
+ * Whether the build needs the group picker at all: an RPG with at least one
+ * group-mode map that can actually roll. A rate-0 group map and unused groups
+ * change nothing in the ROM, and this never looks at `table.length`.
+ */
+export const projectUsesEncounterGroups = (project) =>
+  project?.project?.gameType === 'rpg' &&
+  (project.maps ?? []).some((map) => mapUsesEncounterGroups(map) && (map.encounters.rate ?? 0) > 0);
+
+/**
+ * One group's formation as four `mon_slot_actor` values, the same shape and
+ * the same drop-the-dead-id rule as `mapEncounterFormation`. `group` is an
+ * index into `project.encounterGroups`; a missing group is four empty slots.
+ */
+export const encounterGroupFormation = (project, group) => {
+  const actorCount = project?.sprites?.actors?.length ?? 0;
+  const ids = (project?.encounterGroups?.[group]?.monsters ?? [])
+    .filter((id) => id < actorCount)
+    .slice(0, RPG_LIMITS.encounterActors);
+  return [...ids, ...new Array(RPG_LIMITS.encounterActors - ids.length).fill(NO_ACTOR)];
+};
+
+/** A group is live when at least one of its monsters still indexes a real actor. */
+export const encounterGroupIsLive = (project, group) =>
+  encounterGroupFormation(project, group).some((id) => id !== NO_ACTOR);
+
+/**
+ * The single writer of a group-mode map's compiled entries: its table minus
+ * every row naming a missing or dead group, as `[{group, weight}]`. `[]`
+ * means the generator emits its one fallback entry ("roll, start nothing").
+ * Never reads `actorIds`; a legacy map has no entries and answers `[]`.
+ */
+export function mapEncounterEntries(project, mapIndex) {
+  const map = project?.maps?.[mapIndex];
+  if (!mapUsesEncounterGroups(map)) return [];
+  return (map.encounters.table ?? [])
+    .filter((entry) => encounterGroupIsLive(project, entry.group))
+    .map(({ group, weight }) => ({ group, weight }));
+}
+
+/**
+ * Cumulative selection thresholds for one map's weights: `floor(cum*255/total)`
+ * with the last forced to 255. The engine picks the first entry whose
+ * threshold is >= the roll (1..255, never 0), so this is the one place the
+ * weight -> byte rule lives; a chance shown in the UI is derived from it.
+ */
+export function encounterThresholds(weights) {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  let cumulative = 0;
+  return weights.map((weight, index) => {
+    cumulative += weight;
+    return index === weights.length - 1 ? 255 : Math.floor((cumulative * 255) / total);
+  });
+}
+
+/** Compiled entries one map costs: its live entries (at least one, the fallback) when it can roll, else none. */
+export function mapCompiledEntryCount(project, mapIndex) {
+  const map = project?.maps?.[mapIndex];
+  if (!mapUsesEncounterGroups(map) || (map.encounters.rate ?? 0) <= 0) return 0;
+  return Math.max(1, mapEncounterEntries(project, mapIndex).length);
+}
+
+/** The project-wide compiled entry total (what RPG_LIMITS.encounterEntriesTotal bounds). */
+export const encounterEntryTotal = (project) =>
+  (project?.maps ?? []).reduce((sum, _map, mapIndex) => sum + mapCompiledEntryCount(project, mapIndex), 0);
+
+/**
+ * The compiled group rows: one per live group referenced by an entry of a
+ * rate>0 group map, ordered by authored group id, plus one shared empty row
+ * only when some such map has no live entry (`fallback`). Unreferenced, dead
+ * and rate-0-only groups get no row.
+ */
+export function encounterRowPlan(project) {
+  const referenced = new Set();
+  let fallback = false;
+  (project?.maps ?? []).forEach((map, mapIndex) => {
+    if (!mapUsesEncounterGroups(map) || (map.encounters.rate ?? 0) <= 0) return;
+    const entries = mapEncounterEntries(project, mapIndex);
+    if (!entries.length) fallback = true;
+    for (const entry of entries) referenced.add(entry.group);
+  });
+  const groups = [...referenced].sort((a, b) => a - b);
+  return { groups, fallback, count: groups.length + (fallback ? 1 : 0) };
+}
+
+const sameIds = (a, b) => a.length === b.length && a.every((id, index) => id === b[index]);
+
+/**
+ * Converting a legacy map to a group table: a pure plan, so the caller can
+ * refuse *before* it opens a store commit (the commit pushes undo and bumps
+ * the revision on any normal return). `{ok:true, mapIndex, newGroups, table}`
+ * or `{ok:false, message}`; `table`'s group indices already include the new
+ * groups appended after the existing ones.
+ *
+ * The map's authored list L is the live ids of `mapEncounterFormation` (never
+ * the raw `actorIds`), k = |L|. For j = 1..k the prefix L[0..j-1] becomes one
+ * row, weights 1,..,1,(5-k): the legacy "(rng&3)+1 leading slots" law. A
+ * prefix equal (as a stored id list) to an existing group reuses it; the rest
+ * become new groups named by joining the actor names. k = 0 converts to an
+ * empty table and creates nothing.
+ */
+export function planEncounterConversion(project, mapIndex) {
+  const map = project?.maps?.[mapIndex];
+  if (!map) return { ok: false, message: `There is no map ${mapIndex} to convert.` };
+  if (mapUsesEncounterGroups(map)) return { ok: false, message: `${map.name} already uses encounter groups.` };
+  const actors = project.sprites?.actors ?? [];
+  const live = mapEncounterFormation(map, actors.length).filter((id) => id !== NO_ACTOR);
+  const k = live.length;
+  const groups = project.encounterGroups ?? [];
+  const label = (id) => (String(actors[id]?.name ?? '').trim() ? String(actors[id].name).trim() : `#${id}`);
+  const newGroups = [];
+  const table = [];
+  for (let j = 1; j <= k; j++) {
+    const key = live.slice(0, j);
+    let group = groups.findIndex((candidate) => sameIds(candidate.monsters ?? [], key));
+    if (group < 0) {
+      newGroups.push({ name: authorName(key.map(label).join(' + ')), monsters: key });
+      group = groups.length + newGroups.length - 1;
+    }
+    table.push({ group, weight: j < k ? 1 : 5 - k });
+  }
+  const groupRoom = Math.max(0, RPG_LIMITS.encounterGroups - groups.length);
+  if (newGroups.length > groupRoom) {
+    return {
+      ok: false,
+      message:
+        `Converting ${map.name} needs ${newGroups.length} new groups; the project has room for ${groupRoom} ` +
+        `(limit ${RPG_LIMITS.encounterGroups}). Delete unused groups in the Monster Forge, or pick fewer actors in ${map.name}'s list.`
+    };
+  }
+  const cost = (map.encounters.rate ?? 0) > 0 ? Math.max(1, k) : 0;
+  const existingTotal = encounterEntryTotal(project);
+  const entryRoom = RPG_LIMITS.encounterEntriesTotal - existingTotal;
+  if (existingTotal + cost > RPG_LIMITS.encounterEntriesTotal) {
+    const hint = "Remove rows from other maps' tables, or set their encounter rate to 0.";
+    return {
+      ok: false,
+      message:
+        entryRoom < 0
+          ? `Converting ${map.name} is refused: the project is already over the encounter table limit by ${-entryRoom} ` +
+            `entries (${existingTotal} of ${RPG_LIMITS.encounterEntriesTotal}). ${hint}`
+          : `Converting ${map.name} needs ${cost} encounter table entries; the project has room for ${entryRoom} ` +
+            `(limit ${RPG_LIMITS.encounterEntriesTotal}). ${hint}`
+    };
+  }
+  return { ok: true, mapIndex, newGroups, table };
+}
+
+/** Writes a successful `planEncounterConversion` plan to `project`: one synchronous mutation, for one commit. */
+export function applyEncounterConversion(project, plan) {
+  if (!plan?.ok) throw new Error('applyEncounterConversion needs a successful plan.');
+  const map = project.maps[plan.mapIndex];
+  project.encounterGroups ??= [];
+  for (const group of plan.newGroups) project.encounterGroups.push(structuredClone(group));
+  map.encounters.mode = 'groups';
+  map.encounters.table = plan.table.map(({ group, weight }) => ({ group, weight }));
+  return project;
+}
+
+/**
+ * The way back (group -> legacy): drops `mode` and `table`, keeps every group,
+ * and the map's retained `actorIds` are its live table again. Deleting groups
+ * or rows never does this; only this explicit action does.
+ */
+export function useLegacyEncounterList(project, mapIndex) {
+  const encounters = project.maps?.[mapIndex]?.encounters;
+  if (encounters) {
+    delete encounters.mode;
+    delete encounters.table;
+  }
+  return project;
+}
+
 /**
  * The Monster Forge's own catalog: every actor id that either reads as a
  * monster right now (`isMonsterActor`), or is named *anywhere authored* as
@@ -1249,6 +1440,9 @@ export function monsterActorIds(project) {
   });
   for (const map of project.maps ?? []) {
     for (const id of map.encounters?.actorIds ?? []) if (inRange(id)) ids.add(id);
+  }
+  for (const group of project.encounterGroups ?? []) {
+    for (const id of group.monsters ?? []) if (inRange(id)) ids.add(id);
   }
   for (const event of projectEvents(project)) {
     for (const page of event.pages ?? []) {
@@ -2507,6 +2701,10 @@ export function renumberActorDeletion(project, index) {
     if (!Array.isArray(ids)) continue;
     map.encounters.actorIds = ids.filter((id) => id !== index).map(shift);
   }
+  // A group's monsters are a list like a map's: the deleted id is removed, an emptied group stays.
+  for (const group of project.encounterGroups ?? []) {
+    if (Array.isArray(group.monsters)) group.monsters = group.monsters.filter((id) => id !== index).map(shift);
+  }
   for (const event of projectEvents(project)) {
     for (const page of event.pages ?? []) {
       renumberCondition(page.cond);
@@ -2517,6 +2715,26 @@ export function renumberActorDeletion(project, index) {
         }
       }
     }
+  }
+  return project;
+}
+
+/**
+ * What every reference to an encounter group becomes once `index` is gone
+ * from `project.encounterGroups`: each group-mode map's table loses the rows
+ * naming it and the rows above it shift down by one. A table left empty stays
+ * empty and `mode` is never touched -- deleting the last group must not turn
+ * the map back into one that fights its hidden `actorIds`; only
+ * `useLegacyEncounterList` does that. The caller removes the group itself.
+ *
+ * Mutates `project` and returns it.
+ */
+export function renumberEncounterGroupDeletion(project, index) {
+  for (const map of project.maps ?? []) {
+    if (!mapUsesEncounterGroups(map) || !Array.isArray(map.encounters.table)) continue;
+    map.encounters.table = map.encounters.table
+      .filter((entry) => entry.group !== index)
+      .map((entry) => ({ ...entry, group: entry.group > index ? entry.group - 1 : entry.group }));
   }
   return project;
 }
@@ -4172,7 +4390,14 @@ function battleFormations(project, actorCount) {
   for (const map of project.maps ?? []) {
     // check_encounter returns immediately when map_enc_rate is zero
     // (engine/rpg.asm) -- this map's own table can never fire.
-    if ((map.encounters?.rate ?? 0) > 0) formations.push(mapEncounterFormation(map, actorCount));
+    if ((map.encounters?.rate ?? 0) <= 0) continue;
+    // A group-mode map fights its table's live groups only; its retained actorIds are dormant.
+    if (mapUsesEncounterGroups(map)) {
+      const mapIndex = project.maps.indexOf(map);
+      for (const { group } of mapEncounterEntries(project, mapIndex)) formations.push(encounterGroupFormation(project, group));
+    } else {
+      formations.push(mapEncounterFormation(map, actorCount));
+    }
   }
   formations.push(...touchEncounterFormations(project));
   return formations;
@@ -4604,6 +4829,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     metatiles: Array.from({ length: LIMITS.metatiles }, (_, id) => createMetatile(id)),
     maps: [createMap(0, 'World')],
     items: [],
+    encounterGroups: [],
     sprites: {
       metasprites: [],
       animations: [],
@@ -5452,7 +5678,33 @@ export function mapGridLimit(map) {
   return map?.streamed === true ? LIMITS.streamedGrid : LIMITS.mapGrid;
 }
 
-function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
+/**
+ * A group-mode map's table: rows naming a group that does not exist are dropped,
+ * weights clamp to 1..encounterWeightMax, rows naming the same group merge (first
+ * position, summed weight, capped), at most encounterTableEntries survive. This
+ * never changes the map's `mode`.
+ */
+function normalizeEncounterTable(raw, groupCount) {
+  const merged = new Map();
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    const group = Number(entry?.group);
+    if (!Number.isInteger(group) || group < 0 || group >= groupCount) continue;
+    const weight = clamp(entry?.weight, 1, RPG_LIMITS.encounterWeightMax, 1);
+    merged.set(group, Math.min(RPG_LIMITS.encounterWeightMax, (merged.get(group) ?? 0) + weight));
+  }
+  return [...merged].slice(0, RPG_LIMITS.encounterTableEntries).map(([group, weight]) => ({ group, weight }));
+}
+
+function normalizeEncounterGroups(raw) {
+  return (Array.isArray(raw) ? raw : []).slice(0, RPG_LIMITS.encounterGroups).map((group, id) => ({
+    name: authorName(group?.name) || `Group ${id}`,
+    monsters: (Array.isArray(group?.monsters) ? group.monsters : [])
+      .slice(0, RPG_LIMITS.encounterActors)
+      .map((monster) => clamp(monster, 0, 255, 0))
+  }));
+}
+
+function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX, groupCount = 0) {
   const streamed = raw?.streamed === true;
   const axisLimit = mapGridLimit({ streamed });
   const gridW = clamp(raw?.gridW, 1, axisLimit, 1);
@@ -5479,7 +5731,12 @@ function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
       rate: clamp(raw?.encounters?.rate, 0, 255, 0),
       actorIds: (Array.isArray(raw?.encounters?.actorIds) ? raw.encounters.actorIds : [])
         .slice(0, RPG_LIMITS.encounterActors)
-        .map((id) => clamp(id, 0, 255, 0))
+        .map((id) => clamp(id, 0, 255, 0)),
+      // Absent unless 'groups' (a legacy map still serializes to exactly {rate, actorIds}); never
+      // inferred from `table`, which may be empty. `actorIds` above stays, dormant, in this mode.
+      ...(raw?.encounters?.mode === 'groups'
+        ? { mode: 'groups', table: normalizeEncounterTable(raw.encounters.table, groupCount) }
+        : {})
     },
     // Design §8's own round-trip half: without this, a project saved with a
     // folder name, then reloaded, loses it silently -- createMap's own
@@ -6300,8 +6557,9 @@ export function normalizeProject(raw) {
     ({ items, itemCtx } = migrateItemsFromActors(raw));
   }
 
+  const encounterGroups = normalizeEncounterGroups(raw.encounterGroups);
   const maps = (Array.isArray(raw.maps) && raw.maps.length ? raw.maps : base.maps).map((map, id) =>
-    normalizeMap(map, id, itemCtx)
+    normalizeMap(map, id, itemCtx, encounterGroups.length)
   );
   if (project.startMap >= maps.length) project.startMap = 0;
   // The early clamps above cap a screen index at an ordinary map's 16; a
@@ -6351,6 +6609,7 @@ export function normalizeProject(raw) {
     ),
     maps,
     items,
+    encounterGroups,
     sprites: {
       metasprites: (raw.sprites?.metasprites ?? []).map(normalizeMetasprite),
       animations: (raw.sprites?.animations ?? []).map(normalizeAnimation),
@@ -7267,6 +7526,78 @@ function validateStreamedMaps(project, add) {
   }
 }
 
+/**
+ * The group-mode encounter rules, called from validateProject's RPG block. A
+ * project with no group-mode map and no groups raises none of these, so every
+ * legacy project's issue list is unchanged.
+ */
+function validateEncounterGroups(project, add) {
+  const actorCount = project.sprites.actors.length;
+  (project.encounterGroups ?? []).forEach((group, index) => {
+    if ((group.monsters ?? []).some((id) => id >= actorCount)) {
+      add('warning', 'Monster Forge', `Group "${group.name}" names an actor that no longer exists.`, 'encounter-group-actor-missing', { group: index }, []);
+    }
+  });
+  const rollers = [];
+  project.maps.forEach((map, mapIndex) => {
+    if (!mapUsesEncounterGroups(map) || (map.encounters.rate ?? 0) <= 0) return;
+    const live = mapEncounterEntries(project, mapIndex).length;
+    rollers.push({ map, mapIndex, live, count: Math.max(1, live) });
+    if (!live) {
+      add('warning', 'Map Forge', `${map.name} fights encounter groups but its table has no group with a live monster, so its wandering encounters start nothing.`, 'encounter-table-empty', { map: mapIndex }, []);
+    }
+  });
+  const total = rollers.reduce((sum, roller) => sum + roller.count, 0);
+  const limit = RPG_LIMITS.encounterEntriesTotal;
+  if (total > limit) {
+    const over = total - limit;
+    const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const reducible = rollers.filter((roller) => roller.live >= 2).sort((a, b) => b.live - a.live || a.mapIndex - b.mapIndex);
+    const freeable = reducible.reduce((sum, roller) => sum + roller.live - 1, 0);
+    let advice;
+    if (freeable >= over) {
+      let left = over;
+      const steps = [];
+      for (const roller of reducible) {
+        if (left <= 0) break;
+        const take = Math.min(roller.live - 1, left);
+        steps.push(`remove ${count(take, 'row', 'rows')} from ${roller.map.name} (${count(roller.live, 'entry', 'entries')})`);
+        left -= take;
+      }
+      advice =
+        `Maps that can give up rows, most first: ${reducible.map((r) => `${r.map.name} (up to ${r.live - 1} of ${r.live})`).join(', ')}. ` +
+        `For example: ${steps.join(', ')}.`;
+    } else {
+      let left = over;
+      const picks = [];
+      for (const roller of [...rollers].sort((a, b) => b.count - a.count || a.mapIndex - b.mapIndex)) {
+        if (left <= 0) break;
+        picks.push(`${roller.map.name} (${count(roller.count, 'entry', 'entries')})`);
+        left -= roller.count;
+      }
+      advice =
+        `Removing rows cannot be enough (a map keeps at least one entry, so rows can free only ${freeable}). ` +
+        `Set the encounter rate to 0, or "Use the actor list again", on: ${picks.join(', ')}.`;
+    }
+    add(
+      'error',
+      'Map Forge',
+      `The encounter tables compile to ${total} entries; the limit is ${limit}, so ${over} must go. ${advice}`,
+      'encounter-entries-over', { maps: rollers.map((roller) => roller.mapIndex) }, [total, limit]
+    );
+  }
+  const rows = encounterRowPlan(project).count;
+  const rowLimit = RPG_LIMITS.encounterGroups + 1;
+  if (rows > rowLimit) {
+    add(
+      'error',
+      'Monster Forge',
+      `The encounter groups in use need ${rows} table rows; the limit is ${rowLimit} (${RPG_LIMITS.encounterGroups} groups and one empty row). Delete unused groups in the Monster Forge.`,
+      'encounter-rows-over', {}, [rows, rowLimit]
+    );
+  }
+}
+
 export function validateProject(project) {
   const problems = [];
   const add = (severity, where, message, rule, subject, counts) => problems.push({ severity, where, message, rule, subject, counts });
@@ -7543,12 +7874,15 @@ export function validateProject(project) {
       }
     }
     for (const [mapIndex, map] of project.maps.entries()) {
+      // A group-mode map's retained actorIds are dormant (never its table), so they are not checked.
+      if (mapUsesEncounterGroups(map)) continue;
       for (const id of map.encounters.actorIds) {
         if (id >= project.sprites.actors.length) {
           add('warning', 'Map Forge', `${map.name}'s encounter table names an actor that no longer exists.`, 'encounter-actor-missing', { map: mapIndex }, []);
         }
       }
     }
+    validateEncounterGroups(project, add);
     // A monster's drop is the one item reference that is a *field* rather
     // than a command, so neither the battle-formation walk below nor the
     // give/take check outside this block can see it — which is how the
