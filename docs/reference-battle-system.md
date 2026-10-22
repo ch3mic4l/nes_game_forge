@@ -260,6 +260,10 @@ writer for every plain-number default in an actor's battle record, read by `norm
 `battleTables` and the Monster Forge alike -- because a never-saved actor built in-session must
 compile identically to the same project reopened.
 
+Those per-level party tables read a member's growth through `memberStatAt` / `effectiveGrowth` (`shared/project.js`), so a member may point at a
+growth profile (linear / early / late curves) instead of its own numbers; the engine is unchanged and a profile-free project builds the same bytes.
+`docs/design-growth-profiles.md`; the single-writer entry is in `docs/reference-single-writer.md`.
+
 **The RPG battle ITEM menu does not list everything `use_item` can spend.** `build_item_list`
 (`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what
 `item_chosen` can apply consistently — so a `damage`-kind item, or a `heal`-kind item at `Amount`

@@ -127,3 +127,20 @@ renderer, and `node:test` alike.
   validation all read them.
 - **Authoring moves** for both Forges live in `shared/encountergroups.js` (DOM-free); the Forges hold no rule of their own, and a refusal is decided before `store.commit`.
 - **`ENC_GROUPS`** is generated into `config.inc` (always defined, 0 or 1) from `projectUsesEncounterGroups`; the engine's labels that only make sense with the picker exist only under it.
+
+### Growth profiles (ROADMAP item 5)
+
+- **A party member's growth is read through `effectiveGrowth` / `memberStatAt`** (`shared/project.js`), never the member's raw `baseHp` / `hpPerLevel`-style fields: the
+  per-level tables (`levelTable`, `main/build/battletables.js`), both magic gates (`projectUsesMagicPower`, `projectUsesMagicDefence`, through
+  `partyGrowsStat`) and the Character Forge's selected-member preview go through them (the selected-profile preview has no member and calls `profileStatAt` on the profile's record;
+  the curve has that one implementation). A gate that reads the raw fields builds a profile-only mage with the stat silently off. The raw fields stay the
+  member's retained custom numbers while a profile is assigned; the resolver itself (`growthRecord`), `createPartyMember`, the normalizer, the Forge's custom
+  inputs and explicitly unprofiled fixtures and oracles legitimately read them. The rule is that an effective-growth consumer never bypasses the resolver. A gate follows what a member actually grows, never whether a profile exists.
+- **The curve** is `profileStatAt` over the fixed level-15 horizon `GROWTH_HORIZON_LEVEL`, never `project.rpg.maxLevel`: lowering the level cap must not
+  retune an existing level. `GROWTH_SHAPES` is persisted as strings.
+- **The bounds** of every growth number are `GROWTH_LIMITS`, read by `normalizePartyMember`, the profile normalizer and the Character Forge inputs (the
+  inputs may not carry a numeric literal; `test/unit/growthlimits.test.js` parses the source), and a typed profile number is rounded and bounded by
+  `clampGrowthValue` in both the Forge and the normalizer. The profile cap is `RPG_LIMITS.growthProfiles`.
+- **Deleting a profile** goes through `growthProfileUsers` (the Forge refuses and names the members while it is non-empty) and then
+  `renumberGrowthProfileDeletion`, which throws on a referenced index; the caller splices and restamps `id = index`.
+- **No engine code, allowance or save byte** belongs to a profile: a `GROWTH_*_ALLOWANCE` would be a bug. Depth: `docs/design-growth-profiles.md`.

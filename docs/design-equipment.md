@@ -825,3 +825,9 @@ What the build did differently from, or added to, the design above. Commit refer
 The "encounter groups remain" lines above (section 12, E1 and the Built list) are history. Encounter groups shipped as their own
 piece of ROADMAP item 5 (commits `fa0fa3d`, `8a14dcd`, `4b5d17b`, `bf03b65` and the docs commit); the design record is `docs/design-encounter-groups.md`.
 Classes and selectable growth profiles are the part of item 5 that remains open.
+
+## Growth profiles, built afterwards (2026-10-22)
+
+The "classes and selectable growth profiles remain" lines above (section 12, E1 and the Built list) are history. Selectable growth profiles shipped as the last
+built piece of ROADMAP item 5 (commits `0c4d860`, `4a70d00`, `7d8f748`, `7ba5a29` and the docs commit); the design record is `docs/design-growth-profiles.md`.
+Classes (a class's spell list and equipment restrictions, and changing class in play) remain deferred.

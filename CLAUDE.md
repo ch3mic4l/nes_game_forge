@@ -111,6 +111,9 @@ before touching any of these.
   `remapScreenReferences(project, translate)` in `shared/project.js`.
 - Growing the flash save record moves the `sw_*` block by `EQUIP_SAVE_SHIFT` (generated into `cartridge.inc`), and `pc_equip` is slot-major and recalculated persistently at exactly three triggers -- `equip_set`, `equip_init` and `party_restore` (Continue is the restore caller) -- plus `eq_preview_stat`'s temporary trial wear; depth: `docs/reference-battle-system.md`.
 - A map's encounter mode is `map.encounters.mode` and nothing else -- read it through `mapUsesEncounterGroups`, never `table.length` or `actorIds` -- and a legacy map keeps its exact `(rng&3)+1` path and its `map_enc_actors` row in every project; depth: `docs/reference-single-writer.md`, `docs/design-encounter-groups.md`.
+- A party member's growth is read through `effectiveGrowth` / `memberStatAt` and bounded by `GROWTH_LIMITS`, never the member's raw `baseHp` / `hpPerLevel`-style
+  fields -- a magic gate on the raw fields builds a profile-only mage with the stat silently off; depth: `docs/design-growth-profiles.md`,
+  `docs/reference-single-writer.md`.
 - Engine RAM addresses → `engine/constants.asm`. Shipping tooling *parses* them (`parseEquates`,
   `shared/enginesyms.js`) out of the `constants.asm` in `build/`; tests hardcode addresses with a
   `; from engine/constants.asm` comment, because a test that reads the file it is checking proves

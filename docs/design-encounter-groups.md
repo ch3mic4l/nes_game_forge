@@ -8,7 +8,7 @@ Current-state rules live in the `docs/reference-*.md` files this record points a
 of reasoning that the reference docs state more tersely.
 
 Equipment (`docs/design-equipment.md`) was the first piece of ROADMAP item 5 and left two things open: classes/growth profiles, and encounter groups.
-This closes encounter groups. **Classes and selectable growth profiles stay open.**
+This closes encounter groups. **Classes and selectable growth profiles stay open.** (Growth profiles were built afterwards: `docs/design-growth-profiles.md`; classes remain deferred.)
 
 ## 1. What it does, in one paragraph
 
