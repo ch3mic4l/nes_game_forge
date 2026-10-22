@@ -434,8 +434,12 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // Re-pinned for growth profiles D1: audited -- the diff to shared/project.js adds the GROWTH_LIMITS table, points normalizePartyMember's twelve
 // clamps at it (same values) and corrects the MONSTER_GROWTH_FIELDS comment; remapScreenReferences, projectEvents and allCommands are untouched
 // and no stored screen reference is added.
+// Re-pinned for growth profiles C1: audited -- the diff to shared/project.js adds RPG_LIMITS.growthProfiles, member.profileId, the profile
+// curve/resolver/deletion helpers (GROWTH_SHAPES, profileStatAt, effectiveGrowth, memberStatAt, growthProfileUsers,
+// renumberGrowthProfileDeletion) and normalizeGrowthProfiles with its two call sites in normalizeProject; remapScreenReferences,
+// projectEvents and allCommands are untouched and no stored screen reference is added (a profileId names a profile, not a screen).
 const PINNED_DIGESTS = {
-  'shared/project.js': 'd00df11d6a5e553e192e31914f1806518f8395c71a6227b9790ba54c3df435f7',
+  'shared/project.js': '72f3ea6e973e5dbf38bc5da2766e5228ae74b16f7998370950816af2e4207f43',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

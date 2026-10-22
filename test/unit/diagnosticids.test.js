@@ -329,7 +329,7 @@ test('a rule never embeds a count: raising or lowering a number leaves the rule 
 const PRODUCER_FILES = {
   'shared/project.js': { add: 65, addFrom: 7, push: 4, return: 7 },
   'main/build/generate.js': { push: 14, 'return-array': 2 },
-  'main/build/battletables.js': { push: 5 },
+  'main/build/battletables.js': { push: 6 },
   'main/build/textcompile.js': { push: 4 }
 };
 

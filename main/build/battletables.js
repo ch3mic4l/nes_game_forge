@@ -596,6 +596,18 @@ export function checkBattleTables(project) {
       }
     }
   }
+  const profileUsers = new Set(party.map((member) => member.profileId));
+  for (const [profileIndex, profile] of (project.growthProfiles ?? []).entries()) {
+    if (profileUsers.has(profileIndex)) continue;
+    problems.push({
+      severity: 'warning',
+      where: 'Character Forge',
+      message: `Growth profile "${profile.name}" is not used by any party member, so it has no effect on the game.`,
+      rule: 'growth-profile-unused',
+      subject: { profile: profileIndex },
+      counts: []
+    });
+  }
   const hostile = project.sprites.actors.filter(isMonsterActor);
   if (!hostile.length) {
     problems.push({

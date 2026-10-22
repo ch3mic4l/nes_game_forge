@@ -1181,6 +1181,8 @@ export const RPG_LIMITS = {
   // bound on compiled rows (`$FF` is spent as the legacy-map marker in the ROM's
   // per-map offset byte, so a first-entry offset has to be 0..254).
   encounterGroups: 32,
+  // Growth profiles (named stat curves a party member may reference): profiles per project.
+  growthProfiles: 8,
   encounterTableEntries: 8,
   encounterWeightMax: 16,
   encounterEntriesTotal: 255,
@@ -4777,6 +4779,8 @@ export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
     speed: 4,
     acc: 200,
     eva: 8,
+    // Index into project.growthProfiles, or null = this member's own base*/ *PerLevel fields above.
+    profileId: null,
     attackAnim: null, // this member's flipbook on a physical attack (§16)
     spells: [], // { spellId, level } — learned on reaching that level
     // What the member wears at New Game, one entry per EQUIP_SLOTS slot: an item id
@@ -4830,6 +4834,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     maps: [createMap(0, 'World')],
     items: [],
     encounterGroups: [],
+    growthProfiles: [],
     sprites: {
       metasprites: [],
       animations: [],
@@ -6009,6 +6014,109 @@ export const GROWTH_LIMITS = {
   mdef: { baseMin: 0, baseMax: 255, perLevelMin: 0, perLevelMax: 16 }
 };
 
+/** The six party growth stats, in the order of GROWTH_LIMITS. */
+export const GROWTH_STATS = Object.keys(GROWTH_LIMITS);
+
+/**
+ * A growth profile's curve shapes. Persisted as these strings, so reordering is safe; an unknown
+ * shape normalizes to 'linear'.
+ */
+export const GROWTH_SHAPES = ['linear', 'early', 'late'];
+
+/**
+ * The level every shape reaches the same value at: the fixed level-15 horizon (ruling R3). It is deliberately its own constant
+ * and not `project.rpg.maxLevel`: lowering the level cap never retunes an existing level (statAt is cap-independent for the
+ * same reason), it only stops the curve before its endpoint.
+ */
+export const GROWTH_HORIZON_LEVEL = 15;
+
+/** A party member's own field names for a growth stat, e.g. 'mdef' -> { base: 'baseMdef', perLevel: 'mdefPerLevel' }. */
+export function memberGrowthFields(stat) {
+  return { base: `base${stat[0].toUpperCase()}${stat.slice(1)}`, perLevel: `${stat}PerLevel` };
+}
+
+/**
+ * A stat's value at `level` for one `{ base, perLevel, shape }` record. Integer arithmetic only, k = level - 1 over the
+ * level-15 horizon H = 14:
+ *   linear: base + perLevel * k              (statAt itself)
+ *   early:  base + floor((perLevel * k * (2H - k) + H / 2) / H)   front-loaded, ease-out
+ *   late:   base + floor((perLevel * k * k + H / 2) / H)          back-loaded, ease-in
+ * all clamped to 0..255. Every shape reaches base + H * perLevel at level 15, so perLevel is the average per level through
+ * level 15 and a shape only moves the levels between. A non-linear k is held to 0..H so a level past the horizon (none is
+ * reachable: RPG_LIMITS.maxLevel) can never fall back down the curve.
+ */
+export function profileStatAt(record, level) {
+  const { base, perLevel, shape } = record;
+  if (shape !== 'early' && shape !== 'late') return statAt(base, perLevel, level);
+  const horizon = GROWTH_HORIZON_LEVEL - 1;
+  const k = Math.max(0, Math.min(horizon, level - 1));
+  const gain =
+    shape === 'early'
+      ? Math.floor((perLevel * k * (2 * horizon - k) + horizon / 2) / horizon)
+      : Math.floor((perLevel * k * k + horizon / 2) / horizon);
+  return Math.max(0, Math.min(255, base + gain));
+}
+
+/** A new growth profile: createPartyMember's numbers, every stat linear. */
+export function createGrowthProfile(id, name = `Profile ${id}`) {
+  const member = createPartyMember(0);
+  const profile = { id, name };
+  for (const stat of GROWTH_STATS) {
+    const fields = memberGrowthFields(stat);
+    profile[stat] = { base: member[fields.base], perLevel: member[fields.perLevel], shape: 'linear' };
+  }
+  return profile;
+}
+
+/** The growth record ({ base, perLevel, shape }) a member's `stat` is evaluated from: its profile's when it has a live one. */
+function growthRecord(project, member, stat) {
+  const profile = Number.isInteger(member.profileId) ? project.growthProfiles?.[member.profileId] : undefined;
+  if (profile) return profile[stat];
+  const fields = memberGrowthFields(stat);
+  return { base: member[fields.base], perLevel: member[fields.perLevel], shape: 'linear' };
+}
+
+/**
+ * The growth a party member actually has: `{ hp: { base, perLevel, shape }, mp, atk, def, mag, mdef }`, from its profile when
+ * `member.profileId` indexes one, else from its own baseX / xPerLevel fields (shape 'linear'). A dangling id reads as no profile.
+ * Every production consumer of a party stat table or a magic gate reads growth through this and memberStatAt, never the raw
+ * fields (those stay the member's retained custom numbers while a profile is assigned).
+ */
+export function effectiveGrowth(project, member) {
+  return Object.fromEntries(GROWTH_STATS.map((stat) => [stat, { ...growthRecord(project, member, stat) }]));
+}
+
+/** A party member's `stat` ('hp' .. 'mdef') at `level`, through its profile when it has one. */
+export function memberStatAt(project, member, stat, level) {
+  return profileStatAt(growthRecord(project, member, stat), level);
+}
+
+/** The party members that reference growth profile `index`, so a deletion can be refused and name them. */
+export function growthProfileUsers(project, index) {
+  return (project.party ?? []).filter((member) => member.profileId === index);
+}
+
+/**
+ * What every reference to a growth profile becomes once `index` is gone from `project.growthProfiles`: each member's higher
+ * `profileId` shifts down one. Deleting a referenced profile is refused (ruling R2), so this THROWS, before touching anything,
+ * when a member still references `index` -- a skipped refusal can never silently null a member. It reads no profile data, so
+ * either order against the splice is correct; the caller splices, then restamps `id = index` over the profiles.
+ *
+ * Mutates `project` and returns it.
+ */
+export function renumberGrowthProfileDeletion(project, index) {
+  const users = growthProfileUsers(project, index);
+  if (users.length) {
+    throw new Error(
+      `Growth profile ${index} is used by ${users.map((member) => member.name).join(', ')}; set their Growth to Custom first.`
+    );
+  }
+  for (const member of project.party ?? []) {
+    if (Number.isInteger(member.profileId) && member.profileId > index) member.profileId -= 1;
+  }
+  return project;
+}
+
 /**
  * One entry per battle.* field the derive action covers, each carrying its
  * own Base ceiling and its own +/level maximum -- the single place either
@@ -6113,7 +6221,23 @@ function normalizeSpell(raw, id) {
   };
 }
 
-function normalizePartyMember(raw, id, spellCount, maxLevel) {
+function normalizeGrowthProfiles(raw) {
+  return (Array.isArray(raw) ? raw : []).slice(0, RPG_LIMITS.growthProfiles).map((entry, id) => {
+    const profile = createGrowthProfile(id, normalizeLabel(entry?.name, `Profile ${id}`));
+    for (const stat of GROWTH_STATS) {
+      const limits = GROWTH_LIMITS[stat];
+      const record = profile[stat];
+      profile[stat] = {
+        base: clamp(entry?.[stat]?.base, limits.baseMin, limits.baseMax, record.base),
+        perLevel: clamp(entry?.[stat]?.perLevel, limits.perLevelMin, limits.perLevelMax, record.perLevel),
+        shape: GROWTH_SHAPES.includes(entry?.[stat]?.shape) ? entry[stat].shape : 'linear'
+      };
+    }
+    return profile;
+  });
+}
+
+function normalizePartyMember(raw, id, spellCount, maxLevel, profileCount = 0) {
   const base = createPartyMember(id);
   const num = (key, min, max) => clamp(raw?.[key], min, max, base[key]);
   return {
@@ -6138,6 +6262,8 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
     magPerLevel: num('magPerLevel', GROWTH_LIMITS.mag.perLevelMin, GROWTH_LIMITS.mag.perLevelMax),
     baseMdef: num('baseMdef', GROWTH_LIMITS.mdef.baseMin, GROWTH_LIMITS.mdef.baseMax),
     mdefPerLevel: num('mdefPerLevel', GROWTH_LIMITS.mdef.perLevelMin, GROWTH_LIMITS.mdef.perLevelMax),
+    // A dangling or non-integer reference is "no profile": the generator would otherwise emit a NaN row.
+    profileId: Number.isInteger(raw?.profileId) && raw.profileId >= 0 && raw.profileId < profileCount ? raw.profileId : null,
     speed: num('speed', 0, 255),
     acc: num('acc', 0, 255),
     eva: num('eva', 0, 255),
@@ -6601,9 +6727,11 @@ export function normalizeProject(raw) {
   const spells = (Array.isArray(raw.spells) ? raw.spells : [])
     .slice(0, RPG_LIMITS.spells)
     .map(normalizeSpell);
+  // Before the party: a member's profileId is judged against how many profiles exist.
+  const growthProfiles = normalizeGrowthProfiles(raw.growthProfiles);
   const party = (Array.isArray(raw.party) ? raw.party : [])
     .slice(0, characterCap(project.gameType))
-    .map((member, index) => normalizePartyMember(member, index, spells.length, rpg.maxLevel));
+    .map((member, index) => normalizePartyMember(member, index, spells.length, rpg.maxLevel, growthProfiles.length));
   // Every project always has someone to play as.
   if (!party.length) party.push(createPartyMember(0, 'Hero'));
   // A starting piece has to name an equipment piece of its slot. Done here, after both lists exist, because
@@ -6626,6 +6754,7 @@ export function normalizeProject(raw) {
     maps,
     items,
     encounterGroups,
+    growthProfiles,
     sprites: {
       metasprites: (raw.sprites?.metasprites ?? []).map(normalizeMetasprite),
       animations: (raw.sprites?.animations ?? []).map(normalizeAnimation),

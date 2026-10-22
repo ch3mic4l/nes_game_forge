@@ -799,9 +799,13 @@ const CANONICAL_HASHES = {
   // Re-pinned again (encounter groups, data layer): createProject gained `encounterGroups: []`. That is the whole change -- the
   // canonical JSON of each shape with that one key deleted hashes to the previous three values (action 720aa40a..., rpg 134c8266...,
   // action-mixed 51165bea...).
-  action: 'd8765e023b14b6b0bc1a6dfaf6fc6380c54a2114d2eab5a9ea648cf17a598cc9',
-  rpg: '541a36c065638cd058cf5a43146b05470a52c6f02731f37e41c129b9323c6aca',
-  'action-mixed': '8a7b9764247b46262146bf124252fd0727ae550bf65679b9711d322c692d2537'
+  //
+  // Re-pinned again (growth profiles, data layer): createProject gained `growthProfiles: []` and createPartyMember `profileId: null`.
+  // That is the whole change -- the canonical JSON of each shape with those two keys deleted hashes to the previous three values
+  // (action d8765e02..., rpg 541a36c0..., action-mixed 8a7b9764...).
+  action: '383ef6ac633ddd2c9e08db51631346c59d12835884f2da1dd439c933122f7f4c',
+  rpg: '95d2a8a647268f65e2f96c62bb56acd2e668bdc17368c138d7aff58912e1567d',
+  'action-mixed': 'd5164042ba841c63a44b4ed3cf64fd9eeb6ec4ccc5717b939b5f973313984eae'
 };
 
 test('test/lib/streamedproject.js: the canonical JSON of each generator shape hashes to a pinned SHA-256', () => {
