@@ -441,8 +441,11 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // Re-pinned for growth profiles C2: audited -- `git diff -U0 shared/project.js` is three hunks: the private partyGrowsStat helper, and projectUsesMagicPower
 // / projectUsesMagicDefence reading the party source through it (effectiveGrowth) instead of member.baseX / xPerLevel; remapScreenReferences,
 // projectEvents and allCommands are untouched and no stored screen reference is added.
+// Re-pinned for growth profiles C3 fix 1: audited -- `git diff -U0 shared/project.js` against C2 adds the exported clampGrowthValue (a clamp through
+// GROWTH_LIMITS) and points normalizeGrowthProfiles' base / perLevel at it (same values); remapScreenReferences, projectEvents and allCommands are
+// untouched and no stored screen reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': '369495485b91514fb99a2fe6b55274132e347a385a57133ebbb5bec5271f646f',
+  'shared/project.js': 'c2183bd5e9768c49428e6c897744cb07c354ba3261484ae6cc6cd1158f64c458',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

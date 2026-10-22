@@ -6221,15 +6221,24 @@ function normalizeSpell(raw, id) {
   };
 }
 
+/**
+ * One growth profile number ('base' or 'perLevel' of a stat) as the project holds it: rounded to an integer and limited to
+ * GROWTH_LIMITS, `fallback` (default the minimum) for a value that is not a number. The one rule: normalizeGrowthProfiles stores
+ * through it and the Character Forge's profile editor commits through it, so an edit and a save / reload cannot disagree.
+ */
+export function clampGrowthValue(stat, kind, value, fallback) {
+  const limits = GROWTH_LIMITS[stat];
+  return clamp(value, limits[`${kind}Min`], limits[`${kind}Max`], fallback);
+}
+
 function normalizeGrowthProfiles(raw) {
   return (Array.isArray(raw) ? raw : []).slice(0, RPG_LIMITS.growthProfiles).map((entry, id) => {
     const profile = createGrowthProfile(id, normalizeLabel(entry?.name, `Profile ${id}`));
     for (const stat of GROWTH_STATS) {
-      const limits = GROWTH_LIMITS[stat];
       const record = profile[stat];
       profile[stat] = {
-        base: clamp(entry?.[stat]?.base, limits.baseMin, limits.baseMax, record.base),
-        perLevel: clamp(entry?.[stat]?.perLevel, limits.perLevelMin, limits.perLevelMax, record.perLevel),
+        base: clampGrowthValue(stat, 'base', entry?.[stat]?.base, record.base),
+        perLevel: clampGrowthValue(stat, 'perLevel', entry?.[stat]?.perLevel, record.perLevel),
         shape: GROWTH_SHAPES.includes(entry?.[stat]?.shape) ? entry[stat].shape : 'linear'
       };
     }

@@ -1672,3 +1672,53 @@ canvas.sheet {
   position: relative;
   cursor: pointer;
 }
+
+/* Character Forge: growth profile editor and level-by-level preview (renderer/forges/character/character.js). */
+.growth-profiles {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.growth-profiles > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.growth-table {
+  border-collapse: collapse;
+  margin: 4px 0 10px;
+  font-size: 12px;
+}
+
+.growth-table th,
+.growth-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+}
+
+.growth-table th {
+  color: var(--text-faint);
+  font-weight: 500;
+  text-align: left;
+}
+
+.growth-preview td.cap {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.growth-edit input[type='number'] {
+  width: 64px;
+}
+
+/* A growth input that shows a profile's value, not the member's own: legibly read-only, in the Character Forge's growth classes only. */
+input.growth-locked:disabled {
+  opacity: 0.8;
+  color: var(--text-dim);
+  background: transparent;
+  border-style: dashed;
+  cursor: not-allowed;
+}

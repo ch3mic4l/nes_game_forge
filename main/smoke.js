@@ -12,7 +12,7 @@ import { decodePng } from '../test/lib/pngdecode.js';
 import { decodeGif } from '../test/lib/gifdecode.js';
 import { loadProject } from './project-io.js';
 import { checkCapacity, streamworldDialogueBanked } from './build/generate.js';
-import { battleRegionBytes, battleRegionCeiling } from './build/battletables.js';
+import { battleRegionBytes, battleRegionCeiling, battleTables } from './build/battletables.js';
 import { resolveMapper } from '../shared/cartridge.js';
 import { encodeTiles } from '../shared/chr.js';
 import { STARTERS } from '../shared/starters/index.js';
@@ -12977,9 +12977,9 @@ const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
         if (!anchor) throw new Error('Character Forge has no "' + labelText + '" field to anchor the +/level lookup on');
         const sibling = anchor.nextElementSibling;
         const siblingLabel = sibling?.querySelector?.('.field-label')?.textContent;
-        if (!sibling || siblingLabel !== '+ / level') {
+        if (!sibling || (siblingLabel !== '+ / level' && siblingLabel !== 'Avg / level to Lv 15')) {
           throw new Error(
-            'the field immediately after "' + labelText + '" is not labelled "+ / level", saw ' + JSON.stringify(siblingLabel)
+            'the field immediately after "' + labelText + '" is not labelled "+ / level" (or "Avg / level to Lv 15" under a profile), saw ' + JSON.stringify(siblingLabel)
           );
         }
         return sibling.querySelector('input');
@@ -13085,6 +13085,348 @@ const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
           'Character Forge ' + label + ' field edit/undo/redo/reload',
           'Rian’s ' + key + ' reaches the store as ' + value + ', survives undo/redo against the live rendered value, and survives a save/reload disk round trip'
         );
+      }
+
+      // Growth profiles (ROADMAP item 5, commit C3; handoff-next/classes/design.md sec 5-6). Rian and Iris are the sample-rpg party on a
+      // scratch copy; everything below is undone and saved back at the end so the later sections see the project they were written for.
+      {
+        const { GROWTH_LIMITS: LIMITS, memberStatAt } = await import('../shared/project.js');
+        const gp = monsterStore;
+        const undoDepth0 = gp.undoStack.length;
+        const pristineJson = JSON.stringify(gp.project);
+        const fail = (message) => { throw new Error('growth profiles: ' + message); };
+        const change = async (input, value) => {
+          input.value = String(value);
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          await wait(150);
+        };
+        const section = () => document.querySelector('#stage details.growth-profiles');
+        const button = (match) => [...document.querySelectorAll('#stage button')].find((b) => b.title === match || b.textContent.trim() === match);
+        const growthField = () => [...document.querySelectorAll('#stage .field')].find((f) => f.querySelector('.field-label')?.textContent === 'Growth');
+        const editRow = (stat) => section().querySelector('table.growth-edit tr[data-stat="' + stat + '"]');
+        const cells = (table, stat) => [...table.querySelector('tr[data-stat="' + stat + '"]').querySelectorAll('td')].map((td) => Number(td.textContent));
+        const memberPreview = () => [...document.querySelectorAll('#stage table.growth-preview')].find((t) => !section().contains(t));
+        const profilePreview = () => section().querySelector('table.growth-preview');
+        const selectMember = async (index) => {
+          const list = document.querySelector('#stage select');
+          list.value = String(index);
+          list.dispatchEvent(new Event('change', { bubbles: true }));
+          await wait(150);
+        };
+        const assign = async (member, value) => {
+          await selectMember(member);
+          await change(growthField().querySelector('select'), value);
+        };
+        const FIELDS12 = ['baseHp', 'hpPerLevel', 'baseMp', 'mpPerLevel', 'baseAtk', 'atkPerLevel', 'baseDef', 'defPerLevel', 'baseMag', 'magPerLevel', 'baseMdef', 'mdefPerLevel'];
+        const own = (member) => JSON.stringify(FIELDS12.map((key) => gp.project.party[member][key]));
+        const modalHost = document.querySelector('#modalHost');
+        // Real input (fix 1, handoff-next/classes/c3-review1.md RC1): the scenario runs in the page, so a key press or typed text is queued
+        // on window.__smokeInput and main (the pump around the scenario call below) sends it with webContents.sendInputEvent / insertText.
+        let realInputId = 0;
+        const realInput = async (request) => {
+          const id = ++realInputId;
+          (window.__smokeInput = window.__smokeInput || []).push({ ...request, id });
+          await until('real input ' + request.kind, () => window.__smokeInputDone >= id, 6000);
+          await wait(80);
+        };
+        const key = (code) => realInput({ kind: 'key', key: code });
+        const typeInto = async (input, text) => {
+          input.focus();
+          input.select();
+          await realInput({ kind: 'text', text });
+        };
+        // Always looked up afresh: every commit rebuilds the pane, so a node held across an edit is a detached copy.
+        const hpInput = (kind) => editRow('hp').querySelectorAll('input')[kind === 'base' ? 0 : 1];
+        const focusKey = () => (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.focus) || document.activeElement.tagName;
+        const listNode = () => section().querySelector('select[data-focus="pf-list"]');
+        const GROWTH_LABELS = ['HP', 'MP', 'Attack', 'Defence', 'Magic', 'Magic defence'];
+        const growthInputs12 = () => GROWTH_LABELS.flatMap((label) => [findFieldInput(label), findPerLevelInputAfter(label)]);
+        const look = (node) => {
+          const c = getComputedStyle(node);
+          return [c.opacity, c.color, c.backgroundColor, c.borderTopStyle].join(' | ');
+        };
+        const labelCount = (text) => [...document.querySelectorAll('#stage .field-label')].filter((n) => n.textContent === text).length;
+        await selectMember(0);
+
+        // D1 nonblocking note (d1-review1.md): an over-maximum typed into each of the four inputs D1 corrected is clamped to the stored max.
+        for (const [label, key, getInput, max] of [
+          ['MP', 'baseMp', () => findFieldInput('MP'), LIMITS.mp.baseMax],
+          ['MP + / level', 'mpPerLevel', () => findPerLevelInputAfter('MP'), LIMITS.mp.perLevelMax],
+          ['Attack + / level', 'atkPerLevel', () => findPerLevelInputAfter('Attack'), LIMITS.atk.perLevelMax],
+          ['Defence + / level', 'defPerLevel', () => findPerLevelInputAfter('Defence'), LIMITS.def.perLevelMax]
+        ]) {
+          await change(getInput(), 999);
+          if (gp.project.party[0][key] !== max) fail(label + ': typing 999 stored ' + gp.project.party[0][key] + ', expected the clamp ' + max);
+          if (Number(getInput().value) !== max) fail(label + ': the input shows ' + getInput().value + ' after the clamp, expected ' + max);
+        }
+        for (let i = 0; i < 4; i++) gp.undo();
+        await wait(150);
+        if (JSON.stringify(gp.project) !== pristineJson) fail('undoing the four clamp probes did not restore the project');
+        step('Character Forge over-maximum growth inputs clamp', 'base MP, MP / ATK / DEF per level: 999 stores the GROWTH_LIMITS maximum');
+
+        // Add, rename, edit.
+        if (gp.project.growthProfiles.length !== 0) fail('sample-rpg should start with no growth profiles');
+        if (growthField().querySelector('select').options.length !== 1) fail('the Growth select should offer only Custom before any profile exists');
+        button('+ Profile').click();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 1) fail('+ Profile did not add a profile');
+        if (!section() || !section().open) fail('the Growth profiles section should be open after adding a profile');
+        // RC1 (focus survives an edit) and RC2 (integers), with real key events and freshly queried inputs.
+        await realInput({ kind: 'focus' });
+        const typedName = section().querySelector('input[type="text"]');
+        typedName.focus();
+        typedName.select();
+        await realInput({ kind: 'text', text: 'Typed' });
+        await key('Tab');
+        if (gp.project.growthProfiles[0].name !== 'Typed') fail('typing a profile name and pressing Tab did not commit it: ' + gp.project.growthProfiles[0].name);
+        if (focusKey() !== 'pf-hp-base') fail('Tab after a name edit left focus on ' + focusKey() + ', expected the next field (HP base)');
+        if (document.activeElement !== hpInput('base')) fail('the focused HP base input is not the live one');
+        const arrowDepth = gp.undoStack.length;
+        const arrowBase = gp.project.growthProfiles[0].hp.base;
+        await key('Up');
+        if (document.activeElement !== hpInput('base')) fail('after one Arrow Up the focus left the HP base input (now ' + focusKey() + ')');
+        await key('Up');
+        if (gp.project.growthProfiles[0].hp.base !== arrowBase + 2) fail('two Arrow Ups on the focused HP base gave ' + gp.project.growthProfiles[0].hp.base + ', expected ' + (arrowBase + 2));
+        if (gp.undoStack.length !== arrowDepth + 2) fail('two Arrow Ups should be two undo entries, saw ' + (gp.undoStack.length - arrowDepth));
+        if (document.activeElement !== hpInput('base')) fail('after two Arrow Ups the focus is not on the live HP base input');
+        step('Character Forge profile editor keeps focus on real keys', 'Tab after a name edit lands on HP base; two Arrow Ups on HP base are two increments and two undo entries with focus kept');
+
+        await typeInto(hpInput('base'), '24.6');
+        await key('Tab');
+        if (gp.project.growthProfiles[0].hp.base !== 25 || hpInput('base').value !== '25') fail('typing 24.6 into HP base stored ' + gp.project.growthProfiles[0].hp.base + ' and shows ' + hpInput('base').value + ', expected 25');
+        await typeInto(hpInput('perLevel'), '3.6');
+        await key('Tab');
+        if (gp.project.growthProfiles[0].hp.perLevel !== 4 || hpInput('perLevel').value !== '4') fail('typing 3.6 into HP per level stored ' + gp.project.growthProfiles[0].hp.perLevel + ', expected 4');
+        if (cells(profilePreview(), 'hp')[0] !== 25) fail('the preview shows level 1 as ' + cells(profilePreview(), 'hp')[0] + ', expected 25');
+        await assign(0, '0');
+        const fractionalSave = await window.forge.project.save(gp.dir, gp.project);
+        if (!fractionalSave.ok) fail('save: ' + fractionalSave.error);
+        const fractionalReopen = await window.forge.project.open(gp.dir);
+        if (!fractionalReopen.ok) fail('reopen: ' + fractionalReopen.error);
+        const fractionalHp = fractionalReopen.value.project.growthProfiles[0].hp;
+        if (fractionalHp.base !== 25 || fractionalHp.perLevel !== 4) fail('the reopened profile reads ' + JSON.stringify(fractionalHp) + ', not the live 25 / 4');
+        if (memberStatAt(fractionalReopen.value.project, { profileId: 0 }, 'hp', 1) !== cells(profilePreview(), 'hp')[0]) fail('the reopened profile and the live preview disagree at level 1');
+        report.growthRounding = { live: JSON.parse(JSON.stringify(gp.project)), reopened: fractionalReopen.value.project };
+        await assign(0, '');
+        step('Character Forge profile numbers are integers', 'typed 24.6 and 3.6 store, show and preview as 25 and 4, and the reopened profile agrees (the emitted rows are checked by main after the run)');
+
+        // The profile list with the arrow keys: two arrows are two entries, no commit, focus kept.
+        button('+ Profile').click();
+        await wait(150);
+        button('+ Profile').click();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 3 || listNode().selectedIndex !== 2) fail('expected three profiles with the last selected');
+        listNode().focus();
+        const listDepth = gp.undoStack.length;
+        const listJson = JSON.stringify(gp.project);
+        await key('Up');
+        if (listNode().selectedIndex !== 1 || document.activeElement !== listNode()) fail('one Arrow Up in the profile list: selected ' + listNode().selectedIndex + ', focus ' + focusKey());
+        await key('Up');
+        if (listNode().selectedIndex !== 0 || document.activeElement !== listNode()) fail('two Arrow Ups in the profile list: selected ' + listNode().selectedIndex + ', focus ' + focusKey());
+        if (gp.undoStack.length !== listDepth || JSON.stringify(gp.project) !== listJson) fail('choosing a profile in the list committed something');
+        gp.undo();
+        gp.undo();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 1) fail('undoing the two added profiles left ' + gp.project.growthProfiles.length);
+        step('Character Forge profile list on real arrow keys', 'two Arrow Ups move two entries with focus kept and no commit');
+
+        // RC1 of fix 2: leaving the name field must not destroy the control the user is going to. A real press (mouse-down, held, mouse-up) on
+        // Duplicate right after typing a name both commits the name and duplicates, each once; Shift-Tab lands on the preceding live control.
+        const clickAt = (node) => {
+          const r = node.getBoundingClientRect();
+          return realInput({ kind: 'click', x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), hold: 1300 });
+        };
+        const clickDepth = gp.undoStack.length;
+        const clickName = section().querySelector('input[type="text"]');
+        clickName.focus();
+        clickName.select();
+        await realInput({ kind: 'text', text: 'Click action' });
+        await clickAt(button('Duplicate'));
+        await wait(100);
+        if (gp.project.growthProfiles.length !== 2) fail('rename then a real click on Duplicate left ' + gp.project.growthProfiles.length + ' profiles, expected 2 (the click was lost or done twice)');
+        if (gp.project.growthProfiles[0].name !== 'Click action' || gp.project.growthProfiles[1].name !== 'Click action copy') fail('the copy does not carry the committed name: ' + JSON.stringify(gp.project.growthProfiles.map((p) => p.name)));
+        if (gp.undoStack.length !== clickDepth + 2) fail('rename plus duplicate should be exactly two undo entries, saw ' + (gp.undoStack.length - clickDepth));
+        gp.undo();
+        gp.undo();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 1 || gp.project.growthProfiles[0].name !== 'Typed') fail('undoing the rename and the duplicate did not restore the single Typed profile');
+        const backName = section().querySelector('input[type="text"]');
+        backName.focus();
+        backName.select();
+        await realInput({ kind: 'text', text: 'Backwards' });
+        await realInput({ kind: 'key', key: 'Tab', modifiers: ['shift'] });
+        if (gp.project.growthProfiles[0].name !== 'Backwards') fail('typing a name and pressing Shift-Tab did not commit it');
+        if (focusKey() !== 'pf-delete' || !document.contains(document.activeElement)) fail('Shift-Tab after a name edit left focus on ' + focusKey() + ', expected the preceding live control (Delete)');
+        gp.undo();
+        await wait(150);
+        if (gp.project.growthProfiles[0].name !== 'Typed') fail('undoing the Shift-Tab rename did not restore Typed');
+        step('Character Forge profile name commit keeps the control the user moves to', 'rename then a real held click on Duplicate does both once, the copy carries the name; Shift-Tab after a rename focuses Delete');
+
+        // Fix 3: the pointer-release callback goes with the Forge. Typing a name and pressing a rail button leaves the name's commit waiting
+        // behind the held press; the release queues a callback, and the click on the rail button destroys this Forge synchronously
+        // (selectForge). That callback used to rebuild the detached Forge afterwards. The closed-store variant (it threw on the null project)
+        // is not reachable here without closing the project the rest of the scenario uses; the standalone probe in fix3-report.md covers it.
+        const awayDepth = gp.undoStack.length;
+        const awayRoot = document.querySelector('#stage').firstElementChild;
+        const awayName = section().querySelector('input[type="text"]');
+        const awayDuplicate = button('Duplicate');
+        awayName.focus();
+        awayName.select();
+        await realInput({ kind: 'text', text: 'Switch away' });
+        const itemsRail = [...document.querySelectorAll('#rail .rail-item')].find((b) => b.querySelector('.rail-label')?.textContent.trim() === 'Items');
+        if (!itemsRail) fail('the rail has no Items button to press');
+        await clickAt(itemsRail);
+        await wait(400);
+        if (awayRoot.isConnected) fail('the real press on the Items rail button did not switch Forge');
+        if (!awayRoot.contains(awayName) || !awayRoot.contains(awayDuplicate)) fail('the destroyed Character Forge was rebuilt after the press was released');
+        if (gp.project.growthProfiles[0].name !== 'Switch away' || gp.undoStack.length !== awayDepth + 1) fail('the name typed before leaving for another Forge was not committed once');
+        gp.undo();
+        await window.__app.goTo('character');
+        await wait(400);
+        if (!section() || gp.project.growthProfiles[0].name !== 'Typed') fail('returning to the Character Forge after the switch-away cell did not restore the Typed profile');
+        step('Character Forge release after destroy', 'rename, real press on the Items rail button: the Forge switches, the committed name stays, the old Forge is not rebuilt');
+
+        await change(section().querySelector('input[type="text"]'), 'Fighter');
+        if (gp.project.growthProfiles[0].name !== 'Fighter') fail('renaming did not reach the store');
+        if (!section().textContent.includes('Avg / level to Lv 15')) fail('the per-level column is not labelled "Avg / level to Lv 15" (R3)');
+        if (hpInput('base').max !== String(LIMITS.hp.baseMax) || hpInput('perLevel').max !== String(LIMITS.hp.perLevelMax)) fail('profile HP inputs do not offer GROWTH_LIMITS');
+        await change(hpInput('base'), 30);
+        await change(hpInput('perLevel'), 4);
+        await change(editRow('hp').querySelector('select'), 'early');
+        const hpRecord = gp.project.growthProfiles[0].hp;
+        if (hpRecord.base !== 30 || hpRecord.perLevel !== 4 || hpRecord.shape !== 'early') fail('the profile edit did not reach the store: ' + JSON.stringify(hpRecord));
+        await change(editRow('atk').querySelectorAll('input')[1], 999);
+        if (gp.project.growthProfiles[0].atk.perLevel !== LIMITS.atk.perLevelMax) fail('a profile per-level input did not clamp an over-maximum');
+        const levels = gp.project.rpg.maxLevel;
+        const expectedHp = [];
+        for (let level = 1; level <= levels; level++) expectedHp.push(memberStatAt(gp.project, { profileId: 0 }, 'hp', level));
+        // Early, base 30, +4: k = 7 -> floor((4 * 7 * 21 + 7) / 14) = 42, so level 8 is 72 (a literal, not the shared code's own answer).
+        if (expectedHp[0] !== 30 || expectedHp[7] !== 72) fail('the early curve is not the hand-computed 30 .. 72: ' + JSON.stringify(expectedHp));
+        if (JSON.stringify(cells(profilePreview(), 'hp')) !== JSON.stringify(expectedHp)) fail('the profile preview row for HP is ' + JSON.stringify(cells(profilePreview(), 'hp')));
+        step('Character Forge growth profile: add, rename, edit, clamp, preview', 'Fighter, HP 30 +4 early; preview 30 .. 72 over ' + levels + ' levels');
+
+        // Assign Rian: effective values shown, inputs disabled, retained numbers untouched.
+        const ownBefore = own(0);
+        await assign(0, '0');
+        if (gp.project.party[0].profileId !== 0) fail('choosing Fighter did not set profileId');
+        if (own(0) !== ownBefore) fail('assigning a profile changed Rian’s retained custom numbers');
+        const lockedHp = findFieldInput('HP');
+        const lockedPer = findPerLevelInputAfter('HP');
+        if (!lockedHp.disabled || !lockedPer.disabled) fail('the HP inputs should be disabled while a profile is assigned');
+        if (lockedHp.value !== '30' || lockedPer.value !== '4') fail('the HP inputs show ' + lockedHp.value + ' / ' + lockedPer.value + ', not the effective 30 / 4');
+        if (!/Fighter/.test(lockedHp.title)) fail('the disabled input’s title does not name the profile');
+        if (JSON.stringify(cells(memberPreview(), 'hp')) !== JSON.stringify(expectedHp)) fail('the member preview row for HP is ' + JSON.stringify(cells(memberPreview(), 'hp')));
+        if (![...document.querySelectorAll('#stage input[type="number"]')].some((i) => i.disabled)) fail('no disabled input found');
+        const lockedNodes = growthInputs12();
+        if (lockedNodes.length !== 12 || new Set(lockedNodes).size !== 12) fail('expected twelve distinct growth inputs');
+        const speedLook = look(findFieldInput('Speed'));
+        for (const node of lockedNodes) {
+          if (!node.disabled) fail('a growth input is editable while a profile is assigned (value ' + node.value + ')');
+          if (!node.classList.contains('growth-locked')) fail('a locked growth input has no growth-locked class');
+          if (look(node) === speedLook) fail('a locked growth input looks like the editable Speed input: ' + look(node));
+        }
+        if (labelCount('Avg / level to Lv 15') !== 6 || labelCount('+ / level') !== 0) fail('while assigned, the six member-card labels should read Avg / level to Lv 15 (saw ' + labelCount('Avg / level to Lv 15') + ' and ' + labelCount('+ / level') + ' plain)');
+        step('Character Forge assigned growth inputs are all locked, legibly, and labelled as averages', 'twelve disabled growth-locked inputs differ in style from Speed; six labels read Avg / level to Lv 15');
+        step('Character Forge member assigned a profile', 'inputs disabled and showing 30 / 4, retained numbers untouched, member preview matches');
+
+        // Edit while assigned, undo / redo.
+        await change(hpInput('base'), 40);
+        if (findFieldInput('HP').value !== '40') fail('the member input did not follow the profile edit (40), saw ' + findFieldInput('HP').value);
+        gp.undo();
+        await wait(150);
+        if (gp.project.growthProfiles[0].hp.base !== 30 || findFieldInput('HP').value !== '30') fail('undo of the profile edit did not return to 30');
+        gp.redo();
+        await wait(150);
+        if (gp.project.growthProfiles[0].hp.base !== 40 || findFieldInput('HP').value !== '40') fail('redo of the profile edit did not return to 40');
+        step('Character Forge profile edit undo / redo', 'the profile and the member’s effective values follow 30 -> 40 -> 30 -> 40');
+
+        // R2: delete while assigned is refused, naming every user, committing nothing.
+        await assign(1, '0');
+        const depthBefore = gp.undoStack.length;
+        const jsonBefore = JSON.stringify(gp.project);
+        button('Delete profile').click();
+        await until('the refusal dialog', () => !modalHost.hidden);
+        const dialogText = modalHost.textContent;
+        if (!/Rian, Iris/.test(dialogText) || !/Set their Growth to Custom first/.test(dialogText)) fail('the refusal does not name the members: ' + dialogText);
+        modalHost.querySelector('.modal-foot button').click();
+        await until('the refusal dialog to close', () => modalHost.hidden);
+        if (gp.undoStack.length !== depthBefore || JSON.stringify(gp.project) !== jsonBefore) fail('the refused delete committed something');
+        if (gp.project.growthProfiles.length !== 1) fail('the refused delete removed the profile');
+        step('Character Forge refuses to delete a referenced profile', 'dialog names Rian, Iris; no commit, project unchanged');
+
+        // S9: the profile, its assignment and the retained numbers survive a save and a reload.
+        const profileSave = await window.forge.project.save(gp.dir, gp.project);
+        if (!profileSave.ok) fail('save: ' + profileSave.error);
+        const profileReopened = await window.forge.project.open(gp.dir);
+        if (!profileReopened.ok) fail('reopen: ' + profileReopened.error);
+        const reopened = profileReopened.value.project;
+        if (reopened.growthProfiles.length !== 1 || reopened.growthProfiles[0].name !== 'Fighter' || reopened.growthProfiles[0].hp.shape !== 'early' || reopened.growthProfiles[0].hp.base !== 40) {
+          fail('the profile did not survive the disk round trip: ' + JSON.stringify(reopened.growthProfiles));
+        }
+        if (reopened.party[0].profileId !== 0 || reopened.party[1].profileId !== 0) fail('the assignments did not survive the disk round trip');
+        if (JSON.stringify(FIELDS12.map((key) => reopened.party[0][key])) !== ownBefore) fail('Rian’s retained custom numbers did not survive the disk round trip');
+        step('Character Forge growth profile save and reload', 'profile, assignments and retained custom numbers survive the disk round trip');
+
+        // Unassign: the author's own numbers come straight back.
+        await assign(1, '');
+        await assign(0, '');
+        if (gp.project.party[0].profileId !== null || gp.project.party[1].profileId !== null) fail('Custom did not clear profileId');
+        if (own(0) !== ownBefore) fail('unassigning did not leave Rian’s own numbers as they were');
+        if (findFieldInput('HP').disabled || findPerLevelInputAfter('HP').disabled) fail('the HP inputs stayed disabled after Custom');
+        if (findFieldInput('HP').value !== String(gp.project.party[0].baseHp)) fail('the HP input does not show Rian’s own base HP again');
+        if (growthInputs12().some((node) => node.disabled || node.classList.contains('growth-locked'))) fail('a growth input stayed locked after Custom');
+        if (growthInputs12().some((node) => look(node) !== look(findFieldInput('Speed')))) fail('after Custom a growth input does not look like an editable input again');
+        if (labelCount('+ / level') !== 6 || labelCount('Avg / level to Lv 15') !== 0) fail('after Custom the six labels should read + / level again');
+        step('Character Forge unassign restores the own numbers', 'inputs enabled and showing the retained custom values');
+
+        // Duplicate, then delete: an unreferenced delete is one commit, ids restamped.
+        button('Duplicate').click();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 2 || gp.project.growthProfiles[1].name !== 'Fighter copy' || gp.project.growthProfiles[1].id !== 1) fail('Duplicate did not append "Fighter copy"');
+        const depthBeforeDelete = gp.undoStack.length;
+        button('Delete profile').click();
+        await wait(250);
+        if (gp.project.growthProfiles.length !== 1 || gp.project.growthProfiles[0].name !== 'Fighter') fail('deleting the unreferenced copy removed the wrong profile');
+        if (gp.undoStack.length !== depthBeforeDelete + 1) fail('an unreferenced delete should be exactly one commit');
+        button('Delete profile').click();
+        await wait(250);
+        if (gp.project.growthProfiles.length !== 0) fail('deleting the unreferenced profile left it behind');
+        step('Character Forge duplicate and delete an unreferenced profile', 'one commit per delete, ids restamped, empty list again');
+
+        // Delete an unused FIRST profile while a member uses the third: the assignment and the ids shift, in one undo entry.
+        for (let i = 0; i < 3; i++) {
+          button('+ Profile').click();
+          await wait(150);
+        }
+        if (gp.project.growthProfiles.length !== 3) fail('expected three profiles for the renumber cell');
+        await change(listNode(), '2');
+        await change(hpInput('base'), 50);
+        await assign(0, '2');
+        await change(listNode(), '0');
+        const shiftDepth = gp.undoStack.length;
+        button('Delete profile').click();
+        await wait(250);
+        const idsOf = () => JSON.stringify(gp.project.growthProfiles.map((p) => p.id));
+        const namesOf = () => JSON.stringify(gp.project.growthProfiles.map((p) => p.name));
+        if (gp.project.growthProfiles.length !== 2 || namesOf() !== JSON.stringify(['Profile 2', 'Profile 3']) || idsOf() !== '[0,1]') fail('deleting the unused first profile left ' + namesOf() + ' ids ' + idsOf());
+        if (gp.project.party[0].profileId !== 1) fail('Rian should now reference profile 1 (was 2), saw ' + gp.project.party[0].profileId);
+        if (gp.undoStack.length !== shiftDepth + 1) fail('the delete should be exactly one undo entry');
+        if (findFieldInput('HP').value !== '50') fail('Rian should still show Profile 3 effective HP 50, saw ' + findFieldInput('HP').value);
+        gp.undo();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 3 || idsOf() !== '[0,1,2]' || gp.project.party[0].profileId !== 2 || findFieldInput('HP').value !== '50') fail('one undo should restore three profiles and Rian on profile 2');
+        gp.redo();
+        await wait(150);
+        if (gp.project.growthProfiles.length !== 2 || idsOf() !== '[0,1]' || gp.project.party[0].profileId !== 1 || findFieldInput('HP').value !== '50') fail('one redo should reapply the delete and the shift');
+        step('Character Forge deleting an unused first profile shifts the assignment and ids', 'Rian 2 -> 1, ids restamped, one undo restores and one redo reapplies both');
+
+        // Put everything back and save, as the sections after this expect.
+        while (gp.undoStack.length > undoDepth0) gp.undo();
+        await wait(150);
+        if (JSON.stringify(gp.project) !== pristineJson) fail('undoing the whole growth profile section did not restore the project');
+        const profileCleanup = await window.forge.project.save(gp.dir, gp.project);
+        if (!profileCleanup.ok) fail('cleanup save: ' + profileCleanup.error);
+        await selectMember(0);
       }
 
       // Leave the Forge where the rest of this section expects it.
@@ -16853,8 +17195,66 @@ export async function runSmoke(window) {
         `${cameraOnTotalFrames} for comparison`
     );
 
-    const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy, sampleRpgEquipCopy));
+    // Real keyboard input for the scenario (the Character Forge growth profile cells): the page queues requests on window.__smokeInput, this
+    // pump sends each with webContents.sendInputEvent / insertText and acknowledges it on window.__smokeInputDone.
+    let inputPumpBusy = false;
+    const inputPump = setInterval(async () => {
+      if (inputPumpBusy) return;
+      inputPumpBusy = true;
+      try {
+        const requests = await window.webContents.executeJavaScript('(() => { const q = window.__smokeInput; return q && q.length ? q.splice(0) : []; })()');
+        for (const request of requests) {
+          if (request.kind === 'focus') window.webContents.focus();
+          else if (request.kind === 'key') {
+            const modifiers = request.modifiers ?? [];
+            window.webContents.sendInputEvent({ type: 'keyDown', keyCode: request.key, modifiers });
+            window.webContents.sendInputEvent({ type: 'keyUp', keyCode: request.key, modifiers });
+          } else if (request.kind === 'click') {
+            // A real press: down, a held moment, up (a synthetic click() never exercises what a rebuild between the two destroys).
+            window.webContents.sendInputEvent({ type: 'mouseDown', x: request.x, y: request.y, button: 'left', clickCount: 1 });
+            await new Promise((resolve) => setTimeout(resolve, request.hold ?? 50));
+            window.webContents.sendInputEvent({ type: 'mouseUp', x: request.x, y: request.y, button: 'left', clickCount: 1 });
+          } else if (request.kind === 'text') await window.webContents.insertText(request.text);
+          await window.webContents.executeJavaScript('window.__smokeInputDone = ' + Number(request.id));
+        }
+      } catch {
+        // the page is between loads; the next tick asks again
+      } finally {
+        inputPumpBusy = false;
+      }
+    }, 20);
+    let report;
+    try {
+      report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy, sampleRpgEquipCopy));
+    } finally {
+      clearInterval(inputPump);
+    }
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
+
+    // Growth profiles, fix 2 RC2: the real emitter over the project the UI produced by typing 24.6 / 3.6 (live and saved-and-reopened). Literal
+    // row, never computed by the code under test: base 25, +4 a level, linear, cap 8.
+    {
+      const expectedHp = [25, 29, 33, 37, 41, 45, 49, 53];
+      const hpRow = (project) => {
+        const lines = battleTables(project).split('\n');
+        const start = lines.findIndex((line) => line === 'pc_hp_at:');
+        const row = [];
+        for (let i = start + 1; i < lines.length && !/^\S+:/.test(lines[i]); i++) {
+          for (const hex of lines[i].matchAll(/\$([0-9A-Fa-f]{2})/g)) row.push(parseInt(hex[1], 16));
+        }
+        return row.slice(0, 8);
+      };
+      for (const which of ['live', 'reopened']) {
+        const project = report.growthRounding?.[which];
+        if (!project) throw new Error('growth profiles: the scenario did not return the ' + which + ' project');
+        if (project.party[0].profileId !== 0) throw new Error('growth profiles: the ' + which + ' project does not have Rian on the profile');
+        const row = hpRow(project);
+        if (JSON.stringify(row) !== JSON.stringify(expectedHp)) {
+          throw new Error('growth profiles: battleTables emits HP row ' + JSON.stringify(row) + ' for the ' + which + ' project, expected ' + JSON.stringify(expectedHp));
+        }
+      }
+      console.log('  ok  growth profiles typed 24.6 / 3.6: battleTables emits HP 25, 29, 33, 37, 41, 45, 49, 53 for the live and the reopened project');
+    }
 
     // The Build panel's battle-system meter, checked against the capacity
     // check itself rather than against the expression the meter already uses.
@@ -20259,6 +20659,9 @@ export async function runSmoke(window) {
           `(async () => { ${process.env.FORGE_SHOT_SETUP} })().then(() => new Promise((r) => setTimeout(r, 400)))`
         );
       }
+      // Asked twice: an unexposed window's capturePage answers with the frame of the PREVIOUS request, so the second one is the picture.
+      await window.webContents.capturePage();
+      await new Promise((resolve) => setTimeout(resolve, 300));
       const image = await window.webContents.capturePage();
       await fs.writeFile(process.env.FORGE_SHOT, image.toPNG());
       console.log(`  ok  screenshot — ${process.env.FORGE_SHOT}`);

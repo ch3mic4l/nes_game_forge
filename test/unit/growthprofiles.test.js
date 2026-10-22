@@ -17,6 +17,7 @@ import {
   GROWTH_LIMITS,
   GROWTH_SHAPES,
   GROWTH_STATS,
+  clampGrowthValue,
   RPG_LIMITS,
   applyPlannedProject,
   createGrowthProfile,
@@ -495,5 +496,27 @@ test('T-IO: the six checked-in fixtures carry no growthProfiles.json and load wi
     const loaded = await loadProject(dir);
     assert.deepEqual(loaded.growthProfiles, [], name);
     assert.ok(loaded.party.every((member) => member.profileId === null), name);
+  }
+});
+
+test('C3 fix 1: clampGrowthValue rounds and limits exactly as the normalizer stores a profile number', () => {
+  // Catches a second rounding rule in the editor (a typed 24.6 held as 24.6 until a reload turned it into 25), a rule that truncates
+  // (24.6 -> 24), and any divergence between what the editor commits and what normalizeProject keeps for the same raw value.
+  assert.equal(clampGrowthValue('hp', 'base', 24.6), 25);
+  assert.equal(clampGrowthValue('hp', 'perLevel', 3.6), 4);
+  assert.equal(clampGrowthValue('hp', 'base', 24.4), 24);
+  assert.equal(clampGrowthValue('mp', 'base', 200), GROWTH_LIMITS.mp.baseMax);
+  assert.equal(clampGrowthValue('atk', 'perLevel', 30), GROWTH_LIMITS.atk.perLevelMax);
+  assert.equal(clampGrowthValue('hp', 'base', -5), GROWTH_LIMITS.hp.baseMin);
+  assert.equal(clampGrowthValue('hp', 'base', Number.NaN, 7), 7, 'a non-number takes the fallback');
+  for (const stat of GROWTH_STATS) {
+    for (const kind of ['base', 'perLevel']) {
+      for (const raw of [-3, 0, 0.5, 1.49, 2.5, 3.6, 16.4, 99.9, 254.5, 300]) {
+        const profile = createGrowthProfile(0);
+        profile[stat][kind] = raw;
+        const kept = normalizeProject({ project: { gameType: 'rpg' }, cartridge: { mapper: 1 }, growthProfiles: [profile] }).growthProfiles[0][stat][kind];
+        assert.equal(clampGrowthValue(stat, kind, raw), kept, `${stat}.${kind} at ${raw}`);
+      }
+    }
   }
 });
