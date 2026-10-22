@@ -58,6 +58,7 @@ import {
   projectWithoutJoinNaming,
   projectNeedsNameSeed,
   projectUsesNameToken,
+  memberStatAt,
   projectWithoutNameToken,
   projectWithoutMonsterSpellList,
   projectUsesBattleAnimation,
@@ -430,17 +431,17 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
     party.flatMap((member) =>
       Array.from({ length: rpg.maxLevel }, (_, index) => pick(member, index + 1))
     );
-  chunks.push(`pc_hp_at:\n${dbRows(levelTable((m, l) => statAt(m.baseHp, m.hpPerLevel, l)), rpg.maxLevel)}`);
-  chunks.push(`pc_mp_at:\n${dbRows(levelTable((m, l) => statAt(m.baseMp, m.mpPerLevel, l)), rpg.maxLevel)}`);
-  chunks.push(`pc_atk_at:\n${dbRows(levelTable((m, l) => statAt(m.baseAtk, m.atkPerLevel, l)), rpg.maxLevel)}`);
-  chunks.push(`pc_def_at:\n${dbRows(levelTable((m, l) => statAt(m.baseDef, m.defPerLevel, l)), rpg.maxLevel)}`);
+  chunks.push(`pc_hp_at:\n${dbRows(levelTable((m, l) => memberStatAt(project, m, 'hp', l)), rpg.maxLevel)}`);
+  chunks.push(`pc_mp_at:\n${dbRows(levelTable((m, l) => memberStatAt(project, m, 'mp', l)), rpg.maxLevel)}`);
+  chunks.push(`pc_atk_at:\n${dbRows(levelTable((m, l) => memberStatAt(project, m, 'atk', l)), rpg.maxLevel)}`);
+  chunks.push(`pc_def_at:\n${dbRows(levelTable((m, l) => memberStatAt(project, m, 'def', l)), rpg.maxLevel)}`);
   // Emitted only when projectUsesMagicPower/projectUsesMagicDefence is true --
   // the identical stub-avoidance rule mon_mag/mon_mdef use above.
   if (projectUsesMagicPower(project)) {
-    chunks.push(`pc_mag_at:\n${dbRows(levelTable((m, l) => statAt(m.baseMag, m.magPerLevel, l)), rpg.maxLevel)}`);
+    chunks.push(`pc_mag_at:\n${dbRows(levelTable((m, l) => memberStatAt(project, m, 'mag', l)), rpg.maxLevel)}`);
   }
   if (projectUsesMagicDefence(project)) {
-    chunks.push(`pc_mdef_at:\n${dbRows(levelTable((m, l) => statAt(m.baseMdef, m.mdefPerLevel, l)), rpg.maxLevel)}`);
+    chunks.push(`pc_mdef_at:\n${dbRows(levelTable((m, l) => memberStatAt(project, m, 'mdef', l)), rpg.maxLevel)}`);
   }
 
   // Which spells a member knows at a level: one bitmask byte per member per

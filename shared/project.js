@@ -7271,6 +7271,16 @@ export function projectWithoutEquipmentMdef(project) {
   return clone;
 }
 
+// Whether some party member's EFFECTIVE growth of `stat` is positive (base or per level): the party source of both magic
+// predicates below. Read through effectiveGrowth -- a profile-assigned member's own baseX / xPerLevel are retained custom
+// numbers that no longer decide anything -- and by reference, never by a profile's existence (an unreferenced profile moves no gate).
+function partyGrowsStat(project, stat) {
+  return (project.party ?? []).some((member) => {
+    const { base, perLevel } = effectiveGrowth(project, member)[stat];
+    return base > 0 || perLevel > 0;
+  });
+}
+
 /**
  * Whether magic power -- a caster's `baseMag`/`magPerLevel`/`battle.mag`
  * adding into a spell's own rolled amount -- is worth assembling at all.
@@ -7283,9 +7293,7 @@ export function projectWithoutEquipmentMdef(project) {
  * code assembles independently (§8).
  */
 export function projectUsesMagicPower(project) {
-  if ((project.party ?? []).some((member) => member.baseMag > 0 || member.magPerLevel > 0)) {
-    return true;
-  }
+  if (partyGrowsStat(project, 'mag')) return true;
   if ((project.sprites?.actors ?? []).some((actor) => (actor.battle?.mag ?? 0) > 0)) return true;
   // An equipment piece's MAG is the third source: an authored choice taken at face value, as the two above are.
   return equipmentAddsStat(project, 'mag');
@@ -7299,9 +7307,7 @@ export function projectUsesMagicPower(project) {
  * §6/§8).
  */
 export function projectUsesMagicDefence(project) {
-  if ((project.party ?? []).some((member) => member.baseMdef > 0 || member.mdefPerLevel > 0)) {
-    return true;
-  }
+  if (partyGrowsStat(project, 'mdef')) return true;
   if ((project.sprites?.actors ?? []).some((actor) => (actor.battle?.mdef ?? 0) > 0)) return true;
   return equipmentAddsStat(project, 'mdef');
 }

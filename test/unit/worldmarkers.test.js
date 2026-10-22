@@ -438,8 +438,11 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // curve/resolver/deletion helpers (GROWTH_SHAPES, profileStatAt, effectiveGrowth, memberStatAt, growthProfileUsers,
 // renumberGrowthProfileDeletion) and normalizeGrowthProfiles with its two call sites in normalizeProject; remapScreenReferences,
 // projectEvents and allCommands are untouched and no stored screen reference is added (a profileId names a profile, not a screen).
+// Re-pinned for growth profiles C2: audited -- `git diff -U0 shared/project.js` is three hunks: the private partyGrowsStat helper, and projectUsesMagicPower
+// / projectUsesMagicDefence reading the party source through it (effectiveGrowth) instead of member.baseX / xPerLevel; remapScreenReferences,
+// projectEvents and allCommands are untouched and no stored screen reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': '72f3ea6e973e5dbf38bc5da2766e5228ae74b16f7998370950816af2e4207f43',
+  'shared/project.js': '369495485b91514fb99a2fe6b55274132e347a385a57133ebbb5bec5271f646f',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

@@ -109,6 +109,26 @@ test('T-N1: every profile field clamps to GROWTH_LIMITS, min-1 and max+1, and a 
   }
 });
 
+test('T-N1: a new profile, and a normalized profile with no stored record, carry HP 24/+5, MP 8/+2, ATK 6/+1, DEF 4/+1, MAG 0/+0, MDEF 0/+0, all linear', () => {
+  // The default numbers as literals (c1-review1: the clamp/fallback test above derives its expectation from createGrowthProfile itself,
+  // so a createGrowthProfile that used each stat's minimum base and zero growth passed all 26 tests). Catches that mutation, and a
+  // normalizer whose missing-record fallback drifts from the creator.
+  const DEFAULTS = {
+    hp: [24, 5],
+    mp: [8, 2],
+    atk: [6, 1],
+    def: [4, 1],
+    mag: [0, 0],
+    mdef: [0, 0]
+  };
+  const shape = (profile) => Object.fromEntries(GROWTH_STATS.map((stat) => [stat, [profile[stat].base, profile[stat].perLevel, profile[stat].shape]]));
+  const expected = Object.fromEntries(Object.entries(DEFAULTS).map(([stat, [base, perLevel]]) => [stat, [base, perLevel, 'linear']]));
+  assert.deepEqual(shape(createGrowthProfile(0)), expected, 'createGrowthProfile');
+  const project = createProject('Defaults', 'rpg');
+  project.growthProfiles = [{}, { name: 'Named' }, { hp: {}, mp: null }];
+  for (const profile of normalizeProject(project).growthProfiles) assert.deepEqual(shape(profile), expected, profile.name);
+});
+
 test('T-N1: a profileId outside [0, profileCount) or not an integer normalizes to null; a live one is kept', () => {
   // Catches a dangling id surviving (a generator would later emit hex(NaN) -> $00 and zero a row, S5) and a Number() coercion of '0'.
   const project = createProject('Ids', 'rpg');
