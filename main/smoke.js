@@ -12985,6 +12985,39 @@ const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
         return sibling.querySelector('input');
       };
 
+      // D1 (growth profiles, handoff-next/classes/design.md sec 7): all twelve growth inputs offer exactly GROWTH_LIMITS, read off the real DOM
+      // (the behavioural authority; test/unit/growthlimits.test.js is the cheap source-level net). One entry per stat: the base input is the
+      // field with that label, the per-level input the "+ / level" field right after it.
+      {
+        const { GROWTH_LIMITS } = await import('../shared/project.js');
+        const growthInputs = [
+          ['HP', 'hp'],
+          ['MP', 'mp'],
+          ['Attack', 'atk'],
+          ['Defence', 'def'],
+          ['Magic', 'mag'],
+          ['Magic defence', 'mdef']
+        ];
+        const seen = new Set();
+        for (const [label, stat] of growthInputs) {
+          const limits = GROWTH_LIMITS[stat];
+          for (const [kind, input, min, max] of [
+            ['base', findFieldInput(label), limits.baseMin, limits.baseMax],
+            ['per level', findPerLevelInputAfter(label), limits.perLevelMin, limits.perLevelMax]
+          ]) {
+            if (!input) throw new Error('Character Forge has no ' + kind + ' input for ' + label);
+            if (input.type !== 'number') throw new Error(label + ' ' + kind + ' input is not a number input');
+            if (input.min !== String(min) || input.max !== String(max)) {
+              throw new Error(
+                label + ' ' + kind + ' input offers ' + input.min + '-' + input.max + ', expected GROWTH_LIMITS.' + stat + ' ' + min + '-' + max
+              );
+            }
+            seen.add(input);
+          }
+        }
+        if (seen.size !== 12) throw new Error('expected twelve distinct growth inputs, found ' + seen.size);
+      }
+
       const charFields = [
         ['Magic', 'baseMag', 41, () => findFieldInput('Magic')],
         ['Magic + / level', 'magPerLevel', 7, () => findPerLevelInputAfter('Magic')],

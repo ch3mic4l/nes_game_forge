@@ -431,8 +431,11 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // Re-pinned for encounter groups C2: audited -- the diff to shared/project.js adds projectWithoutEncounterGroups (a clone with every map's
 // encounters.mode/table removed) and one validateEncounterGroups rule (encounter-groups-code-override, a read of project.code.overrides names);
 // remapScreenReferences, projectEvents and allCommands are untouched and no stored screen reference is added.
+// Re-pinned for growth profiles D1: audited -- the diff to shared/project.js adds the GROWTH_LIMITS table, points normalizePartyMember's twelve
+// clamps at it (same values) and corrects the MONSTER_GROWTH_FIELDS comment; remapScreenReferences, projectEvents and allCommands are untouched
+// and no stored screen reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': '71d958bbd399a79ae5770d19bf8647a3e79cef81c80248046c7554f64fac8c79',
+  'shared/project.js': 'd00df11d6a5e553e192e31914f1806518f8395c71a6227b9790ba54c3df435f7',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

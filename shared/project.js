@@ -5995,14 +5995,30 @@ export function statAt(base, perLevel, level, ceiling = 255) {
 }
 
 /**
+ * The range of every party growth input, per stat: a base value and a per-level step. The single place these bounds are written:
+ * normalizePartyMember clamps to them and the Character Forge's inputs offer exactly them, so the editor can never accept a number the
+ * normalizer then silently clamps on load (it once offered mp 0-255 and mp / atk / def per level 0-32 against clamps of 0-99 and 0-16).
+ * Every per-level step starts at 0, so no caller needs a literal.
+ */
+export const GROWTH_LIMITS = {
+  hp: { baseMin: 1, baseMax: 255, perLevelMin: 0, perLevelMax: 32 },
+  mp: { baseMin: 0, baseMax: 99, perLevelMin: 0, perLevelMax: 16 },
+  atk: { baseMin: 0, baseMax: 255, perLevelMin: 0, perLevelMax: 16 },
+  def: { baseMin: 0, baseMax: 255, perLevelMin: 0, perLevelMax: 16 },
+  mag: { baseMin: 0, baseMax: 255, perLevelMin: 0, perLevelMax: 16 },
+  mdef: { baseMin: 0, baseMax: 255, perLevelMin: 0, perLevelMax: 16 }
+};
+
+/**
  * One entry per battle.* field the derive action covers, each carrying its
  * own Base ceiling and its own +/level maximum -- the single place either
  * bound is written, read by both the Monster Forge's modal widgets and
  * planMonsterGrowth below, so the two cannot disagree (a real v2 bug this
- * design closed: docs/design-monster-level-scaling.md §3.5). Ranges mirror
- * the Character Forge's own growth fields where one exists (atk/def/mp
- * 0-32, mag/mdef 0-16); xp/gold have no party analogue, so xp keeps its own
- * real range and gold mirrors atk/def's posture. hp is deliberately absent
+ * design closed: docs/design-monster-level-scaling.md §3.5). These are the
+ * monster's own ranges and do not mirror GROWTH_LIMITS, the party's: a
+ * monster's atk/def/mp step goes to 32 where a party member's stops at 16,
+ * and only mag/mdef (0-16) agree. xp/gold have no party analogue, so xp keeps
+ * its own real range and gold takes atk/def's posture. hp is deliberately absent
  * -- see docs/design-monster.md §2 and design-monster-level-scaling.md §3.3.
  */
 export const MONSTER_GROWTH_FIELDS = [
@@ -6110,18 +6126,18 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
         : clamp(raw.metaspriteId, 0, 255, 0),
     // Member 0 always starts, or an RPG would open with an empty party.
     startsInParty: id === 0 ? true : Boolean(raw?.startsInParty),
-    baseHp: num('baseHp', 1, 255),
-    hpPerLevel: num('hpPerLevel', 0, 32),
-    baseMp: num('baseMp', 0, 99),
-    mpPerLevel: num('mpPerLevel', 0, 16),
-    baseAtk: num('baseAtk', 0, 255),
-    atkPerLevel: num('atkPerLevel', 0, 16),
-    baseDef: num('baseDef', 0, 255),
-    defPerLevel: num('defPerLevel', 0, 16),
-    baseMag: num('baseMag', 0, 255),
-    magPerLevel: num('magPerLevel', 0, 16),
-    baseMdef: num('baseMdef', 0, 255),
-    mdefPerLevel: num('mdefPerLevel', 0, 16),
+    baseHp: num('baseHp', GROWTH_LIMITS.hp.baseMin, GROWTH_LIMITS.hp.baseMax),
+    hpPerLevel: num('hpPerLevel', GROWTH_LIMITS.hp.perLevelMin, GROWTH_LIMITS.hp.perLevelMax),
+    baseMp: num('baseMp', GROWTH_LIMITS.mp.baseMin, GROWTH_LIMITS.mp.baseMax),
+    mpPerLevel: num('mpPerLevel', GROWTH_LIMITS.mp.perLevelMin, GROWTH_LIMITS.mp.perLevelMax),
+    baseAtk: num('baseAtk', GROWTH_LIMITS.atk.baseMin, GROWTH_LIMITS.atk.baseMax),
+    atkPerLevel: num('atkPerLevel', GROWTH_LIMITS.atk.perLevelMin, GROWTH_LIMITS.atk.perLevelMax),
+    baseDef: num('baseDef', GROWTH_LIMITS.def.baseMin, GROWTH_LIMITS.def.baseMax),
+    defPerLevel: num('defPerLevel', GROWTH_LIMITS.def.perLevelMin, GROWTH_LIMITS.def.perLevelMax),
+    baseMag: num('baseMag', GROWTH_LIMITS.mag.baseMin, GROWTH_LIMITS.mag.baseMax),
+    magPerLevel: num('magPerLevel', GROWTH_LIMITS.mag.perLevelMin, GROWTH_LIMITS.mag.perLevelMax),
+    baseMdef: num('baseMdef', GROWTH_LIMITS.mdef.baseMin, GROWTH_LIMITS.mdef.baseMax),
+    mdefPerLevel: num('mdefPerLevel', GROWTH_LIMITS.mdef.perLevelMin, GROWTH_LIMITS.mdef.perLevelMax),
     speed: num('speed', 0, 255),
     acc: num('acc', 0, 255),
     eva: num('eva', 0, 255),

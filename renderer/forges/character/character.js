@@ -12,6 +12,7 @@ import { tileFromString, BLANK_TILE } from '../../../shared/chr.js';
 import { NES_PALETTE } from '../../../shared/nespalette.js';
 import {
   RPG_LIMITS,
+  GROWTH_LIMITS,
   createPartyMember,
   characterCap,
   normalizeCharacterName,
@@ -195,24 +196,24 @@ export function mount(container, app) {
       'div',
       { style: { marginTop: '12px' } },
       row(
-        field('HP', number(member.baseHp, 1, 255, (v) => setMember(index, 'baseHp', v))),
-        field('+ / level', number(member.hpPerLevel, 0, 32, (v) => setMember(index, 'hpPerLevel', v))),
-        field('MP', number(member.baseMp, 0, 255, (v) => setMember(index, 'baseMp', v))),
-        field('+ / level', number(member.mpPerLevel, 0, 32, (v) => setMember(index, 'mpPerLevel', v)))
+        field('HP', number(member.baseHp, GROWTH_LIMITS.hp.baseMin, GROWTH_LIMITS.hp.baseMax, (v) => setMember(index, 'baseHp', v))),
+        field('+ / level', number(member.hpPerLevel, GROWTH_LIMITS.hp.perLevelMin, GROWTH_LIMITS.hp.perLevelMax, (v) => setMember(index, 'hpPerLevel', v))),
+        field('MP', number(member.baseMp, GROWTH_LIMITS.mp.baseMin, GROWTH_LIMITS.mp.baseMax, (v) => setMember(index, 'baseMp', v))),
+        field('+ / level', number(member.mpPerLevel, GROWTH_LIMITS.mp.perLevelMin, GROWTH_LIMITS.mp.perLevelMax, (v) => setMember(index, 'mpPerLevel', v)))
       ),
       row(
-        field('Attack', number(member.baseAtk, 0, 255, (v) => setMember(index, 'baseAtk', v))),
-        field('+ / level', number(member.atkPerLevel, 0, 32, (v) => setMember(index, 'atkPerLevel', v))),
-        field('Defence', number(member.baseDef, 0, 255, (v) => setMember(index, 'baseDef', v))),
-        field('+ / level', number(member.defPerLevel, 0, 32, (v) => setMember(index, 'defPerLevel', v)))
+        field('Attack', number(member.baseAtk, GROWTH_LIMITS.atk.baseMin, GROWTH_LIMITS.atk.baseMax, (v) => setMember(index, 'baseAtk', v))),
+        field('+ / level', number(member.atkPerLevel, GROWTH_LIMITS.atk.perLevelMin, GROWTH_LIMITS.atk.perLevelMax, (v) => setMember(index, 'atkPerLevel', v))),
+        field('Defence', number(member.baseDef, GROWTH_LIMITS.def.baseMin, GROWTH_LIMITS.def.baseMax, (v) => setMember(index, 'baseDef', v))),
+        field('+ / level', number(member.defPerLevel, GROWTH_LIMITS.def.perLevelMin, GROWTH_LIMITS.def.perLevelMax, (v) => setMember(index, 'defPerLevel', v)))
       ),
       row(
-        field('Magic', number(member.baseMag, 0, 255, (v) => setMember(index, 'baseMag', v))),
-        field('+ / level', number(member.magPerLevel, 0, 16, (v) => setMember(index, 'magPerLevel', v)))
+        field('Magic', number(member.baseMag, GROWTH_LIMITS.mag.baseMin, GROWTH_LIMITS.mag.baseMax, (v) => setMember(index, 'baseMag', v))),
+        field('+ / level', number(member.magPerLevel, GROWTH_LIMITS.mag.perLevelMin, GROWTH_LIMITS.mag.perLevelMax, (v) => setMember(index, 'magPerLevel', v)))
       ),
       row(
-        field('Magic defence', number(member.baseMdef, 0, 255, (v) => setMember(index, 'baseMdef', v))),
-        field('+ / level', number(member.mdefPerLevel, 0, 16, (v) => setMember(index, 'mdefPerLevel', v)))
+        field('Magic defence', number(member.baseMdef, GROWTH_LIMITS.mdef.baseMin, GROWTH_LIMITS.mdef.baseMax, (v) => setMember(index, 'baseMdef', v))),
+        field('+ / level', number(member.mdefPerLevel, GROWTH_LIMITS.mdef.perLevelMin, GROWTH_LIMITS.mdef.perLevelMax, (v) => setMember(index, 'mdefPerLevel', v)))
       ),
       row(
         field('Speed', number(member.speed, 0, 255, (v) => setMember(index, 'speed', v))),
