@@ -523,7 +523,7 @@ test('a chip erase wipes every bank, including the fixed one', () => {
 
 // The real thing, when it is available. Mapper 30 support exists because this
 // project's ROM needs it, so run against it when the checkout is present.
-const FALLEN_STAR = '/home/chris/claude_nes_test/fallen_star.nes';
+const FALLEN_STAR = `${process.env.HOME}/claude_nes_test/fallen_star.nes`;
 
 test('the Fallen Star ROM boots and uploads three CHR-RAM pages', { skip: !fs.existsSync(FALLEN_STAR) }, () => {
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
