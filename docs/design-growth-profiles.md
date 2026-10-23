@@ -195,8 +195,8 @@ profile-free board / Save / naming variants, one streamed + Save UNROM 512 build
 every possible project. No Mesen cross-check beyond the one
 initialization check run in review on a profile variant, and no ring-gate matrix, was rebuilt for this item.
 
-**Three `npm test` failures are known and accepted until an end-of-item evidence renewal:** `crossevidence`, `harnesstransfer` and `streamtilebound`. Their
-`generatorHash` covers every file of `shared/` and `main/build/`, which D1-C3 edited, so the stored streamed-world bound evidence no longer matches a tree it
-was captured on. This is the same exception encounter groups carried through its C1-C5. **It is owed a separate later renewal commit that follows this
-one**, which writes its own dated section; this record does not renew it and does not edit `docs/design-streamed-worlds-phase3b.md`. Until then no current
-streamed-world bound certificate is claimed for this tree.
+**Three `npm test` failures were known and accepted until an end-of-item evidence renewal:** `crossevidence`, `harnesstransfer` and `streamtilebound`. Their
+`generatorHash` covers every file of `shared/` and `main/build/`, which D1-C3 edited, so the stored streamed-world bound evidence no longer matched a tree it
+was captured on. This is the same exception encounter groups carried through its C1-C5. **The separate later renewal commit, R1 (2026-10-23), followed this
+one** and wrote its own dated section, `docs/design-streamed-worlds-phase3b.md` section 23; this record did not renew it and did not edit that document. The renewal
+changed no figure (the `exact` route, no certificate), and the ring matrix was still not rebuilt, so no current ring/split/lifecycle certificate is claimed for this tree.
