@@ -74,7 +74,10 @@ field's byte-identity proof. It also has a renderer-side reader, "Derive from le
 (`planMonsterGrowth`/`applyMonsterGrowth`, `shared/project.js`): a plan/apply pair like
 `planLibraryImport`/`applyPlannedProject`, commit skipped on `null`, writing only the flat
 `battle.*` fields `MONSTER_GROWTH_FIELDS` names — single writer of each stat's Base ceiling and `+
-/ level` max, read by modal and core; `hp` excluded per the boundary above. `statAt` now lives here
+/ level` max, read by modal and core; `hp` excluded per the boundary above. The modal's "Start from" select
+seeds its rows from another monster or a party member (`docs/design-monster-derive-seed.md`); its two pure helpers live
+in `renderer/forges/monster/seed.js`, not `shared/`, because an edit under `shared/` forces a bound-evidence renewal
+(`docs/reference-single-writer.md`, "Editing `shared/` or `main/build/`"). `statAt` now lives here
 too, with an optional `ceiling`, re-exported verbatim from `battletables.js` for its importers —
 the `songByte` precedent. `docs/design-monster-level-scaling.md`,
 `test/unit/monstergrowth.test.js`. `isForgeAvailable(entry, project)` is the single predicate for

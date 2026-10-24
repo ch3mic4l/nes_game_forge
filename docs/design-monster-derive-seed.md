@@ -34,12 +34,12 @@ Deferred by `docs/design-monster-level-scaling.md` §2 (shape 3), §6 Q3, N4. **
 
 ## §2. Shape of the solution
 
-Two pure helpers in `shared/project.js`, next to `planMonsterGrowth` (private `clamp`, `ACTOR_BATTLE_DEFAULTS` and `MONSTER_GROWTH_FIELDS` are in reach; importable by `node:test`):
+Two pure helpers in `renderer/forges/monster/seed.js` (no DOM, no Node APIs; `node:test` imports it), reading its tables and `effectiveGrowth` / `monsterActorIds` from `shared/project.js`, repeating only its `clamp`. Not in `shared/`: `generatorHash` (`test/lua/sw_provenance.mjs:47`) hashes all of `shared/` and `main/build/`, so a placement there would force a bound-evidence renewal (Chris, 2026-10-24, option B):
 
 - `seedMonsterGrowth(project, source)` with `source` either `{ kind: 'actor', index }` or `{ kind: 'party', index }`.
   Returns `{ rows, curves }`: `rows` holds only the keys that source supplies, each `{ base, perLevel }` inside that
   key's `MONSTER_GROWTH_FIELDS` bounds; `curves` lists `{ key, shape }` for non-linear stats (§4). Pure, fresh objects.
-- `monsterSeedSources(project, actorIndex)` returns the picker's list, each `{ id, group, label, rows, filled, curves }`.
+- `monsterSeedSources(project, actorIndex)` returns the picker's list, each `{ id, kind, group, name, label, rows, filled, curves }` (`kind` self/actor/party; `name` the bare name, for the note).
   Entry 0 is `self` (the open actor: today's default, read by §5's one rule). It is the single source of the modal's initial and reset rows (§7). Every other entry's `rows` is **total**: the
   source's own where supplied, `self`'s elsewhere. `filled` names the supplied keys, for the note.
 
@@ -65,7 +65,7 @@ level L derives the member's own value for every L in 1..15, saturation included
 
 **Recommend: copy `{ base, perLevel }` as is, and say so.** `perLevel` is documented as the average through level 15 (`profileStatAt`), so the straight line meets the curve at level 1 (`base`) and level 15 (`min(255, base + 14*perLevel)`, the same cap on both sides). The monster level cap *is* level 15 (§1), so nothing extrapolates past the plateau. In between they **can** differ (not always: saturated, they are equal). Base 10, +16, level 8 (`k = 7`): linear 10 + 112 = 122; early 10 + `floor(2359/14)` = 178; late 10 + `floor(791/14)` = 66 (gains 112 / 168 / 56), enough to need words. §10's oracle works the other shapes.
 
-The author sees, under the picker, a note naming the member, the stats and the Character Forge's exact shape label (one clause per shape), only when a seeded stat is non-linear **and** has `perLevel > 0`:
+The self note's wording is the implementation's own. The author sees, under the picker, a note naming the member, the stats and the Character Forge's exact shape label (one clause per shape), only when a seeded stat is non-linear **and** has `perLevel > 0`:
 
 > Copied Attack and Defence from Rian. Rian’s Attack grows as an Early bloomer and Defence grows as a Late bloomer; Derive grows each in a
 > straight line, so they agree at level 1 and level 15 and can differ in between.
@@ -150,7 +150,7 @@ Unit file `test/unit/monsterseed.test.js` (new, no ROM; in-memory clones of `loa
 
 | # | Smoke step | Catches | Still passes |
 |---|---|---|---|
-| S1 | Open Slime: select shows `This monster’s current values`; Base 7/5/3/11/2/6/13, `+ / level` 0. Kept: a no-`battle` actor shows 4/2/0/2/0/0/4. New: `{ atk: null }` shows Attack 4 | control missing; default changed; null read as 0 | select present but unwired (S2, S3) |
+| S1 | Open Slime: select shows `This monster’s current values`; Base 7/5/3/11/2/6/13, `+ / level` 0. Kept: a level-only actor (`battle: { level: 5 }`) shows 4/2/0/2/0/0/4 (Derive is disabled without a level, so no-`battle` is U6b's). New: `{ atk: null }` shows Attack 4 | control missing; default changed; null read as 0 | select present but unwired (S2, S3) |
 | S2 | Pick Rian: five pairs shown = Rian's, xp/gold 13/11, note says they keep; Apply = one commit: atk 18, def 12, mp 9, mag 13, mdef 11 (L=4), xp/gold/hp/level untouched; one Undo restores | inputs set but `picked` stale (stored ≠ shown) or the reverse; xp/gold reset to 4/2 | reading Rian lazily at pick time (S6d) |
 | S3 | Pick Snake (level 12 ≠ 4): Base 21/17/9/33/5/8/70, `+ / level` 0; Apply: stored equals them, level 4 and hp 20 unchanged, one undo entry, Undo restores Slime | actor option reusing self's or party rows; scaling by the source level | reselect not resetting (S4, S5) |
 | S4 | Type Attack Base 61 and `+ / level` 5, pick Snake, then `current values`: all 14 inputs are Slime's 7/5/3/11/2/6/13 and 0s; then Apply: a strong no-op: full project, revision, dirty state, undo/redo contents unchanged | pick preserving typed rows; reset leaving them; reset to the hard-coded 4/2/0/2/0/0/4; a self/Clear branch that writes the inputs but leaves `picked` on Snake (Apply commits Snake's values) | Snake → Rian overlay (S5) |
@@ -161,7 +161,7 @@ Unit file `test/unit/monsterseed.test.js` (new, no ROM; in-memory clones of `loa
 
 ## §11. Phasing and cost
 
-One slice: the helpers, the modal edit, `monsterseed.test.js`, the smoke steps. No engine, generator, schema, fixture or `checkCapacity` change; a seeded `mag`/`mdef` flips the same gate hand-typing does (level-scaling §3.9).
+One slice: the helpers (`renderer/forges/monster/seed.js`), the modal edit, `monsterseed.test.js`, the smoke steps. No engine, generator, schema, fixture or `checkCapacity` change; a seeded `mag`/`mdef` flips the same gate hand-typing does (level-scaling §3.9).
 
 ## §12. Decisions (Chris, 2026-10-24)
 
@@ -171,3 +171,7 @@ One slice: the helpers, the modal edit, `monsterseed.test.js`, the smoke steps. 
 - **Q-D Party reward rows:** party seeds keep this monster's xp/gold.
 - **Q-E Wording:** the doc's wording stands: `Start from`, `Snake · Lv 12`, the Early/Late bloomer sentence.
 - **Q-F Opening and reset rows:** entry 0 is the single source (§7).
+
+## §13. Shipped
+
+Built as one slice, uncommitted at the time of writing: `renderer/forges/monster/seed.js` (the helpers), `renderer/forges/monster/monster.js` (the picker), `test/unit/monsterseed.test.js` (U1-U10, 13 tests with U6a-d), `main/smoke.js` (S1-S8, 8 steps); `shared/` and `main/build/` are byte-identical to the prior commit. I2 implementation run `20261024-115713-all`: npm 4230/0/0 (4217 + 13), smoke 339 steps (331 + 8), Lua 42 OK, END 0. Final runs after the S7 and docs changes: `20261024-131415-npm` npm 4231/0/0 (the +1 is the `docs.test.js` pointer test for this doc) and `20261024-131450-smoke` 339 steps. The Lua 42 OK comes from the I2 run and was not rerun. Review: GO-with-nits; the one nit (S7 asserting the whole curve note) is closed.

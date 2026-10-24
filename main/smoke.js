@@ -14640,6 +14640,422 @@ const scenario = (dir, sampleDir, sampleRpgDir, sampleRpgEquipDir) => `
       // window.forge.project.open()/store.open(), which resets both stacks
       // unconditionally regardless of what this section leaves behind.
     }
+
+    // Test 1a-derive-seed (docs/design-monster-derive-seed.md §10, S1-S8): the "Start from" picker in the Derive modal, end to
+    // end through the real button, select and Apply. seedMonsterGrowth / monsterSeedSources are unit-tested in
+    // test/unit/monsterseed.test.js; this is the half only the real DOM can prove -- that a pick reaches both the shown inputs
+    // and the values Apply sends (stored == shown), that Clear really restores the opening rows, and that no pick ever
+    // refreshes the modal's own revision guard. Fixture F is built in memory by one commit on this section's own project
+    // (never a checked-in fixture), and every step undoes what it changed; the section after this one reopens a fresh
+    // sample-rpg regardless.
+    {
+      const { createGrowthProfile, renumberActorDeletion: renumberActorDeletionForSeed } = await import('../shared/project.js');
+      const SEED_LABELS = ['Attack', 'Defence', 'Magic points', 'Gold', 'Magic', 'Magic defence', 'Experience'];
+      const SELF_LABEL = 'This monster’s current values';
+      const REVISION_TOAST = 'The project changed while this dialog was open — try again.';
+      const seedUndoBase = monsterStore.undoStack.length;
+      const seedRedoBase = monsterStore.redoStack;
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const expectRows = (actual, expected, site) => {
+        if (!same(actual, expected)) {
+          throw new Error(site + ': expected Base/+ per level ' + JSON.stringify(expected) + ', saw ' + JSON.stringify(actual));
+        }
+      };
+
+      const seedFindDerive = () =>
+        [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === 'Derive from level…');
+      const seedOpen = async (site) => {
+        const button = seedFindDerive();
+        if (!button || button.disabled) throw new Error('the Derive button is missing or disabled (' + site + ')');
+        button.click();
+        await until('the derive modal (' + site + ')', () => document.querySelector('#modalHost .modal-head'));
+      };
+      const seedField = (label) =>
+        [...document.querySelectorAll('#modalHost .field')].find((f) => f.querySelector('.field-label')?.textContent === label);
+      const seedInput = (label, which) => {
+        const fieldDiv = seedField(label);
+        if (!fieldDiv) throw new Error('the derive modal has no ' + label + ' row');
+        return [...fieldDiv.closest('.field-row').querySelectorAll('.field')][which === 'base' ? 0 : 1].querySelector('input');
+      };
+      const seedType = (label, which, value) => {
+        const input = seedInput(label, which);
+        input.value = String(value);
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      // Base then + / level for each of the seven rows, in MONSTER_GROWTH_FIELDS order.
+      const seedRows = () => SEED_LABELS.flatMap((label) => [Number(seedInput(label, 'base').value), Number(seedInput(label, 'perLevel').value)]);
+      const seedSelectEl = () => seedField('Start from')?.querySelector('select');
+      const seedNote = () => seedField('Start from').nextElementSibling.textContent;
+      const seedPick = (label) => {
+        const select = seedSelectEl();
+        if (!select) throw new Error('the derive modal has no Start from select');
+        const option = [...select.options].find((o) => o.textContent === label);
+        if (!option) throw new Error('the Start from select has no "' + label + '" option');
+        select.value = option.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const seedClick = (text) => {
+        const button = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === text);
+        if (!button) throw new Error('the derive modal has no ' + text + ' button');
+        button.click();
+      };
+      const seedClosed = (site) => until('the derive modal to close (' + site + ')', () => document.querySelector('#modalHost').hidden);
+      const seedCancel = async (site) => {
+        seedClick('Cancel');
+        await seedClosed(site);
+      };
+      const seedState = () => ({
+        project: JSON.stringify(monsterStore.project),
+        revision: monsterStore.revision,
+        dirty: monsterStore.dirty,
+        undo: JSON.stringify(monsterStore.undoStack),
+        redo: JSON.stringify(monsterStore.redoStack)
+      });
+      const assertSeedState = (before, site) => {
+        const now = seedState();
+        for (const key of Object.keys(before)) {
+          if (now[key] !== before[key]) throw new Error(site + ': ' + key + ' changed but nothing should have been written');
+        }
+      };
+      const slimeIndex = () => monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Slime');
+      const slimeStored = () => {
+        const actor = monsterStore.project.sprites.actors[slimeIndex()];
+        return { battle: actor.battle, hp: actor.hp };
+      };
+      const selectSlime = async () => {
+        if (!selectByName('Slime')) throw new Error('Monster Forge catalog does not list Slime for the seed steps');
+        await wait(150);
+      };
+      // The pre-Apply read: stored values (atk def mp gold mag mdef xp) as an array.
+      const storedSeven = () => {
+        const b = slimeStored().battle;
+        return [b.atk, b.def, b.mp, b.gold, b.mag, b.mdef, b.xp];
+      };
+
+      // Fixture F (design §10): Slime (open, level 4), Snake (level 12), Ghoul (damage 0, named by an encounter group), Potion
+      // (damage 0, unreferenced); party Rian (linear 12+2 / 9+1 / 6+1 / 4+3 / 5+2) and Mara.
+      const actorFor = (id, name, damage, hp, battle) => ({ id, name, behavior: 'patroller', speed: 1, hp, damage, anims: {}, battle });
+      monsterStore.commit('smoke: Derive seed fixture F', (project) => {
+        project.sprites.actors = [
+          actorFor(0, 'Slime', 1, 20, { atk: 7, def: 5, mp: 3, gold: 11, mag: 2, mdef: 6, xp: 13, level: 4 }),
+          actorFor(1, 'Snake', 1, 9, { atk: 21, def: 17, mp: 9, gold: 33, mag: 5, mdef: 8, xp: 70, level: 12 }),
+          actorFor(2, 'Ghoul', 0, 9, { atk: 3, def: 6, mp: 2, gold: 9, mag: 1, mdef: 4, xp: 8 }),
+          actorFor(3, 'Potion', 0, 1, { atk: 4, def: 2, mp: 0, gold: 2, mag: 0, mdef: 0, xp: 4 })
+        ];
+        for (const map of project.maps) {
+          map.encounters = { ...map.encounters, actorIds: [] };
+          for (const screen of map.screens) screen.entities = [];
+        }
+        project.encounterGroups = [{ id: 0, name: 'Pair', monsters: [2] }];
+        project.growthProfiles = [];
+        const member = (id, name, stats) => ({
+          ...structuredClone(project.party[0]),
+          id,
+          name,
+          profileId: null,
+          baseAtk: stats[0],
+          atkPerLevel: stats[1],
+          baseDef: stats[2],
+          defPerLevel: stats[3],
+          baseMp: stats[4],
+          mpPerLevel: stats[5],
+          baseMag: stats[6],
+          magPerLevel: stats[7],
+          baseMdef: stats[8],
+          mdefPerLevel: stats[9]
+        });
+        project.party = [member(0, 'Rian', [12, 2, 9, 1, 6, 1, 4, 3, 5, 2]), member(1, 'Mara', [7, 1, 3, 2, 11, 3, 8, 0, 1, 4])];
+      });
+      await wait(250);
+      await selectSlime();
+      const SLIME_ROWS = [7, 0, 5, 0, 3, 0, 11, 0, 2, 0, 6, 0, 13, 0];
+      const RIAN_PICK = [12, 2, 9, 1, 6, 1, 11, 0, 4, 3, 5, 2, 13, 0];
+      const SNAKE_ROWS = [21, 0, 17, 0, 9, 0, 33, 0, 5, 0, 8, 0, 70, 0];
+      const GHOUL_ROWS = [3, 0, 6, 0, 2, 0, 9, 0, 1, 0, 4, 0, 8, 0];
+      const SLIME_AFTER_RIAN = [18, 12, 9, 11, 13, 11, 13]; // level 4: base + 3 * perLevel for the five copied stats
+
+      // S1 -- opening: the select is there, wired to this monster's own values; a level-only actor and a stored null both
+      // open at the renderer defaults (the existing defaults step covers the same-session no-battle actor).
+      {
+        await seedOpen('S1');
+        const select = seedSelectEl();
+        if (!select) throw new Error('S1: the derive modal has no Start from select');
+        if (select.selectedOptions[0]?.textContent !== SELF_LABEL) {
+          throw new Error('S1: the Start from select should open on "' + SELF_LABEL + '", saw "' + select.selectedOptions[0]?.textContent + '"');
+        }
+        expectRows(seedRows(), SLIME_ROWS, 'S1 Slime opening rows');
+        await seedCancel('S1');
+
+        monsterStore.commit('smoke: add a level-only monster for the seed defaults', (project) => {
+          project.sprites.actors.push(actorFor(4, 'Blank', 1, 1, { level: 5 }));
+        });
+        await wait(200);
+        if (!selectByName('Blank')) throw new Error('S1: the catalog does not list Blank');
+        await wait(150);
+        await seedOpen('S1 Blank');
+        expectRows(seedRows(), [4, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 4, 0], 'S1 level-only actor opens at the defaults');
+        await seedCancel('S1 Blank');
+        monsterStore.commit('smoke: a stored null Attack', (project) => {
+          project.sprites.actors[4].battle.atk = null;
+        });
+        await wait(200);
+        await seedOpen('S1 null');
+        if (seedInput('Attack', 'base').value !== '4') {
+          throw new Error('S1: a stored null Attack should open as the default 4, saw ' + seedInput('Attack', 'base').value);
+        }
+        await seedCancel('S1 null');
+        if (!monsterStore.undo() || !monsterStore.undo()) throw new Error('S1: undoing the Blank actor failed');
+        await wait(200);
+        await selectSlime();
+        step(
+          'Monster Forge Derive modal opens on a "Start from" select showing this monster’s own values, with the renderer defaults for a missing or null field',
+          'Slime opens at 7/5/3/11/2/6/13 with + / level 0 under "This monster’s current values"; a level-only actor opens at 4/2/0/2/0/0/4 and a stored null Attack opens at 4, not 0'
+        );
+      }
+
+      // S2 -- a party pick: the five stats, rewards kept, one commit.
+      {
+        const before = JSON.stringify(monsterStore.project);
+        const undoLength = monsterStore.undoStack.length;
+        const hpBefore = slimeStored().hp;
+        await seedOpen('S2');
+        seedPick('Rian');
+        expectRows(seedRows(), RIAN_PICK, 'S2 Rian pick shows Rian’s five pairs and Slime’s own xp/gold');
+        if (!seedNote().includes('Experience and Gold keep this monster’s values')) {
+          throw new Error('S2: a party pick’s note should say Experience and Gold keep this monster’s values, saw "' + seedNote() + '"');
+        }
+        seedClick('Apply');
+        await seedClosed('S2');
+        expectRows(storedSeven(), SLIME_AFTER_RIAN, 'S2 stored values (Slime is level 4)');
+        if (slimeStored().battle.level !== 4 || slimeStored().hp !== hpBefore) throw new Error('S2: Apply touched level or hp');
+        if (monsterStore.undoStack.length !== undoLength + 1) {
+          throw new Error('S2: Apply should add exactly one undo entry, saw ' + (monsterStore.undoStack.length - undoLength));
+        }
+        if (!monsterStore.undo()) throw new Error('S2: undo returned false');
+        if (JSON.stringify(monsterStore.project) !== before) throw new Error('S2: one Undo did not restore the project');
+        await wait(150);
+        step(
+          'Monster Forge Derive "Start from" a party member copies its five growth pairs, keeps this monster’s Experience and Gold, and commits once',
+          'picking Rian shows her five Base/+ per level pairs and Slime’s xp 13 / gold 11 with the note saying they are kept; Apply stores 18/12/9/13/11 at level 4 with xp, gold, hp and level untouched, one undo entry, Undo restores'
+        );
+      }
+
+      // S3 -- another monster: its flat values as Base.
+      {
+        const before = JSON.stringify(monsterStore.project);
+        const undoLength = monsterStore.undoStack.length;
+        const hpBefore = slimeStored().hp;
+        await seedOpen('S3');
+        seedPick('Snake · Lv 12');
+        expectRows(seedRows(), SNAKE_ROWS, 'S3 Snake pick shows Snake’s seven numbers as Base, + / level 0');
+        seedClick('Apply');
+        await seedClosed('S3');
+        expectRows(storedSeven(), [21, 17, 9, 33, 5, 8, 70], 'S3 stored values equal Snake’s (not scaled by its level 12)');
+        if (slimeStored().battle.level !== 4 || slimeStored().hp !== hpBefore) throw new Error('S3: Apply touched level or hp');
+        if (monsterStore.undoStack.length !== undoLength + 1) throw new Error('S3: Apply should add exactly one undo entry');
+        if (!monsterStore.undo()) throw new Error('S3: undo returned false');
+        if (JSON.stringify(monsterStore.project) !== before) throw new Error('S3: one Undo did not restore Slime');
+        await wait(150);
+        step(
+          'Monster Forge Derive "Start from" another monster copies its seven numbers as Base, un-scaled, and commits once',
+          'picking Snake (level 12) from Slime (level 4) shows 21/17/9/33/5/8/70 with + / level 0; Apply stores exactly those, level 4 and hp 20 untouched, one undo entry, Undo restores Slime'
+        );
+      }
+
+      // S4 -- reselect overwrites typed rows, and Clear restores this monster's own, for real (not only on screen).
+      {
+        await seedOpen('S4');
+        seedType('Attack', 'base', 61);
+        seedType('Attack', 'perLevel', 5);
+        seedPick('Snake · Lv 12');
+        expectRows(seedRows(), SNAKE_ROWS, 'S4 picking Snake overwrites the typed Attack row too');
+        seedPick(SELF_LABEL);
+        expectRows(seedRows(), SLIME_ROWS, 'S4 Clear restores all fourteen inputs to this monster’s own values');
+        const before = seedState();
+        seedClick('Apply');
+        await seedClosed('S4');
+        assertSeedState(before, 'S4 Clear then Apply must be the strong no-op (Snake’s values must not leak through)');
+        step(
+          'Monster Forge Derive "Start from" overwrites typed edits on a pick, and Clear restores this monster’s own values and is a strong no-op on Apply',
+          'typed Attack 61 / + 5 is replaced by Snake’s 21 / 0; "This monster’s current values" returns all fourteen inputs to 7/5/3/11/2/6/13 and zeros; Apply then leaves the project, revision, dirty flag and both stacks’ contents exactly as they were'
+        );
+      }
+
+      // S5 -- a second non-self pick is a pure function of the chosen entry (no overlay on the first).
+      {
+        await seedOpen('S5 fresh');
+        seedPick('Rian');
+        const freshRian = seedRows();
+        await seedCancel('S5 fresh');
+        const before = JSON.stringify(monsterStore.project);
+        const undoLength = monsterStore.undoStack.length;
+        const hpBefore = slimeStored().hp;
+        await seedOpen('S5');
+        seedPick('Snake · Lv 12');
+        seedPick('Rian');
+        expectRows(seedRows(), freshRian, 'S5 Snake then Rian equals a fresh straight Rian pick');
+        expectRows(freshRian, RIAN_PICK, 'S5 the fresh Rian pick itself');
+        seedClick('Apply');
+        await seedClosed('S5');
+        expectRows(storedSeven(), SLIME_AFTER_RIAN, 'S5 stored values (xp/gold stay Slime’s 13/11, not Snake’s 70/33)');
+        if (slimeStored().battle.level !== 4 || slimeStored().hp !== hpBefore) throw new Error('S5: Apply touched level or hp');
+        if (monsterStore.undoStack.length !== undoLength + 1) throw new Error('S5: Apply should add exactly one undo entry');
+        if (!monsterStore.undo()) throw new Error('S5: undo returned false');
+        if (JSON.stringify(monsterStore.project) !== before) throw new Error('S5: one Undo did not restore the project');
+        await wait(150);
+        step(
+          'Monster Forge Derive "Start from" a second pick rewrites every row from that entry alone',
+          'Snake then Rian shows exactly what a fresh Rian pick shows (xp 13, gold 11, not Snake’s 70 and 33) in all fourteen inputs; Apply stores S2’s 18/12/9/13/11, one undo entry, Undo restores'
+        );
+      }
+
+      // S6 -- no pick refreshes the modal's revision guard, and no pick reads the live project.
+      {
+        const guardCase = async (site, picks, steps, cleanup) => {
+          const toastsBefore = new Set(document.querySelectorAll('#toastHost .toast'));
+          await seedOpen(site);
+          steps.beforePick?.();
+          for (const label of picks) seedPick(label);
+          steps.afterPick?.();
+          const after = seedState();
+          seedClick('Apply');
+          await seedClosed(site);
+          await until(site + ' toast', () =>
+            [...document.querySelectorAll('#toastHost .toast')].some((n) => n.textContent === REVISION_TOAST && !toastsBefore.has(n))
+          );
+          assertSeedState(after, site);
+          cleanup?.();
+          await wait(150);
+        };
+        const giveRianProfile = () =>
+          monsterStore.commit('smoke: give Rian a growth profile', (project) => {
+            const profile = createGrowthProfile(0);
+            profile.atk = { base: 10, perLevel: 3, shape: 'early' };
+            project.growthProfiles = [profile];
+            project.party[0].profileId = 0;
+          });
+        const noOpCommit = (label) =>
+          monsterStore.commit(label, (project) => {
+            project.sprites.actors[0].name = project.sprites.actors[0].name;
+          });
+        for (const [suffix, picks] of [[' (Rian)', ['Rian']], [' (Clear)', ['Rian', SELF_LABEL]]]) {
+          // (a) a commit after open, before the pick: Rian now has a profile, so the seed would differ.
+          await guardCase('S6a' + suffix, picks, { beforePick: giveRianProfile }, () => monsterStore.undo());
+          // (b) undo, and undo then redo, after open.
+          noOpCommit('smoke: S6b setup');
+          await guardCase('S6b undo' + suffix, picks, { beforePick: () => monsterStore.undo() }, () => monsterStore.redo());
+          await guardCase('S6b undo+redo' + suffix, picks, { beforePick: () => { monsterStore.undo(); monsterStore.redo(); } });
+          // (c) a commit after the pick.
+          await guardCase('S6c' + suffix, picks, { afterPick: giveRianProfile }, () => monsterStore.undo());
+        }
+
+        // (d) delete the picked source after open: the cached options keep showing the numbers they were read with.
+        {
+          const toastsBefore = new Set(document.querySelectorAll('#toastHost .toast'));
+          await seedOpen('S6d');
+          seedPick('Snake · Lv 12');
+          monsterStore.commit('smoke: delete Snake while the derive modal is open', (project) => {
+            project.sprites.actors.splice(1, 1);
+            project.sprites.actors.forEach((entry, position) => (entry.id = position));
+            renumberActorDeletionForSeed(project, 1);
+          });
+          if (monsterStore.project.sprites.actors[1].name !== 'Ghoul') throw new Error('S6d: deleting Snake should slide Ghoul into its slot');
+          const after = seedState();
+          seedPick('Snake · Lv 12');
+          expectRows(seedRows(), SNAKE_ROWS, 'S6d the cached Snake option still shows the numbers it was read with');
+          seedPick('Ghoul');
+          expectRows(seedRows(), GHOUL_ROWS, 'S6d the Ghoul option shows Ghoul’s numbers, not whatever slid into its old index');
+          assertSeedState(after, 'S6d picking must not touch the store');
+          seedClick('Apply');
+          await seedClosed('S6d');
+          await until('S6d toast', () =>
+            [...document.querySelectorAll('#toastHost .toast')].some((n) => n.textContent === REVISION_TOAST && !toastsBefore.has(n))
+          );
+          assertSeedState(after, 'S6d');
+          if (!monsterStore.undo()) throw new Error('S6d: undo of the delete returned false');
+          await wait(150);
+        }
+        step(
+          'Monster Forge Derive "Start from" never refreshes the modal’s revision guard and never reads the live project at pick time',
+          'a commit, an undo, an undo + redo or a commit after the pick, each followed by a Rian pick or a Rian pick then Clear, still ends in the "project changed" toast with the project, revision, dirty flag and stacks unchanged; after the picked Snake is deleted its cached option and Ghoul’s still show their original numbers and Apply is refused'
+        );
+      }
+
+      // S7 -- the curve note.
+      {
+        monsterStore.commit('smoke: Rian’s growth profile with curves', (project) => {
+          const profile = createGrowthProfile(0);
+          profile.atk = { base: 10, perLevel: 3, shape: 'early' };
+          profile.def = { base: 20, perLevel: 2, shape: 'late' };
+          profile.mdef = { base: 5, perLevel: 0, shape: 'early' };
+          project.growthProfiles = [profile];
+          project.party[0].profileId = 0;
+        });
+        await wait(200);
+        await seedOpen('S7');
+        seedPick('Rian');
+        const note = seedNote();
+        for (const text of ['Rian’s Attack grows as an Early bloomer', 'Defence grows as a Late bloomer', 'straight line']) {
+          if (!note.includes(text)) throw new Error('S7: the curve note should contain "' + text + '", saw "' + note + '"');
+        }
+        if (note.includes('Magic defence')) throw new Error('S7: a zero-growth stat must not be named, saw "' + note + '"');
+        // The whole settled note (design §4, §6, Q-E): the curved-stat opening, both bloomer clauses, the level 1 / level 15 /
+        // in-between explanation and the reward sentence, so none of them can be swapped or dropped unseen.
+        const expectedCurveNote =
+          'Copied Attack and Defence from Rian. Rian’s Attack grows as an Early bloomer and Defence grows as a Late bloomer; ' +
+          'Derive grows each in a straight line, so they agree at level 1 and level 15 and can differ in between. ' +
+          'Experience and Gold keep this monster’s values.';
+        if (note !== expectedCurveNote) throw new Error('S7: the curve note should read "' + expectedCurveNote + '", saw "' + note + '"');
+        seedPick('Mara');
+        if (seedNote().includes('bloomer')) throw new Error('S7: a linear member’s note must not mention a bloomer, saw "' + seedNote() + '"');
+        await seedCancel('S7');
+        if (!monsterStore.undo()) throw new Error('S7: undo of the profile returned false');
+        await wait(150);
+        step(
+          'Monster Forge Derive "Start from" a curved party member says which stats are not linear, and only those',
+          'with Rian on a profile (Attack early, Defence late, Magic defence early +0) the whole note reads exactly as the design words it (Copied Attack and Defence from Rian; Early / Late bloomer clauses; a straight line that agrees at levels 1 and 15; Experience and Gold keep this monster’s values), never naming Magic defence; Mara’s note has no bloomer'
+        );
+      }
+
+      // S8 -- the list: monsters only, groups, labels, and no empty group.
+      {
+        await seedOpen('S8');
+        const groups = [...seedSelectEl().querySelectorAll('optgroup')].map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)]);
+        if (!same(groups, [['Other monsters', ['Snake · Lv 12', 'Ghoul']], ['Party members', ['Rian', 'Mara']]])) {
+          throw new Error('S8: unexpected Start from groups ' + JSON.stringify(groups));
+        }
+        const texts = [...seedSelectEl().options].map((o) => o.textContent);
+        if (texts.length !== 5 || texts[0] !== SELF_LABEL || texts.some((t) => t.includes('Potion') || t.includes('Slime'))) {
+          throw new Error('S8: the select should hold self + Snake, Ghoul, Rian, Mara only, saw ' + JSON.stringify(texts));
+        }
+        await seedCancel('S8');
+        monsterStore.commit('smoke: delete Snake and Ghoul', (project) => {
+          for (const index of [2, 1]) {
+            project.sprites.actors.splice(index, 1);
+            project.sprites.actors.forEach((entry, position) => (entry.id = position));
+            renumberActorDeletionForSeed(project, index);
+          }
+        });
+        await wait(200);
+        await seedOpen('S8 empty');
+        const emptied = [...seedSelectEl().querySelectorAll('optgroup')].map((g) => g.label);
+        if (!same(emptied, ['Party members'])) throw new Error('S8: with no other monster the Other monsters group must be omitted, saw ' + JSON.stringify(emptied));
+        await seedCancel('S8 empty');
+        if (!monsterStore.undo()) throw new Error('S8: undo of the deletions returned false');
+        await wait(150);
+        step(
+          'Monster Forge Derive "Start from" lists only monsters and party members, grouped, with an empty group omitted',
+          'Other monsters holds "Snake · Lv 12" and "Ghoul" (no level suffix when unset, stranded Ghoul included), Party members holds Rian and Mara, no Potion and no second Slime; with Snake and Ghoul deleted there is no Other monsters group'
+        );
+      }
+
+      // Put this section's own project back where it was (the stacks too: undo moves entries to redo, so restore it).
+      while (monsterStore.undoStack.length > seedUndoBase) {
+        if (!monsterStore.undo()) throw new Error('the seed steps could not be unwound');
+      }
+      monsterStore.redoStack = seedRedoBase;
+      await wait(150);
+    }
   }
 
   // --- Monster Forge navigation contract (item 14, phase 1 part B,

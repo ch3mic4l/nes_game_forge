@@ -31,6 +31,7 @@ import {
   applyMonsterGrowth,
   ACTOR_BATTLE_DEFAULTS
 } from '../../../shared/project.js';
+import { monsterSeedSources } from './seed.js';
 import {
   groupRoom,
   planAddGroup,
@@ -94,14 +95,62 @@ const select = (options, value, onChange) =>
     options.map((entry) => el('option', { value: entry.id, selected: entry.id === value }, entry.label))
   );
 
+// The Derive modal's "Start from" picker: the first entry (no group) sits loose, every other entry sits under an <optgroup> of
+// its own group name, in list order. No other Forge groups its options, so this stays local rather than shared.
+const seedSelect = (sources, onChange) => {
+  const groups = [];
+  for (const source of sources.slice(1)) {
+    let group = groups.find((entry) => entry.label === source.group);
+    if (!group) groups.push((group = { label: source.group, sources: [] }));
+    group.sources.push(source);
+  }
+  return el(
+    'select',
+    { onchange: (event) => onChange(event.target.value) },
+    el('option', { value: sources[0].id, selected: true }, sources[0].label),
+    groups.map((group) =>
+      el(
+        'optgroup',
+        { label: group.label },
+        group.sources.map((source) => el('option', { value: source.id }, source.label))
+      )
+    )
+  );
+};
+
+// The Character Forge's own names for a growth shape (character.js), used only to say which curves Derive flattens.
+const SEED_SHAPE_LABELS = { early: 'an Early bloomer', late: 'a Late bloomer' };
+
+const joinWords = (words) => (words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`);
+
+/** What the picker just filled in, in words: which stats were copied and what Derive does with a curved one (§4, §6, §8). */
+function describeSeed(source) {
+  if (source.kind === 'self') return 'Showing this monster’s current values as Base (+ / level 0).';
+  if (source.kind === 'actor') return `Copied all seven numbers from ${source.name} as Base (+ / level 0).`;
+  const labelFor = (key) => MONSTER_GROWTH_FIELDS.find((f) => f.key === key).label;
+  // A curved seed names the curved stats (design §4's example); a linear one says generically what was copied.
+  const curved = source.curves.map((curve) => labelFor(curve.key));
+  const parts = [curved.length ? `Copied ${joinWords(curved)} from ${source.name}.` : `Copied the five growth stats from ${source.name}.`];
+  if (source.curves.length) {
+    const grows = source.curves.map((curve) => `${labelFor(curve.key)} grows as ${SEED_SHAPE_LABELS[curve.shape]}`);
+    const many = source.curves.length > 1;
+    parts.push(
+      `${source.name}’s ${joinWords(grows)}; Derive grows ${many ? 'each' : 'it'} in a straight line, so ${many ? 'they' : 'the two'} agree at level 1 and level 15 and can differ in between.`
+    );
+  }
+  parts.push('Experience and Gold keep this monster’s values.');
+  return parts.join(' ');
+}
+
 const row = (...children) => el('div.field-row', { style: { gap: '8px', marginBottom: '6px' } }, ...children);
 
-// The renderer default for each of the seven derivable stats -- read by both
-// battleSection's own per-field `?? default` widgets below and the derive
-// modal's own Base pre-fill (mount()'s openDeriveModal), so the two numbers
-// cannot drift apart (round-2 review finding 5). Keyed to match
-// MONSTER_GROWTH_FIELDS (shared/project.js) exactly; not every battleSection
-// field has an entry here, only the ones the derive modal also covers. Its
+// The renderer default for each of the seven derivable stats -- read by
+// battleSection's own per-field `?? default` widgets below. The derive modal's
+// Base pre-fill reads the same table through seedMonsterGrowth
+// (./seed.js), so the two numbers cannot drift apart (round-2 review
+// finding 5). Keyed to match MONSTER_GROWTH_FIELDS (shared/project.js)
+// exactly; not every battleSection field has an entry here, only the ones the
+// derive modal also covers. Its
 // values are ACTOR_BATTLE_DEFAULTS' (shared/project.js), not re-typed --
 // battleSection's own remaining `?? N` widgets and battleTables
 // (main/build/battletables.js) read that identical shared table too, so a
@@ -355,15 +404,24 @@ export function mount(container, app) {
   async function openDeriveModal(actor, actorIndex) {
     const capturedActorId = actorIndex;
     const revisionAtOpen = store.revision;
-    const battle = actor.battle ?? {};
-    // BATTLE_DEFAULTS (module scope, above) is the single copy of these
-    // numbers -- shared with battleSection's own reads, so a missing
-    // field's starting Base can never drift from what the actor's own
-    // panel already shows for it (round-2 review finding 5).
+    // Every pickable source is read once, here, into plain data (docs/design-monster-derive-seed.md §9): picking later reads
+    // nothing from the store, so it cannot throw or disagree with its own label, and it never refreshes revisionAtOpen.
+    // Entry 0 is this monster's own values -- the one source of the opening rows and of Clear -- and follows the same
+    // `?? default` rule battleSection's widgets use (./seed.js, seedMonsterGrowth).
+    const sources = monsterSeedSources(store.project, capturedActorId);
     const picked = {};
-    for (const f of MONSTER_GROWTH_FIELDS) {
-      picked[f.key] = { base: battle[f.key] ?? BATTLE_DEFAULTS[f.key], perLevel: 0 };
-    }
+    const inputs = {};
+    const note = el('p.hint', { style: { marginBottom: '10px' } }, describeSeed(sources[0]));
+    // A programmatic .value write fires no `change`, so `picked` is set here as well as the inputs.
+    const pickSource = (source) => {
+      for (const f of MONSTER_GROWTH_FIELDS) {
+        picked[f.key] = { ...source.rows[f.key] };
+        inputs[f.key].base.value = picked[f.key].base;
+        inputs[f.key].perLevel.value = picked[f.key].perLevel;
+      }
+      fill(note, describeSeed(source));
+    };
+    for (const f of MONSTER_GROWTH_FIELDS) picked[f.key] = { ...sources[0].rows[f.key] };
 
     const growth = await showModal({
       title: 'Derive stats from level',
@@ -378,22 +436,22 @@ export function mount(container, app) {
             'edit: at level 12, Base 10 with + / level 2 gives 32; reopening this shows Base 32, ' +
             '+ / level 0 -- typing 2 again gives 54, not another 32.'
         ),
-        ...MONSTER_GROWTH_FIELDS.map((f) =>
-          row(
-            field(
-              f.label,
-              number(picked[f.key].base, 0, f.ceiling, (v) => {
-                picked[f.key].base = v;
-              })
-            ),
-            field(
-              '+ / level',
-              number(picked[f.key].perLevel, 0, f.perLevelMax, (v) => {
-                picked[f.key].perLevel = v;
-              })
-            )
-          )
-        )
+        field(
+          'Start from',
+          seedSelect(sources, (id) => pickSource(sources.find((source) => source.id === id)))
+        ),
+        note,
+        ...MONSTER_GROWTH_FIELDS.map((f) => {
+          inputs[f.key] = {
+            base: number(picked[f.key].base, 0, f.ceiling, (v) => {
+              picked[f.key].base = v;
+            }),
+            perLevel: number(picked[f.key].perLevel, 0, f.perLevelMax, (v) => {
+              picked[f.key].perLevel = v;
+            })
+          };
+          return row(field(f.label, inputs[f.key].base), field('+ / level', inputs[f.key].perLevel));
+        })
       ),
       actions: [
         { label: 'Cancel', value: null },

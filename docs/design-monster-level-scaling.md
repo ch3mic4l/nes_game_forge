@@ -63,7 +63,7 @@ Unchanged verdict: recommended. **A no-new-fields seed picker** — pre-filling 
 from another actor or a party member — was proposed in v2 as an included enhancement, but is
 **deferred, per N4**: a party member's growth fields can't define all seven rows (no party
 `xp`/`gold` growth pair — `shared/project.js:4013-4028`), and an actor seed's missing fields
-need a fallback too. Costed as a future candidate: whichever slice builds it specifies the
+need a fallback too. (It later shipped: `docs/design-monster-derive-seed.md`.) Costed as a future candidate: whichever slice builds it specifies the
 five-field party mapping, the reward rows' behavior, the partial-actor fallback, and whether
 reselecting mid-edit replaces every row or only supported ones. Retyping on re-derive (v1's
 "re-entry cost") is real but accepted (§6).
@@ -358,7 +358,7 @@ real DOM, not only in the same-tree test's arithmetic.
 6/N5). Independently shippable.
 
 **Phase 3b.** `planMonsterGrowth`/`applyMonsterGrowth`, the modal and its lifetime guards, every
-test in §3.5/§3.7/§3.8/§3.10. No seed picker (deferred, N4). Depends on 3a; nothing
+test in §3.5/§3.7/§3.8/§3.10. No seed picker (deferred, N4; later shipped, `docs/design-monster-derive-seed.md`). Depends on 3a; nothing
 unspecified.
 
 No further phase proposed.
@@ -395,7 +395,7 @@ identical to what hand-typing the same number costs today.
    two modal rows.
 2. **Leave `hp` out permanently, or give it a path on the Sprite Forge later?** Recommend
    leaving it out; a future HP path belongs on the Sprite Forge's panel.
-3. **Is the seed picker (§2) worth a follow-up slice?** Not free (N4): no party `xp`/`gold` fields
+3. **Is the seed picker (§2) worth a follow-up slice?** (Built: `docs/design-monster-derive-seed.md`.) Not free (N4): no party `xp`/`gold` fields
    to copy, and a partial actor seed needs its fallback rule.
 4. **The pre-existing `xp`/`gold` renderer-vs-compiler mismatch (§3.5)**: worth its own fix,
    independent of this design? Surfaced, not proposed to fix here. Fixed -- see §3.5.
@@ -426,7 +426,7 @@ example can't distinguish a correct cap from a wrong one. **N8** replaced "unres
 | N1 high | Plan computed inside modal `onClick`, before any guard; a throw left the dialog unresolved (`ui.js:114`) | Fixed: modal returns raw inputs only; guards run first, plan/commit after (§3.1); precedent corrected; two regression cases |
 | N2 medium | Gold's `+ / level` ternary let it reach 255 while prose said 32 | Fixed: one `MONSTER_GROWTH_FIELDS` descriptor read by UI and core alike (§3.5); out-of-range cases added (§3.7) |
 | N3 medium | Module-scoped `deriving` flag outlives Forge destruction; nothing clears it on supersession | Fixed: deleted — the overlay blocks a second *pointer* invocation; keyboard is covered by the guards regardless (§3.8, N6) |
-| N4 medium | Seed picker's party-member mapping has no `xp`/`gold` fields, no partial-actor fallback | Fixed: deferred out of phase 3b; costed as a follow-up (§2/§6) |
+| N4 medium | Seed picker's party-member mapping has no `xp`/`gold` fields, no partial-actor fallback | Fixed: deferred out of phase 3b; costed as a follow-up (§2/§6); later shipped (`docs/design-monster-derive-seed.md`) |
 | N5 low | Said normalizer differed from renderer; said "eight importers" | Fixed: renderer/normalizer agree, only compiler differs; "six call sites plus two test importers" |
 
 **v2** — folds in `handoff-next/monster-phase3-design-1-review1.md` (11 findings: 9 blocking, 2 more

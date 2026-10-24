@@ -1688,8 +1688,9 @@ monsters the way item 5's shipped phases were for items.
    their own compiled readers, unaffected), and no growth-specific compiled overhead: derived stats
    carry exactly the capacity effects hand-typed values already have, a first positive Magic or
    Magic defence flipping the existing gate included (`docs/design-monster-level-scaling.md` §3.9).
-   `hp` stays excluded per the Forge boundary above, and a seed-value picker (pre-filling Base from
-   an existing actor) was considered and deferred. A live scaling curve — continuous, not this
+   `hp` stays excluded per the Forge boundary above. The seed-value picker once deferred here is
+   done (`docs/design-monster-derive-seed.md`): a "Start from" select that seeds the Derive modal's
+   Base / `+ / level` rows from another monster or a party member, renderer-only with no ROM change. A live scaling curve — continuous, not this
    one-time collapse — remains undesigned; nothing here commits to one.
 3. ~~**Battle-side animations** — battle art is a static block today, with no motion and no
    attack/cast animation on a monster at all. This shares the same open "what is an animation on the

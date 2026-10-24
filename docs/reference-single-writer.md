@@ -100,6 +100,18 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
 `shared/` modules must stay free of DOM and Node APIs: they are imported by the main process, the
 renderer, and `node:test` alike.
 
+### Editing `shared/` or `main/build/`
+
+`generatorHash` (`test/lua/sw_provenance.mjs:47`) hashes the path and raw bytes of **every** file under `shared/` and `main/build/`, reachable or not. Any edit
+there, a comment or a new unused export included, moves the generator fingerprint and fails `crossevidence.test.js`, `harnesstransfer.test.js` and `streamtilebound.test.js`
+(the streamed-world bound evidence) until a renewal sweep like R1's (`docs/design-streamed-worlds-phase3b.md` section 23). So a change that does not need to be in
+the build pipeline's inputs goes outside them: the Monster Forge's seed helpers are in `renderer/forges/monster/seed.js` for this reason
+(`docs/design-monster-derive-seed.md`). A change that must edit them budgets the renewal first.
+
+Separately, an edit to `shared/project.js` or `shared/eventrules.js` also moves the raw-byte pins in `test/unit/worldmarkers.test.js` (the M6 change detector). A bound-evidence sweep does not
+repair those. The test's own failure message names the fix: "<file> changed. Audit referenceInventory (renderer/forges/map/worldmarkers.js) against remapScreenReferences
+-- and against projectEvents and allCommands, which it reads through -- then update PINNED_DIGESTS in test/unit/worldmarkers.test.js." That is an inventory audit and a re-pin.
+
 ### Equipment (ROADMAP item 5)
 
 - **The slot list** is `EQUIP_SLOTS = ['weapon', 'armor', 'accessory']` (`shared/project.js`); its length is `RPG_LIMITS.equipSlots` (3), the one
