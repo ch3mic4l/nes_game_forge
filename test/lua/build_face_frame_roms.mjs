@@ -5,12 +5,13 @@
 //
 //   node test/lua/build_face_frame_roms.mjs [outDir] [--break=shipped]
 //
-// --break=shipped builds every scene on the 9f0136e move_face (git show, as a Code Forge override of
-// entities.asm) while the lua keeps expecting the clamped result, so every scene must fail (exit 5):
-// the negative control that shows the check can fail.
+// --break=shipped builds every scene on the move_face 9f0136e shipped -- set ent_dir and return, no clamp of ent_frame
+// or ent_timer -- as a Code Forge override of the CURRENT engine/entities.asm with only that routine's body put back,
+// while the lua keeps expecting the clamped result, so every scene must fail (exit 5): the negative control that shows
+// the check can fail. (An earlier version overrode the whole 9f0136e entities.asm; that file calls sw_move_probe, which
+// 846cd78 retired, so the streamed scenes stopped assembling and the control died of an assembler error, not of its claim.)
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
@@ -21,7 +22,23 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const args = process.argv.slice(2);
 const outDir = args.find((a) => !a.startsWith('--')) ?? '/tmp/nesforge-face-frame';
 const breakShipped = args.includes('--break=shipped');
-const shipped = breakShipped ? execFileSync('git', ['show', '9f0136e:engine/entities.asm'], { cwd: ROOT }).toString() : undefined;
+
+/**
+ * The current entities.asm with only move_face's body put back to 9f0136e's: `sta ent_dir,x` then `rts`. Everything from
+ * the store through the clamp (the `entity_animation` / `anim_count` comparison and the two zeroing stores, ending at
+ * `move_face_done:` / `rts`) goes; the player branch, the label before it and every other routine stay current. Throws
+ * when the routine no longer has that shape, so a rewritten move_face cannot silently turn the control into a no-op.
+ */
+function shippedMoveFace(text) {
+  const start = text.indexOf('move_face:\n  ldx <mv_who\n  bne move_face_player\n  ldx <talk_ent\n  sta ent_dir,x\n');
+  const end = text.indexOf('move_face_player:\n', start);
+  if (start < 0 || end < 0 || text.indexOf('move_face:\n', start + 1) >= 0) throw new Error('engine/entities.asm move_face no longer has the shape --break=shipped replaces');
+  const head = text.indexOf('  sta ent_dir,x\n', start) + '  sta ent_dir,x\n'.length;
+  const clamp = text.slice(head, end);
+  if (!/ent_frame,x/.test(clamp) || !/ent_timer,x/.test(clamp) || !clamp.endsWith('move_face_done:\n  rts\n')) throw new Error('move_face\'s clamp is not the ent_frame/ent_timer clamp --break=shipped removes');
+  return text.slice(0, head) + '  rts\n' + text.slice(end);
+}
+const shipped = breakShipped ? shippedMoveFace(fs.readFileSync(path.join(ROOT, 'engine/entities.asm'), 'utf8')) : undefined;
 const template = fs.readFileSync(path.join(ROOT, 'test/lua/face_frame_check.lua.template'), 'utf8');
 
 const TURN_UP = [{ op: 'turn', who: 'self', dir: 'up' }, { op: 'say', text: 'Hi' }];

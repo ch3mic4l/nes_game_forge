@@ -37,10 +37,15 @@
 # "pc_equip[0] restored as 255, expected 1": the sanitizer emptied the zero ids) on exactly those two boards, and the other three boards must still pass. Exit 0 iff all of that holds.
 #
 # Exit code (no --break): 0 if every board's round trip passed, 1 otherwise.
-# Prints a pass/fail line per board with the exit codes seen either way.
+# Prints a pass/fail line per board with the exit codes seen either way, and then one machine-readable line per board,
+# "SIG <board> run1=<exit|-> run2=<exit|-> sav=<yes|no>": the exact run codes and whether Mesen persisted a .sav ("-" = that run
+# did not happen). The break modes exit 0 whatever they print, so a driver (the farm's job.sh) judges them by comparing the whole set
+# of SIG lines with the one signature the mode must produce -- every targeted board's exact codes AND every unaffected board's explicit
+# (1,0) pass -- rather than by exit code or by which boards printed FAIL.
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 BREAK_ARG=""
 for a in "$@"; do
@@ -61,22 +66,27 @@ echo "[run_sram_check] building fixtures${BREAK_ARG:+ ($BREAK_ARG)}..."
 node "$ROOT/test/lua/build_sram_roms.mjs" "$OUT_DIR" $BREAK_ARG || exit 1
 
 overall=0
+sigs=""
 for key in mmc1 mmc3 rpg-mmc1 rpg-mmc1-equip rpg-mmc3-equip; do
   rom="$OUT_DIR/sram_${key}.nes"
   sav="$SAVES_DIR/sram_${key}.sav"
   rm -f "$sav"
 
-  timeout 60 "$MESEN" --testRunner "$ROOT/test/lua/save_sram.lua" "$rom" >/dev/null 2>&1
+  mesen_run 60 "$MESEN" "$ROOT/test/lua/save_sram.lua" "$rom"
   run1=$?
 
   if [ ! -f "$sav" ]; then
     echo "$key: FAIL -- no .sav written after run 1 (exit $run1) -- battery bit or Mesen persistence problem"
+    sigs="$sigs
+SIG $key run1=$run1 run2=- sav=no"
     overall=1
     continue
   fi
 
-  timeout 60 "$MESEN" --testRunner "$ROOT/test/lua/save_sram.lua" "$rom" >/dev/null 2>&1
+  mesen_run 60 "$MESEN" "$ROOT/test/lua/save_sram.lua" "$rom"
   run2=$?
+  sigs="$sigs
+SIG $key run1=$run1 run2=$run2 sav=yes"
 
   if [ "$BREAK_ARG" = "--break=equip-omit" ] && [ "${key%-equip}" != "$key" ]; then
     if [ "$run1" = "7" ] && [ "$run2" = "10" ]; then
@@ -92,6 +102,9 @@ for key in mmc1 mmc3 rpg-mmc1 rpg-mmc1-equip rpg-mmc3-equip; do
     overall=1
   fi
 done
+
+echo "${sigs#
+}"
 
 if [ "$BREAK_ARG" = "--break=equip-omit" ]; then
   exit $overall

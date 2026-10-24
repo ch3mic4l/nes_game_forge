@@ -19,6 +19,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 
 if [ ! -x "$MESEN" ]; then
@@ -52,7 +53,7 @@ run_case() {
 
   local rom="$out_dir/sw_dlg_real_workload_timing.nes"
   local lua="$out_dir/sw_dlg_real_workload_timing.lua"
-  timeout 60 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+  mesen_run 60 "$MESEN" "$lua" "$rom"
   local result=$?
 
   if [ "$label" = "real" ]; then

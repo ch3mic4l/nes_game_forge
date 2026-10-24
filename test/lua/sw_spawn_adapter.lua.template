@@ -104,8 +104,9 @@ local EXIT_NO_SPAWN_SEEN     = 3 -- main_loop_ready reached without spawn_entiti
 local EXIT_CARRY_MISMATCH    = 4 -- sw_adv_offset_carry firing (or not) didn't match EXPECT_CARRY
 local EXIT_NO_SPAWN_CONTENTS = 5 -- ent_active's own sum after the span didn't equal ACTOR_COUNT
 local EXIT_SPAWN_CONTENT_MISMATCH = 6 -- active slots' own actor id/x/y/trigger didn't bipartite-match EXPECTED_ACTORS
+local EXIT_COST_UNENCODABLE = 7 -- the measured cost would encode to EXIT_PASS_MAX (255) or more: a rejected result, never a finite bucket
 
--- Pass encoding: exit code = EXIT_PASS_BASE + floor(cycles / MARGIN_SCALE), clamped -- same
+-- Pass encoding: exit code = EXIT_PASS_BASE + floor(cycles / MARGIN_SCALE), rejected (EXIT_COST_UNENCODABLE) at 255 or more -- same
 -- channel-of-last-resort convention as sw_driver_timing.lua.template's own header documents.
 -- Real measurement (2026-09-23, re-confirmed under fix round 2's own corrected clock-based
 -- method -- this short single-shot span never risked the frame-boundary wraparound that made
@@ -114,7 +115,11 @@ local EXIT_SPAWN_CONTENT_MISMATCH = 6 -- active slots' own actor id/x/y/trigger 
 -- 9,300 cycles.
 local EXIT_PASS_BASE = 100
 local MARGIN_SCALE = 60
-local EXIT_PASS_MAX = 255
+local EXIT_PASS_MAX = 255 -- exclusive: never emitted
+-- Never 255: that is Mesen's own generic failure code (and what test/lua/mesen_lib.sh reports for a run with no result). The finite
+-- buckets run through 254 and keep their meaning; a cost whose raw code would be 255 or more is NOT clamped into the last bucket (that
+-- would invent a finite upper bound, 9,240-9,299 cycles, for any larger cost) but fails with EXIT_COST_UNENCODABLE, which the runner
+-- rejects, as sw_driver_timing.lua.template does with its EXIT_MEASUREMENT_SATURATED.
 
 local TIMEOUT_FRAMES = 400
 
@@ -256,7 +261,13 @@ local function onFrame()
     return
   end
   if measuredCycles ~= nil then
-    local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(measuredCycles / MARGIN_SCALE))
+    local code = EXIT_PASS_BASE + math.floor(measuredCycles / MARGIN_SCALE)
+    if code >= EXIT_PASS_MAX then
+      fail(EXIT_COST_UNENCODABLE, string.format(
+        "spawn adapter max %.1f cycles would encode to exit code %d, at or past EXIT_PASS_MAX (%d) -- rejecting rather than clamping to a finite bucket it is not in",
+        measuredCycles, code, EXIT_PASS_MAX))
+      return
+    end
     pass(string.format("spawn adapter max %.1f cycles -> exit code %d (decode: (code-%d)*%d <= cycles < (code-%d+1)*%d)",
       measuredCycles, code, EXIT_PASS_BASE, MARGIN_SCALE, EXIT_PASS_BASE, MARGIN_SCALE))
     emu.stop(code)

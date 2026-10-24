@@ -138,6 +138,11 @@ local NM_ROW         = 0x059B
 local NM_COL         = 0x059C
 local PC_NAME_RAM    = 0x0571
 local NAME_LEN       = 10
+-- The name typed over Iris's seeded default, byte-exact: "I" alone (0xC9 -- shared/font.js's charToTile('I'), confirmed directly
+-- rather than trusted) then blank-padded (0xA0, charToTile(' ')) to NAME_LEN. The one definition of "the typed name is in place":
+-- the naming deadline (phase 3.39) and the restored-name check (run 2) both compare against it, byte for byte. A name that merely
+-- starts with 0xC9 is not enough -- the compiled default "Iris" starts with it too.
+local EXPECTED_NAME1 = { 0xC9, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0 }
 
 local ST_GAMEPLAY = 0
 local ST_DIALOG   = 2
@@ -688,7 +693,28 @@ local function onFrame()
       phase = 4
       return
     end
-    if frame - mark > 300 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming session never ended after confirming END"); return end
+    if frame - mark > 300 then
+      -- Two different failures end up here, told apart by POSITIVE evidence that the naming lifecycle finished, not by the grid merely
+      -- being gone. END sets BOX_NAMEDONE, input.asm hands that back to script_resume, and the page's box_close walks BOX_CLOSING to
+      -- BOX_CLOSED before gameplay resumes; a broken handoff or a stalled close leaves BOX_NAMEDONE / BOX_CLOSING (or anything else)
+      -- on screen. Only when the box is closed, the game is back in gameplay and the typed name is in place did the session
+      -- really end, and then the Save that follows Join in the same page never wrote its marker: the EXIT_SAVE_NEVER_WROTE the action
+      -- boards report when the mapper denies the WRAM write, so a mapper break on an RPG board reaches its own assertion. Anything
+      -- else is a naming/lifecycle failure (EXIT_NAMING_NEVER_READY) and must never satisfy a save-failure signature.
+      local box, state = read(BOX_STATE), read(GAME_STATE)
+      local nameKept, nameBytes = true, {}
+      for i = 0, NAME_LEN - 1 do
+        local b = read(PC_NAME_RAM + NAME_LEN + i) -- slot 1 (Iris)
+        nameBytes[i + 1] = string.format("%02X", b)
+        if b ~= EXPECTED_NAME1[i + 1] then nameKept = false end
+      end
+      if box == BOX_CLOSED and state == ST_GAMEPLAY and nameKept then
+        fail(EXIT_SAVE_NEVER_WROTE, "Iris's naming session ended (box closed, back in gameplay, name kept) but the Save after Join never wrote its marker")
+      else
+        fail(EXIT_NAMING_NEVER_READY, string.format("Iris's naming lifecycle never completed after END: box_state=%d (grid=%d done=10 closing=5) game_state=%d name bytes=%s", box, BOX_NAMEENTRY, state, table.concat(nameBytes, " ")))
+      end
+      return
+    end
     local cycle = (frame - mark) % 12
     held = cycle < 4 and { a = true } or {}
     return
@@ -912,17 +938,13 @@ local function onFrame()
       if restored.pcSpells1 ~= RPG_SPELLS_1 then
         fail(EXIT_RESTORED_STATE_WRONG, "pc_spells slot 1 restored as " .. restored.pcSpells1); return
       end
-      -- The name typed over Iris's seeded default, byte-exact: "I" alone
-      -- (0xC9 -- shared/font.js's charToTile('I'), confirmed directly
-      -- rather than trusted) then blank-padded (0xA0, charToTile(' ')) to
-      -- NAME_LEN -- a restore that discarded the typed name and re-seeded
-      -- the compiled default ("Iris") would fail this byte-for-byte.
-      local expectedName1 = { 0xC9, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0 }
+      -- A restore that discarded the typed name and re-seeded the compiled
+      -- default ("Iris") would fail EXPECTED_NAME1 byte-for-byte.
       for i = 0, NAME_LEN - 1 do
-        if restored.pcName1[i] ~= expectedName1[i + 1] then
+        if restored.pcName1[i] ~= EXPECTED_NAME1[i + 1] then
           fail(
             EXIT_RESTORED_STATE_WRONG,
-            string.format("pc_name_ram slot 1 byte %d restored as 0x%02X, expected 0x%02X", i, restored.pcName1[i], expectedName1[i + 1])
+            string.format("pc_name_ram slot 1 byte %d restored as 0x%02X, expected 0x%02X", i, restored.pcName1[i], EXPECTED_NAME1[i + 1])
           )
           return
         end

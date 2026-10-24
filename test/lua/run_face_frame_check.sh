@@ -19,6 +19,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN=/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen
 case "${1:-}" in ""|--*) ;; *) MESEN="$1" ;; esac
 BREAK_ARG=""
@@ -39,7 +40,7 @@ node "$ROOT/test/lua/build_face_frame_roms.mjs" "$OUT_DIR" $BREAK_ARG || exit 1
 
 status=0
 for scene in d1_ordinary d1_streamed d2_ordinary d2_streamed; do
-  out=$(timeout 60 "$MESEN" --testRunner "$OUT_DIR/$scene.lua" "$OUT_DIR/$scene.nes" 2>&1)
+  mesen_run 60 "$MESEN" "$OUT_DIR/$scene.lua" "$OUT_DIR/$scene.nes" "$OUT_DIR/$scene.log"
   code=$?
   if [ "$code" = "0" ]; then
     echo "$scene: PASS (exit 0)"

@@ -13,7 +13,7 @@
 # (0,0), --parity=odd lands on (1,1) of the streamed map's 3x2 grid -- see
 # build_sw_nmi_roms.mjs's own header for why a cycle-accurate core can care
 # about which physical nametable a block's own torus position resolves to)
-# expecting a PASS exit code in [100,255] from sw_nmi_deadline.lua.template's
+# expecting a PASS exit code in [100,254] from sw_nmi_deadline.lua.template's
 # own margin-encoding scheme (EXIT_PASS_BASE=100, MARGIN_SCALE=20 cycles/step
 # -- see that file's own header comment for the full reasoning, including why
 # the exit code is the only channel this build of Mesen's headless
@@ -38,6 +38,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 MODE=""
 for a in "$@"; do
@@ -60,7 +61,7 @@ if [ ! -x "$MESEN" ]; then
 fi
 
 EXIT_PASS_BASE=100
-EXIT_PASS_MAX=255
+EXIT_PASS_MAX=254 # the template saturates here, one below Mesen's own generic failure code 255 (mesen_lib.sh)
 MARGIN_SCALE=20
 
 overall=0
@@ -85,7 +86,7 @@ for parity in even odd; do
 
   rom="$OUT_DIR/sw_nmi.nes"
   lua="$OUT_DIR/sw_nmi_deadline.lua"
-  timeout 30 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+  mesen_run 30 "$MESEN" "$lua" "$rom"
   result=$?
 
   label="parity=$parity${MODE:+ break=$MODE}"

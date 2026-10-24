@@ -17,6 +17,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 # Finding 4: a fixed shared directory let two concurrent runs (different
 # worktrees, or a stray leftover from a killed run) overwrite each other's
@@ -37,7 +38,7 @@ node "$ROOT/test/lua/build_flash_nmi_roms.mjs" "$OUT_DIR" || exit 1
 
 rom="$OUT_DIR/flash_nmi.nes"
 lua="$OUT_DIR/flash_nmi_timing.lua"
-timeout 30 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+mesen_run 30 "$MESEN" "$lua" "$rom"
 result=$?
 
 if [ "$result" = "0" ]; then

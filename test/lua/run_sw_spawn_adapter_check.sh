@@ -62,6 +62,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 
 if [ ! -x "$MESEN" ]; then
@@ -70,15 +71,14 @@ if [ ! -x "$MESEN" ]; then
 fi
 
 EXIT_PASS_BASE=100
-# Exit 255 is the template's own saturation code (math.min clamp,
-# sw_spawn_adapter.lua.template) -- it means the real cost is AT LEAST the
-# top of the encodable range, not that it fits inside it. Fix round 1
-# (finding 5/ruling E) treats it as a FAIL, not a PASS, below: a saturated
-# measurement asserts nothing about the actual cost.
+# The finite buckets are [100,254]. A cost whose raw code would be 255 or more is the template's own EXIT_COST_UNENCODABLE (7), never a
+# clamped bucket (fix round 3, review-2 finding 1): a saturated measurement asserts nothing about the actual cost (fix round 1,
+# finding 5/ruling E), so it is a FAIL below. 255 itself is Mesen's generic failure code and mesen_run's no-result code, also a FAIL.
 EXIT_PASS_MAX=255
 EXIT_CARRY_MISMATCH=4
 EXIT_NO_SPAWN_CONTENTS=5
 EXIT_SPAWN_CONTENT_MISMATCH=6
+EXIT_COST_UNENCODABLE=7
 MARGIN_SCALE=60
 # The 8-actor-vs-1-actor delta must clear this many cycles to count as "markedly larger" -- real
 # measurement (2026-09-23): a 2,315-cycle (~4.6x) gap. Set well below that real gap so a genuine
@@ -105,7 +105,7 @@ run_one() {
   fi
   local rom="$out_dir/sw_spawn_adapter.nes"
   local lua="$out_dir/sw_spawn_adapter.lua"
-  timeout 30 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+  mesen_run 30 "$MESEN" "$lua" "$rom"
   return $?
 }
 
@@ -115,6 +115,7 @@ decode_fail() {
     "$EXIT_CARRY_MISMATCH") echo " -- EXIT_CARRY_MISMATCH: sw_adv_offset_carry's own firing did not match this build's real actor count" ;;
     "$EXIT_NO_SPAWN_CONTENTS") echo " -- EXIT_NO_SPAWN_CONTENTS: ent_active's own sum after the span did not equal this build's real actor count" ;;
     "$EXIT_SPAWN_CONTENT_MISMATCH") echo " -- EXIT_SPAWN_CONTENT_MISMATCH: an active slot's own actor id/x/y/trigger did not bipartite-match EXPECTED_ACTORS" ;;
+    "$EXIT_COST_UNENCODABLE") echo " -- EXIT_COST_UNENCODABLE: the measured cost is past the last finite bucket (raise MARGIN_SCALE in sw_spawn_adapter.lua.template); a saturated cost is never a measurement" ;;
     *) echo "" ;;
   esac
 }
@@ -123,12 +124,8 @@ decode_pass() {
   local result="$1"
   local steps=$((result - EXIT_PASS_BASE))
   local lo=$((steps * MARGIN_SCALE))
-  if [ "$result" = "$EXIT_PASS_MAX" ]; then
-    echo "${lo}+ (saturated -- raise MARGIN_SCALE in sw_spawn_adapter.lua.template if this happens on a real run)"
-  else
-    local hi=$(((steps + 1) * MARGIN_SCALE))
-    echo "${lo}-$((hi - 1))"
-  fi
+  local hi=$(((steps + 1) * MARGIN_SCALE))
+  echo "${lo}-$((hi - 1))"
 }
 
 EIGHT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-sw-spawn-8.XXXXXX")"

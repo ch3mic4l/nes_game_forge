@@ -26,6 +26,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 BREAK_ARG=""
 for a in "$@"; do
@@ -48,7 +49,7 @@ overall=0
 for key in action rpg action_mixed; do
   rom="$OUT_DIR/sw_${key}.nes"
   lua="$OUT_DIR/sw_${key}_check.lua"
-  timeout 30 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+  mesen_run 30 "$MESEN" "$lua" "$rom"
   code=$?
   # EXIT_NO_BOOT, sw_quadrant_check.lua -- the specific code a corrupted reset vector must produce
   # (frame_cnt never advances because the CPU never reaches real code at all), not any nonzero exit.

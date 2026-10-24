@@ -71,7 +71,10 @@ local EXIT_STRIP_ACTIVE     = 8
 
 local EXIT_PASS_BASE = 100
 local MARGIN_SCALE = 20
-local EXIT_PASS_MAX = 255
+local EXIT_PASS_MAX = 255 -- exclusive: never emitted
+-- Never 255: that is Mesen's own generic failure code (and what test/lua/mesen_lib.sh reports for a run with no result), so the pass
+-- encoding saturates one below it -- a runner reads 254 as "this margin or more".
+local EXIT_PASS_CAP = 254
 
 local frame = 0
 local checkedAnchor = false
@@ -174,7 +177,7 @@ local function onNmiRti()
   local marginDots = (VBLANK_LAST_SCANLINE - finishScanline) * DOTS_PER_SCANLINE + (DOTS_PER_SCANLINE - 1 - finishDot)
   local marginCycles = marginDots / PPU_DOTS_PER_CPU_CYCLE
   pass(string.format("the %d-byte dialogue drain NMI finished at scanline %d, cycle %d (rti settles on scanline %d, dot %d) -- inside vblank (%d-%d), margin ~%.1f cycles", QUEUE_BYTES, scanline, cycle, finishScanline, finishDot, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE, marginCycles))
-  local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(marginCycles / MARGIN_SCALE))
+  local code = math.min(EXIT_PASS_CAP, EXIT_PASS_BASE + math.floor(marginCycles / MARGIN_SCALE))
   log(string.format("margin %.1f cycles -> exit code %d", marginCycles, code))
   emu.stop(code)
 end

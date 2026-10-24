@@ -18,6 +18,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-equip-nmi-roms.XXXXXX")"
 trap 'rm -rf "$OUT_DIR"' EXIT
@@ -32,7 +33,7 @@ failures=0
 variant() {
   local want="$1"; shift
   node "$ROOT/test/lua/build_equip_nmi_roms.mjs" "$OUT_DIR" "$@" >/dev/null || { echo "BUILD FAIL: $*"; failures=$((failures + 1)); return; }
-  timeout 60 "$MESEN" --testRunner "$OUT_DIR/equip_nmi_timing.lua" "$OUT_DIR/equip_nmi.nes" >/dev/null 2>&1
+  mesen_run 60 "$MESEN" "$OUT_DIR/equip_nmi_timing.lua" "$OUT_DIR/equip_nmi.nes"
   local got=$?
   if [ "$got" = "$want" ]; then
     echo "ok   (exit $got) $*"

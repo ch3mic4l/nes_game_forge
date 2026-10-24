@@ -8,7 +8,7 @@
 #
 #   test/lua/run_sw_dlg_drain_check.sh [mesen-path]
 #
-# Builds and runs the real 38-byte shape, expecting a PASS exit code in [100,255]
+# Builds and runs the real 38-byte shape, expecting a PASS exit code in [100,254]
 # (sw_dlg_drain_timing.lua.template's own EXIT_PASS_BASE=100, MARGIN_SCALE=20 cycles/step -- see
 # that file's own header for why the exit code is the only channel headless --testRunner mode can
 # recover a measured figure through). Then builds and runs the --break=oversize negative control
@@ -18,6 +18,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 
 if [ ! -x "$MESEN" ]; then
@@ -27,6 +28,7 @@ fi
 
 EXIT_PASS_BASE=100
 EXIT_PASS_MAX=255
+EXIT_PASS_CAP=254
 MARGIN_SCALE=20
 EXIT_DEADLINE_MISS=5
 
@@ -51,25 +53,28 @@ run_case() {
 
   local rom="$out_dir/sw_dlg_drain_timing.nes"
   local lua="$out_dir/sw_dlg_drain_timing.lua"
-  timeout 30 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+  mesen_run 30 "$MESEN" "$lua" "$rom"
   local result=$?
 
   if [ "$label" = "real" ]; then
-    # Fix round 1 (A6): Mesen's own generic external-failure exit code is 255 too, indistinguishable
-    # from this wrapper's outside view of the lua template's own math.min(EXIT_PASS_MAX, ...) clamp
-    # -- so 255 is never accepted as a measurement here, even though the template's own scheme can
-    # legitimately emit it for a real margin >= (255-100)*20 = 3100 cycles. A real run this far under
-    # the deadline should lower MARGIN_SCALE rather than rely on a code this wrapper cannot trust.
+    # Fix round 1 (A6): Mesen's own generic external-failure exit code is 255 -- so 255 is never
+    # accepted as a measurement here, and the template never emits it: it saturates its encoding at 254
+    # (EXIT_PASS_CAP). mesen_run (mesen_lib.sh) returns 255 for a run with no result at all (a timeout,
+    # whose own exit 124 is also a legitimate bucket, or a signal), so neither can be read as a margin.
+    # Code 254 is a LOWER bound, (254-100)*20 = 3080 cycles or more (fix round 3, review-2 finding 2): a larger
+    # proven margin is still a pass, reported as >=3080, never as the finite bucket [3080,3100).
     if [ "$result" = "$EXIT_PASS_MAX" ]; then
-      echo "sw_dlg_drain ($label): FAIL -- exit $result is Mesen's own generic failure signal as well as this template's own clamp value; never accepted as a pass"
+      echo "sw_dlg_drain ($label): FAIL -- exit $result is Mesen's own generic failure code, or mesen_run's no-result code (timeout, signal, no record); the template never emits it"
       overall=1
-    elif [ "$result" -ge "$EXIT_PASS_BASE" ] && [ "$result" -lt "$EXIT_PASS_MAX" ]; then
+    elif [ "$result" = "$EXIT_PASS_CAP" ]; then
+      echo "sw_dlg_drain ($label): PASS -- exit $result, margin >=$(((EXIT_PASS_CAP - EXIT_PASS_BASE) * MARGIN_SCALE)) cycles (saturated lower bound)"
+    elif [ "$result" -ge "$EXIT_PASS_BASE" ] && [ "$result" -lt "$EXIT_PASS_CAP" ]; then
       local steps=$((result - EXIT_PASS_BASE))
       local lo=$((steps * MARGIN_SCALE))
       local hi=$(((steps + 1) * MARGIN_SCALE))
       echo "sw_dlg_drain ($label): PASS -- exit $result, margin in [${lo}, ${hi}) cycles"
     else
-      echo "sw_dlg_drain ($label): FAIL -- exit $result, expected a pass code in [$EXIT_PASS_BASE, $EXIT_PASS_MAX)"
+      echo "sw_dlg_drain ($label): FAIL -- exit $result, expected a pass code in [$EXIT_PASS_BASE, $EXIT_PASS_CAP]"
       overall=1
     fi
   else

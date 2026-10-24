@@ -117,7 +117,9 @@
 #   15. --break=slow-driver                      -- the absolute-regression-
 #      ceiling negative control (fix round 2, gates round-2 finding 5,
 #      ported in-tree from the reviewer's own reproducer): a real
-#      ~1,276-cycle delay loop at every real sw_update_player entry. Asserts
+#      ~2,552-cycle delay (two ~1,276-cycle loops; measured expensive-path max
+#      16,200-16,349, 1,300+ over the 14,900 ceiling) at every real
+#      sw_update_player entry. Asserts
 #      EXIT_EXPENSIVE_REGRESSION (8): the expensive-path absolute ceiling is
 #      checked before the mainline one in sw_driver_timing.lua.template's
 #      own finish(), so this is the exit code a real uniform-per-frame
@@ -134,14 +136,14 @@
 # A PASS (exit in [100,254]) reports the picked metric's own max/average
 # cycles, decoded via the matching *_SCALE cycles/exit-code-step (see the
 # template's own MARGIN_SCALE/MAINLINE_MARGIN_SCALE/IDLE_AVG_SCALE/
-# NMI_MARGIN_SCALE). Exit 255 is the template's own saturation code (math.min
-# clamp) -- it means the real cost is AT LEAST the top of the encodable
-# range, not that it fits inside it, so this script treats it as a FAIL
-# rather than a PASS: a saturated measurement asserts nothing about the
-# actual cost.
+# NMI_MARGIN_SCALE). The template rejects a measurement that would encode to
+# 255 or more (EXIT_MEASUREMENT_SATURATED) instead of clamping it, and 255 is
+# also Mesen's own generic failure code (mesen_lib.sh returns it for a run with
+# no result at all), so this script never reads 255 as a measurement.
 #
-# Ceilings (Chris ruling, 2026-09-24): EXPENSIVE_CEILING_CYCLES=19,200 /
-# MAINLINE_CEILING_CYCLES=24,200 (sw_driver_timing.lua.template) are now
+# Ceilings (Chris ruling, 2026-09-24; recalibrated 2026-10-23 after commit
+# 15c11b7 made the camera Y path cheaper): EXPENSIVE_CEILING_CYCLES=14,900 /
+# MAINLINE_CEILING_CYCLES=19,800 (sw_driver_timing.lua.template) are now
 # RULED, not a placeholder awaiting a decision -- see the template's own
 # header for the exact recalibration rule and measured figures. Every clean
 # build (#1/#3/#8) is expected to PASS under these ceilings; an overrun is
@@ -174,6 +176,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 
 if [ ! -x "$MESEN" ]; then
@@ -305,7 +308,7 @@ run_one() {
   fi
   local rom="$out_dir/sw_driver_timing.nes"
   local lua="$out_dir/sw_driver_timing.lua"
-  timeout 60 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+  mesen_run 60 "$MESEN" "$lua" "$rom"
   return $?
 }
 
@@ -327,7 +330,7 @@ decode_pass() {
 decode_lo() {
   local scale="$1"
   local result="$2"
-  if [ "$result" -ge "$EXIT_PASS_BASE" ] && [ "$result" -le "$EXIT_PASS_MAX" ]; then
+  if [ "$result" -ge "$EXIT_PASS_BASE" ] && [ "$result" -lt "$EXIT_PASS_MAX" ]; then
     echo $(( (result - EXIT_PASS_BASE) * scale ))
   else
     echo 0
@@ -349,7 +352,7 @@ report_ceiling_gated() {
   if is_pass "$result"; then
     echo "sw_driver_timing ($label): PASS -- exit $result, max ~$(decode_pass "$scale" "$result") cycles"
   elif [ "$result" = "$EXIT_EXPENSIVE_REGRESSION" ] || [ "$result" = "$EXIT_MAINLINE_REGRESSION" ]; then
-    echo "sw_driver_timing ($label): FAIL -- exit $result, exceeds the absolute regression ceiling (EXPENSIVE_CEILING_CYCLES/MAINLINE_CEILING_CYCLES, sw_driver_timing.lua.template -- ruled 2026-09-24, not retuned by this script)"
+    echo "sw_driver_timing ($label): FAIL -- exit $result, exceeds the absolute regression ceiling (EXPENSIVE_CEILING_CYCLES/MAINLINE_CEILING_CYCLES, sw_driver_timing.lua.template -- ruled 2026-09-24, recalibrated 2026-10-23, not retuned by this script)"
     overall=1
   else
     echo "sw_driver_timing ($label): FAIL -- exit $result (see sw_driver_timing.lua.template's own EXIT_* constants)"
@@ -554,7 +557,7 @@ fi
 run_one "broken(slow-driver) regression control" "$SLOW_DRIVER_DIR" --break=slow-driver
 slow_driver_result=$?
 if [ "$slow_driver_result" = "$EXIT_EXPENSIVE_REGRESSION" ]; then
-  echo "sw_driver_timing (slow-driver regression control): PASS -- --break=slow-driver correctly failed with EXIT_EXPENSIVE_REGRESSION ($EXIT_EXPENSIVE_REGRESSION): the ~1,276-cycle per-frame delay loop exceeded the expensive-path absolute ceiling (checked before the mainline one)"
+  echo "sw_driver_timing (slow-driver regression control): PASS -- --break=slow-driver correctly failed with EXIT_EXPENSIVE_REGRESSION ($EXIT_EXPENSIVE_REGRESSION): the ~2,552-cycle per-frame delay exceeded the expensive-path absolute ceiling (checked before the mainline one)"
 else
   echo "sw_driver_timing (slow-driver regression control): FAIL -- --break=slow-driver exited $slow_driver_result, expected exactly $EXIT_EXPENSIVE_REGRESSION -- this harness's absolute regression ceilings would not catch a real uniform per-frame cost regression"
   overall=1

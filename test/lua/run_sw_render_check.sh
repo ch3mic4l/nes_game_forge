@@ -25,6 +25,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 BREAK_ARG=""
 for a in "$@"; do
@@ -45,7 +46,7 @@ node "$ROOT/test/lua/build_sw_render_roms.mjs" "$OUT_DIR" $BREAK_ARG || exit 1
 
 rom="$OUT_DIR/sw_render.nes"
 lua="$OUT_DIR/sw_render_check.lua"
-timeout 30 "$MESEN" --testRunner "$lua" "$rom" >/dev/null 2>&1
+mesen_run 30 "$MESEN" "$lua" "$rom"
 code=$?
 
 if [ "$code" = "0" ]; then

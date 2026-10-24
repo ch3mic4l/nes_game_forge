@@ -18,6 +18,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-camera-roms.XXXXXX")"
 trap 'rm -rf "$OUT_DIR"' EXIT
@@ -36,7 +37,7 @@ for content in plain heavy; do
 
   rom="$dir/camera.nes"
   lua="$dir/camera_check.lua"
-  timeout 30 "$MESEN" --testRunner "$lua" "$rom" >"$dir/out.log" 2>&1
+  mesen_run 30 "$MESEN" "$lua" "$rom" "$dir/out.log"
   result=$?
   cat "$dir/out.log"
 

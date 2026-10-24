@@ -8,6 +8,7 @@
 # Exit 0 = both placements passed (and, with --controls, both controls failed as expected). See sw_close_deadline.lua.template's header for the assertions and the labelled RAM poke.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN=/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen
 CONTROLS=0
 for a in "$@"; do case "$a" in --controls) CONTROLS=1 ;; *) MESEN="$a" ;; esac; done
@@ -18,7 +19,7 @@ status=0
 for placement in resident banked; do
   dir="$OUT_DIR/$placement"
   node "$ROOT/test/lua/build_sw_close_deadline_roms.mjs" "$dir" --placement=$placement >/dev/null || { echo "FAIL build ($placement)"; status=1; continue; }
-  timeout 60 "$MESEN" --testRunner "$dir/sw_close_deadline.lua" "$dir/sw_close_deadline.nes" >"$dir/log.txt" 2>&1
+  mesen_run 60 "$MESEN" "$dir/sw_close_deadline.lua" "$dir/sw_close_deadline.nes" "$dir/log.txt"
   result=$?
   if [ "$result" = "0" ]; then echo "PASS ($placement): the 88-byte close frame finished inside vblank"; else echo "FAIL ($placement, exit $result)"; tail -15 "$dir/log.txt"; status=1; fi
 done
@@ -28,7 +29,7 @@ if [ "$CONTROLS" = 1 ]; then
     for placement in resident banked; do
       dir="$OUT_DIR/$placement-$1"
       node "$ROOT/test/lua/build_sw_close_deadline_roms.mjs" "$dir" --placement=$placement --break=$1 >/dev/null || { echo "FAIL build ($placement $1)"; status=1; continue; }
-      timeout 60 "$MESEN" --testRunner "$dir/sw_close_deadline.lua" "$dir/sw_close_deadline.nes" >/dev/null 2>&1
+      mesen_run 60 "$MESEN" "$dir/sw_close_deadline.lua" "$dir/sw_close_deadline.nes"
       result=$?
       if [ "$result" = "$2" ]; then echo "control ok ($placement, --break=$1): exit $result as required"; else echo "CONTROL FAILED ($placement, --break=$1): exit $result, wanted $2"; status=1; fi
     done

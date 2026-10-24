@@ -102,6 +102,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 MODE=""
 for a in "$@"; do
@@ -160,7 +161,7 @@ if [ "$MODE" = "u512-equip-no-shift" ]; then
   for board in u512-equip:12:EXIT_SCRATCH_CLOBBERED u512-equip-streamed:17:EXIT_STREAM_STATE; do
     key=${board%%:*}; rest=${board#*:}; want=${rest%%:*}; name=${rest#*:}
     rm -f "$SAVES_DIR/flash_$key.ips"
-    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes" >/dev/null 2>&1
+    mesen_run 90 "$MESEN" "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes"
     erun1=$?
     if [ "$erun1" = "$want" ]; then
       echo "$key ($MODE): PASS -- matched expected signature (run1=$erun1, $name)"
@@ -182,9 +183,9 @@ if [ "$MODE" = "u512-equip-omit" ]; then
   ok=yes
   for key in u512-equip u512-equip-streamed; do
     rm -f "$SAVES_DIR/flash_$key.ips"
-    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes" >/dev/null 2>&1
+    mesen_run 90 "$MESEN" "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes"
     erun1=$?
-    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes" >/dev/null 2>&1
+    mesen_run 90 "$MESEN" "$OUT_DIR/save_flash_$key.lua" "$OUT_DIR/flash_$key.nes"
     erun2=$?
     if [ "$erun1" = "7" ] && [ "$erun2" = "10" ]; then
       echo "$key ($MODE): PASS -- the omitted equipment payload was caught (run1=$erun1 EXIT_STATE_WRONG_BEFORE_CYCLE, run2=$erun2 EXIT_RESTORED_STATE_WRONG)"
@@ -201,7 +202,7 @@ rom="$OUT_DIR/flash_u512.nes"
 ips="$SAVES_DIR/flash_u512.ips"
 rm -f "$ips"
 
-timeout 60 "$MESEN" --testRunner "$ROOT/test/lua/save_flash.lua" "$rom" >/dev/null 2>&1
+mesen_run 60 "$MESEN" "$ROOT/test/lua/save_flash.lua" "$rom"
 run1=$?
 ips_present="no"
 [ -f "$ips" ] && ips_present="yes"
@@ -215,7 +216,7 @@ if [ "$ips_present" = "yes" ] && [ "$EXPECT_KIND" != "success-run1-only" ]; then
   # success-run1-only is the one mode that must NOT run it -- see
   # u512-second-commit-ok's own header note for why a second invocation of
   # this particular build is not a thing this control claims to prove.
-  timeout 60 "$MESEN" --testRunner "$ROOT/test/lua/save_flash.lua" "$rom" >/dev/null 2>&1
+  mesen_run 60 "$MESEN" "$ROOT/test/lua/save_flash.lua" "$rom"
   run2=$?
 fi
 
@@ -242,9 +243,9 @@ if [ "$matched" = "yes" ] && [ -z "$MODE" ]; then
     erom="$OUT_DIR/flash_$key.nes"
     eips="$SAVES_DIR/flash_$key.ips"
     rm -f "$eips"
-    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$erom" >/dev/null 2>&1
+    mesen_run 90 "$MESEN" "$OUT_DIR/save_flash_$key.lua" "$erom"
     erun1=$?
-    timeout 90 "$MESEN" --testRunner "$OUT_DIR/save_flash_$key.lua" "$erom" >/dev/null 2>&1
+    mesen_run 90 "$MESEN" "$OUT_DIR/save_flash_$key.lua" "$erom"
     erun2=$?
     if [ -f "$eips" ] && [ "$erun1" = "1" ] && [ "$erun2" = "0" ]; then
       echo "$key: PASS (ips=yes run1=$erun1 run2=$erun2)"

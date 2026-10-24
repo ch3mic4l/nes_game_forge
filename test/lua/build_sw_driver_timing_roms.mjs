@@ -56,7 +56,8 @@
 // exit code -- proving that assertion actually depends on the real eight-actor placement, not just
 // on the --row8 flag being set.
 // --break=slow-driver: project.code.overrides carries a COPY of engine/streamworld.asm with a
-// `ldx #255 / dex / bne` delay loop (~1,276 cycles) inserted at sw_update_player's own entry --
+// TWO back-to-back `ldx #255 / dex / bne` delay loops (~2,552 cycles; one was ~1,276 and cleared the 14,900 ceiling by only ~26 cycles
+// at its lower bound) inserted at sw_update_player's own entry --
 // review round 2's own reproducer (handoff-next/review-s4b-gates-round2-evidence/builder.mjs's
 // --review-slow), ported in-tree so the mandatory absolute-regression-ceiling negative control no
 // longer depends on a frozen, review-only builder. Always runs the ordinary two-leg busy phase
@@ -380,13 +381,13 @@ if (breakMode === 'unconditional-arm' || breakMode === 'no-spawn' || breakMode =
   let patched;
   if (breakMode === 'slow-driver') {
     // review round 2's own reproducer (review-s4b-gates-round2-evidence/builder.mjs's
-    // --review-slow), ported verbatim: a real ~1,276-cycle delay loop at sw_update_player's own
-    // entry, every frame.
+    // --review-slow), ported with a second identical loop (fix round 3, review-2 finding 7): a real ~2,552-cycle delay at
+    // sw_update_player's own entry, every frame.
     const needle = 'sw_update_player:\n';
     if (!stockText.includes(needle)) {
       throw new Error('sw_update_player\'s own label text did not match the expected shape -- engine/streamworld.asm has changed since this override was written; update the needle');
     }
-    patched = stockText.replace(needle, needle + '  ldx #255\nreview_slow_loop:\n  dex\n  bne review_slow_loop\n');
+    patched = stockText.replace(needle, needle + '  ldx #255\nreview_slow_loop:\n  dex\n  bne review_slow_loop\n  ldx #255\nreview_slow_loop2:\n  dex\n  bne review_slow_loop2\n');
   } else if (breakMode === 'idle-extra-work') {
     // Fix round 2 (fix2, finding A4): the SAME fixed delay loop as slow-driver, at the same
     // entry point -- deliberately reused rather than invented fresh, since the point of this

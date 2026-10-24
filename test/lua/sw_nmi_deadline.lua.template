@@ -101,7 +101,10 @@ local EXIT_UNEXPECTED_STATE = 7
 -- measurement, rather than no measurement at all. test/lua/run_sw_nmi_check.sh decodes it back.
 local EXIT_PASS_BASE = 100
 local MARGIN_SCALE = 20 -- cycles per exit-code unit
-local EXIT_PASS_MAX = 255
+local EXIT_PASS_MAX = 255 -- exclusive: never emitted
+-- Never 255: that is Mesen's own generic failure code (and what test/lua/mesen_lib.sh reports for a run with no result), so the pass
+-- encoding saturates one below it -- a runner reads 254 as "this margin or more".
+local EXIT_PASS_CAP = 254
 
 local frame = 0
 local stage = "boot" -- boot -> waitNmiA -> afterNmiA -> waitNmiB -> done
@@ -245,8 +248,8 @@ local function onNmiRti()
     log(string.format("phase B workload: vram_buf drained (vram_len=0), st_cur advanced to %d", curAfter))
     log("all phases passed")
     local minMargin = math.min(marginA, marginB)
-    local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(minMargin / MARGIN_SCALE))
-    log(string.format("min margin %.1f cycles -> exit code %d (decode: (code-%d)*%d <= margin < (code-%d+1)*%d, or a %d-cycle-or-more margin if code==%d)", minMargin, code, EXIT_PASS_BASE, MARGIN_SCALE, EXIT_PASS_BASE, MARGIN_SCALE, (EXIT_PASS_MAX - EXIT_PASS_BASE) * MARGIN_SCALE, EXIT_PASS_MAX))
+    local code = math.min(EXIT_PASS_CAP, EXIT_PASS_BASE + math.floor(minMargin / MARGIN_SCALE))
+    log(string.format("min margin %.1f cycles -> exit code %d (decode: (code-%d)*%d <= margin < (code-%d+1)*%d, or a %d-cycle-or-more margin if code==%d)", minMargin, code, EXIT_PASS_BASE, MARGIN_SCALE, EXIT_PASS_BASE, MARGIN_SCALE, (EXIT_PASS_CAP - EXIT_PASS_BASE) * MARGIN_SCALE, EXIT_PASS_CAP))
     emu.stop(code)
     return
   end

@@ -14,6 +14,7 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$ROOT/test/lua/mesen_lib.sh"
 MESEN="${1:-/home/chris/Downloads/Mesen2/bin/linux-x64/Release/Mesen}"
 OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-sw-battle-return.XXXXXX")"
 trap 'rm -rf "$OUT_DIR"' EXIT
@@ -27,7 +28,7 @@ overall=0
 
 echo "[run_sw_battle_return_check] building the real (unbroken) fixture..."
 node "$ROOT/test/lua/build_sw_battle_return_roms.mjs" "$OUT_DIR/ok" || exit 1
-timeout 60 "$MESEN" --testRunner "$OUT_DIR/ok/sw_battle_return_check.lua" "$OUT_DIR/ok/battle_return.nes" >"$OUT_DIR/ok/out.log" 2>&1
+mesen_run 60 "$MESEN" "$OUT_DIR/ok/sw_battle_return_check.lua" "$OUT_DIR/ok/battle_return.nes" "$OUT_DIR/ok/out.log"
 okResult=$?
 cat "$OUT_DIR/ok/out.log"
 if [ "$okResult" = "0" ]; then
@@ -39,7 +40,7 @@ fi
 
 echo "[run_sw_battle_return_check] building the wrong-restore-slot negative control..."
 node "$ROOT/test/lua/build_sw_battle_return_roms.mjs" "$OUT_DIR/break" --break=wrong-restore-slot || exit 1
-timeout 60 "$MESEN" --testRunner "$OUT_DIR/break/sw_battle_return_check.lua" "$OUT_DIR/break/battle_return.nes" >"$OUT_DIR/break/out.log" 2>&1
+mesen_run 60 "$MESEN" "$OUT_DIR/break/sw_battle_return_check.lua" "$OUT_DIR/break/battle_return.nes" "$OUT_DIR/break/out.log"
 breakResult=$?
 cat "$OUT_DIR/break/out.log"
 EXIT_RESTORATION_IDENTITY=11
