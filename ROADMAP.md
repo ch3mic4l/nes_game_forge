@@ -20,18 +20,20 @@ Two things are deliberately *not* on it:
 - **A full character generator.** RPG Maker's is enormous and assumes arbitrary bitmaps. The
   NES-shaped version of the same idea is item 8, and it is much smaller.
 
-Ordering: items 1 and 2 are where the leverage is. 2 is cheap and touches no ROM; 1 is the one that
-changes what a non-programmer can build.
+Ordering: items 1 and 2 were where the leverage was, and both are now done. 2 was cheap and touched no ROM; 1 was the one that
+changed what a non-programmer can build.
 
 ---
 
-## 1. Event system 2.0
+## 1. Event system 2.0 — **done**
 
 The vocabulary was the constraint. When this was written there were four page conditions
 (`EVENT_CONDITIONS`) and seven commands (`EVENT_COMMANDS`, minus `end`) in `shared/project.js`, and
 quests, shops, puzzles, cutscenes and boss fights were all reachable only through the Code Forge.
-There are now seven conditions and 21 commands, and every one of them is implemented end to
-end — that invariant holds and must keep holding.
+By the time this item closed there were seven conditions and 21 commands, and every one of them was
+implemented end to end — that invariant still holds and must keep holding, and item 6 has since
+grown `EVENT_COMMANDS` well past 21, so read the arrays in `shared/project.js` for the live figure
+rather than this sentence.
 
 - ~~Named 8-bit **variables** alongside the existing 64 switches (counters, quest stages, flags with
   more than two states)~~ — **done**: 16 of them, with Set/Add/Subtract commands and *is* / *is at
@@ -94,8 +96,8 @@ end — that invariant holds and must keep holding.
   never going to move — nothing else in the world is running. This is the piece item 6's movement
   routes are built out of: a route is this with a list of steps instead of one.
 
-  It is also where this list ran into the wall it was always going to: **Move is ~395 bytes and the
-  kernel bank had 161 free.** Measured on a clean tree, `sample-rpg` with one Save command leaves 161
+  It is also where this list ran into the wall it was always going to: **Move was ~395 bytes and the
+  kernel bank had 161 free.** Measured on the clean tree at that time, `sample-rpg` with one Save command left 161
   free bytes in the kernel-lo bank on MMC3, 353 on MMC1. Assembling Move unconditionally did not
   tighten the capacity check, it overflowed the bank and failed the assembler for projects that never
   use the command. So it is gated on `MOVE_ENABLED` the way save.asm is on `SAVE_ENABLED`, and
@@ -103,9 +105,13 @@ end — that invariant holds and must keep holding.
   before the command existed.
 
 Every addition here lands in four places at once — `EVENT_COMMANDS`, the schema and normalizer, the
-compiler in `main/build/generate.js`, and `engine/script.asm` — and each one costs kernel bytes,
-which `KERNEL_CODE_BYTES` in `generate.js` has to account for. Variables also need a home in
-`engine/constants.asm` and a slot in whatever save record item 4 defines.
+compiler (originally in `main/build/generate.js`, now in `main/build/textcompile.js`, which the
+generator calls), and `engine/script.asm` — and each one costs kernel bytes, which `kernelCodeBytes`
+in `generate.js` has to account for (this paragraph was written when that was a single
+`KERNEL_CODE_BYTES` constant; the function now sums the base cost and gated feature and interaction
+allowances). Variables also
+needed a home in `engine/constants.asm` (`variables`, sized by `NUM_VARIABLES`) and a slot in the
+save record item 4 went on to define, which they got: `{ ram: 'variables', ... }` in `shared/save.js`.
 
 ## 2. Event-authoring productivity — **done**
 
@@ -647,7 +653,7 @@ one is now a measured fact rather than a forecast:
   specific string would be a real, cheap, buildable improvement, not one blocked by any bank's
   capacity — it simply has not been judged worth doing yet.
 
-## 6. Cutscene and presentation commands
+## 6. Cutscene and presentation commands — **done**
 
 Event pages become dramatically more capable with a handful of presentation verbs, none of which
 need anything the PPU cannot do:
@@ -664,7 +670,7 @@ need anything the PPU cannot do:
   sound effect shipped too, as the `Sfx` command (`OP_SFX`) — see the costing below.
 - ~~**Show / hide** an actor~~ — shipped
 - ~~**Change a tile or metatile** on the current screen~~ — shipped
-- Basic **camera / scroll** control — split into its own item, see item 12 below
+- ~~Basic **camera / scroll** control~~ — split into its own item, and **done** there; see item 12 below
 
 Two engine constraints shape all of these: nothing but `text.asm` may write to the nametable while
 rendering is on, so any tile change goes through the `vram_buf` queue — the legacy producers (a
@@ -674,13 +680,14 @@ each cell costing two small packets (`flip_emit_packet`'s top-row and bottom-row
 header plus a 2-byte body each) rather than one 32-byte row; and a fade or a flash is a palette write,
 which is a vblank job.
 
-**This item is blocked in a way items 1-5 were not, and it was measured rather than estimated before
-anything was built.** All seven verbs are kernel-lo code, and that bank has almost nothing left:
-`sample-rpg` with a live `Save` and a live `Move`, on MMC1, is nesasm's own measured
-**`7972/220`** (used/free, bank 14) — and on MMC3 the same combination is already refused before
-nesasm ever runs (`checkCapacity`: "the lookup tables need 129 bytes but only 118 are free"). 220
-bytes on the board's *better* case is the entire budget item 6 has to work inside, before a single
-verb is built. (Re-measured against the current tree — this was `7969/223`/"only 121 are free" before
+**This item was blocked in a way items 1-5 were not, and it was measured rather than estimated before
+anything was built.** All seven verbs were kernel-lo code, and that bank had almost nothing left (at
+the time of this measurement, before the zero-page kernel diet — see the pre-diet note under the
+structural question below): `sample-rpg` with a live `Save` and a live `Move`, on MMC1, was nesasm's own measured
+**`7972/220`** (used/free, bank 14) — and on MMC3 the same combination was already refused before
+nesasm ever ran (`checkCapacity`: "the lookup tables need 129 bytes but only 118 are free"). 220
+bytes on the board's *better* case was the entire budget item 6 had to work inside, before a single
+verb was built. (Re-measured against the pre-diet tree at the time — this was `7969/223`/"only 121 are free" before
 `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, added 3 more unconditional kernel-lo bytes
 to every RPG build; the "before anything was built" framing describes the methodology this section
 used, not a frozen historical snapshot, and the live figure below draws its own "121 bytes left"
@@ -779,10 +786,10 @@ conclusion from this same 220, not the stale 223.)
   `STING_KERNEL_ALLOWANCE_STANDALONE` 160, `.if STING_ENABLED`-gated so a Sting-free project pays none
   of it, plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15, `.if AUDIO_FX_ENABLED`-gated instead so an
   SFX-only project pays it too — summing to the same 175 for a Sting-only project, so every figure in
-  this paragraph still holds.) Those 175 bytes are why MMC3 now has a
+  this paragraph still held at that stage.) Those 175 bytes were why MMC3 then had a
   third documented-limitation refusal (`sample-rpg` with Save, Move and a live Sting, no item —
   tested in `kernelbytes.test.js`), and on an MMC3 project whose sole live event is a Sting-only
-  command, `kernelShortfallAdvice` correctly frees 175 + 165 = 340 bytes together via the dependent
+  command, `kernelShortfallAdvice` then correctly freed 175 + 165 = 340 bytes together via the dependent
   `SPLIT_KERNEL_ALLOWANCE` term. See `handoff-sting/design-sting.md` for the full design
   and CLAUDE.md's own `sting_snapshot`/`sting_restore`/`sting_tick` passage for the mechanism. ~~A true
   **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
@@ -916,7 +923,7 @@ rather than on an impossibility that turned out not to be real.
 `Sting` and switch-bound tiles all shipping, and only ever costed `Turn`/`Wait`/`Show`/`Hide` against
 the MMC1 worst case.** It is kept rather than deleted per this file's own convention for superseded
 analysis, followed by what the fuller picture looks like now. On MMC1's worst measured case
-(`Save`+`Move`, **220 bytes free** — re-measured against the current tree; 3 fewer than this section
+(`Save`+`Move`, **220 bytes free** — re-measured against the pre-diet tree at the time; 3 fewer than this section
 first recorded, because `battle_end`'s own talk_ent fix above is unconditional kernel-lo cost on every
 RPG build, including this one): `Turn`+`Wait` cost **99 bytes, measured**, not the ~50-80 this section
 estimated before either was built — leaving **121 bytes**, not the ~140-170 the estimate implied.
@@ -927,7 +934,7 @@ that worst case (`Turn`+`Wait`, `Show`/`Hide`), not merely "probably" any more, 
 room is tighter than the pre-implementation estimate suggested, and planning the next verb off that
 estimate rather than the measured 72 would overstate how much is actually left. Without `Save`+`Move`
 active, `sample-rpg` as checked in measured nesasm's own **`6818/1374`** free on the same board
-(re-measured against the current tree; 3 fewer than this section first recorded, the identical
+(re-measured against the pre-diet tree at the time; 3 fewer than this section first recorded, the identical
 `battle_end` cost above, not an arithmetic adjustment of the old number) — comfortably fits all six
 smaller verbs' combined high end (~700-900 bytes, excluding camera/scroll) with margin. MMC3's worst
 case is already negative before item 6 exists at all. So "does not compose indefinitely" (CLAUDE.md)
@@ -1962,7 +1969,8 @@ passage in *The battle system* carry the mechanism; it is not repeated here. Fix
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
    piece of item 3~~ — **done**
 2. ~~Variables, branching, choices, triggers, common events — item 1~~ — **done**: `EVENT_COMMANDS`
-   and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, 21 commands to seven
+   and `IMPLEMENTED_COMMANDS` in `shared/project.js` were then identical, 21 commands to seven
+   (both have since grown with item 6; they now differ only by `end`, which is never authored)
 3. ~~SRAM save/load — item 4~~ — **done**, one slot
 4. ~~Items, equipment, status effects, battle testing — item 5~~ — **done** (growth profiles shipped last; classes remain)
 5. ~~Movement routes and the audiovisual cutscene commands — item 6~~ — **done**
@@ -1974,7 +1982,8 @@ of this section is about.
 
 Item 15 (large streamed worlds) is done: it shipped through phase 3b, and phase 4 gave the Map Forge a Streamed checkbox, size fields, a streamed-aware Duplicate screen and a world overview (see its status block).
 
-**The kernel bank is the constraint on everything below this line, and it is close to full.** Move
+**The kernel bank was the constraint on everything below this line, and it was close to full** (the
+figures in this paragraph are pre-diet history; see the zero-page kernel diet note further down). Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
 conditional. A project with both Save and Move reserves 7745 of 8192 on UNROM 512, the worst of the
 three RPG-capable boards — refused outright there, by `checkCapacity` before nesasm ever runs, once
@@ -2034,10 +2043,10 @@ cost 76 real bytes of kernel-lo (`ITEM_KERNEL_ALLOWANCE` 16 +
 before implementation) plus a further 17 in the separate banked battle-code region. That kernel-lo
 cost is exactly what this
 paragraph predicted would happen: `sample-rpg` with Save and Move on MMC3 now refuses for real, by 11
-bytes (re-measured against the current tree — `battle_end`'s own talk_ent fix, item 6's Turn/Wait
+bytes (re-measured against the pre-diet tree at the time — `battle_end`'s own talk_ent fix, item 6's Turn/Wait
 slice, added 3 more unconditional bytes on top of the 8 this paragraph originally recorded) —
 this one is not blocked on finding a diet or a banked region, unlike camera/scroll (item 12), which
-still has no built mechanism to even measure: the refusal is accepted as a documented limitation
+at the time still had no built mechanism to even measure (it has one now, item 12, done): the refusal is accepted as a documented limitation
 (`checkCapacity` still offers dropping Move, dropping Save, or switching to MMC1), not a gate on
 shipping. (The persistent-tile-change comparison this sentence used to draw no longer applies: that
 reading shipped as switch-bound tiles, and item 6's own section above and CLAUDE.md now measure its
