@@ -1016,16 +1016,16 @@ a bigger version of the same thing.~~ — **done**: see item 12 below.
   further engine cost, exactly as the costing above already separated out. See the costing bullet
   above and CLAUDE.md's own routes note for the mechanism.
 
-## 7. Map organization and reuse
+## 7. Map organization and reuse — **done**
 
 The Map Forge already has stamp, rectangle, fill, picker, start and actor tools
-(`renderer/forges/map/map.js:31`). What it lacked was everything about handling *many* maps. All six
+(`TOOLS` in `renderer/forges/map/map.js`, which has since gained Select, Bind and Test). What it lacked was everything about handling *many* maps. All six
 items below are now complete: duplicate, copy/paste, folders and safe reorder shipped as
 `de19269`, in five reviewed phases against `handoff-maporg/design-maporg.md`; named screens
-predated item 7 (landing with item 2) and this commit added only their ambiguity warnings; the
+predated item 7 (landing with item 2) and item 7 added only their ambiguity warnings; the
 sixth, the world overview, was deliberately sliced out and then shipped as the World view in two
-commits, C1 `eb3c254` and C2 (the last bullet below), so item 7 is done. CLAUDE.md's own item-7 passage (near
-`renderer/store.js`) carries the mechanism; it is not repeated here.
+commits, C1 `eb3c254` and C2 (the last bullet below), so item 7 is done. The mechanism's own passage (in CLAUDE.md, near
+`renderer/store.js`, when this was written; now in `docs/reference-electron-layout.md`) carries it; it is not repeated here.
 
 - ~~**Duplicate** a screen or a whole map~~ — **done**: a whole map (`duplicateMapCore`), and a
   single screen by three routes — grow the destination map to fit it, pick a different map with
@@ -1047,7 +1047,7 @@ commits, C1 `eb3c254` and C2 (the last bullet below), so item 7 is done. CLAUDE.
   would refuse.
 - ~~A **world overview** showing starts, warps and event markers~~ — **done**, as the Map Forge's **World**
   view (`docs/design-world-overview.md`): commit C1 `eb3c254` built the view, its layout, the start and title
-  markers and navigation; C2 (this commit) added doors, warps, events and talkers as markers, the links between
+  markers and navigation; C2 `37ca96f` added doors, warps, events and talkers as markers, the links between
   screens with their modes and filters, and following a link or a marker. Renderer-only, read-only. It was sliced
   out of the design (§12) until folders had settled. Item 7 is done.
 
@@ -1061,7 +1061,7 @@ growth-routed screen duplicate); region paste has its own commit-free core (`pas
 never calls it, and a folder or screen-name edit is a plain metadata write, not a remapping core at
 all. It also turned out to be the fix for two already-shipped bugs, not just new work: Delete Map and
 Resize Map had been restructuring `project.maps` with zero reference repair since they first shipped,
-and item 7 is the retrofit that finally repairs them. The suite grew from 880 to 914 tests — 34 new
+and item 7 was the retrofit that finally repaired them. The suite grew from 880 to 914 tests — 34 new
 `test(...)` declarations added to `test/unit/project.test.js` and none removed (`git diff -U0
 de19269^ de19269`), not the commit message's own "914 (from 891)"/"27 plus five controls," which
 does not square with either the diff or the parent commit's own reported count. Reading the 34
@@ -1467,12 +1467,12 @@ item 15's own world-scale half is what remains, no longer blocked on this item's
 
 ---
 
-## 13. The Magic Forge
+## 13. The Magic Forge — **done**
 
 Users create magic spells: set their **animations**, **damage/heal ranges**, the **type of magic**
-(damage, status effect, or heal), and the **damage type** (fire, ice, wind, water, holy, dark). Part
-of this is real machinery already shipped and only needs a home of its own; part is genuinely new. The
-item states which is which rather than reading as one undifferentiated feature.
+(damage, status effect, or heal), and the **damage type** (fire, ice, wind, water, holy, dark). When this item was written, part
+of this was real machinery already shipped and only needed a home of its own; part was genuinely new. The
+item records that distinction; both parts have since shipped.
 
 **Already exists.** `project.spells` (`shared/project.js`, cap `RPG_LIMITS.spells = 32`) is a real,
 compiled record today — `{id, name, mpCost, kind, amountMin, amountMax, element, scope}`
@@ -1481,7 +1481,7 @@ cost, kind, a min/max amount range, element, scope — sub-item 1 below), with w
 member learns at which level on the Character Forge
 (`renderer/forges/character/character.js`) — one bitmask byte per member per level, up to
 eight spells each (`battletables.js`).
-`SPELL_KINDS` (damage / heal / poison) is already append-only wire format (`SK_*` in
+`SPELL_KINDS` (originally damage / heal / poison; now also burn, added in sub-item 4) is append-only wire format (`SK_*` in
 `engine/constants.asm`), and poison is already a real status effect, not a placeholder: it ignores
 `amountMin`/`amountMax` and deals a fixed 2 HP after each of the victim's turns until cured by a
 heal or the battle ends (`pc_status`/`mon_slot_status`, ticked by `battle_message_done`).
@@ -1491,17 +1491,18 @@ tables (`battletables.js`), applied by `battleturn.asm`'s spell-damage rule: hal
 weakness, half into a strength ("elements only describe monsters" — the party carries no weakness of
 its own). `SPELL_SCOPES` (one / all) is likewise live both ways: monsters cast the same spells the
 party does (`cast_spell`/`cast_heal`/`cast_all` take either side, `other_side` decides reach). Item 5's
-own scope list already names "Skills and their effects" and "Status conditions (poison is already a
-status bit; this generalizes it)" as bullets its shipped phases never started: item 5 itself is "done,
+own scope list named "Skills and their effects" and "Status conditions (poison is already a
+status bit; this generalizes it)" as bullets its shipped phases never started: item 5 itself was "done,
 for items" — its Items Forge shipped, while skills and status-condition generalization stayed
-unbuilt (equipment was built afterwards, item 5 above), open roadmap items of their own (item 5's own accounting, above) — this item is where
-those two still-open threads pick up, not a new one.
+unbuilt at the time (equipment was built afterwards, item 5 above), open roadmap items of their own (item 5's own accounting, above) — this item is where
+those two then-open threads were picked up, not a new one, and both were built here: spells are the
+skills (sub-item 1 below) and a second status bit joined poison (sub-item 4).
 
 The precedent for pulling this authoring surface out into its own Forge is item 5's own Items Forge
 (`renderer/forges/items/items.js`): one `FORGES` entry in `renderer/app.js` — the single writer for
 which Forges exist — visited by `npm run smoke` via `app.forgeIds`, documented in CLAUDE.md. A Magic
-Forge is the same shape: move spell authoring out from under the Sprite Forge's battle page into its
-own place in the rail. Per-member learned-spell editing stays on the Character Forge (sub-item 1
+Forge was to be the same shape: move spell authoring out from under the Sprite Forge's battle page into its
+own place in the rail (sub-item 1 below records that it shipped). Per-member learned-spell editing stays on the Character Forge (sub-item 1
 below), cross-linked to the Magic Forge — the catalog and who has learned what are different
 questions, and only the first one is a spell's own.
 
@@ -1510,16 +1511,25 @@ The current battle routines (`engine/battle.asm`, `battleui.asm`, `battleturn.as
 live in the **banked battle region**, not kernel-lo — unlike item 6's verbs, which had to fight
 kernel-lo's exhausted margin (above), this region has its own separate, exact capacity check
 (`battleRegionBytes`, `BASE_BATTLE_CODE_BYTES_BY_MAPPER`, `BATTLE_SLACK`,
-`test/unit/bankedbytes.test.js`) and roughly 4 KB of stock code in its 8 KB ceiling today. Most
-conventional battle-side additions — new fields on a spell or a monster, new table rows — are expected
-to draw from that same headroom. Animation is the one exception this item cannot promise a placement
-for yet: `draw_metasprite` (`engine/entities.asm`) is banked-region-adjacent code the way the rest of
+`test/unit/bankedbytes.test.js`) and, when this was written, roughly 4 KB of stock code in its 8 KB
+ceiling. (Re-measured on 2026-10-25 with a real build of `sample-rpg` on each RPG-capable board: the
+stock code is now `BASE_BATTLE_CODE_BYTES_BY_MAPPER` 3,841 bytes on MMC1 and UNROM 512 and 3,881 on
+MMC3, and `sample-rpg` as checked in assembles that region to 5,132 / 5,172 bytes used, nesasm's own
+3,060 / 3,020 free, against a ceiling that holds `BATTLE_SLACK` 20 of the 8,192 back. The "roughly 4 KB"
+was the right order of magnitude and has drifted down, not up.) Most
+conventional battle-side additions — new fields on a spell or a monster, new table rows — were expected
+to draw from that same headroom, and the shipped ones did (`MAGIC_POWER_BATTLE_ALLOWANCE`,
+`MAGIC_DEFENCE_BATTLE_ALLOWANCE`, `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE`, the amount-range tables).
+Animation was the one exception this item could not promise a placement
+for at the time: `draw_metasprite` (`engine/entities.asm`) is banked-region-adjacent code the way the rest of
 the engine's entity drawing is, but `PALETTE_FX` reuse is not — `PALETTE_FX_KERNEL_ALLOWANCE`
 (`main/build/generate.js`) is real kernel-lo cost, with its own gated code in `engine/entities.asm` and
-`engine/boot.asm`'s NMI. Whichever mechanism the shared animation design (below) actually picks decides
-which bank pays for it, and that stays open until it does. Anything the 6502 would need a multiply for
+`engine/boot.asm`'s NMI. Whichever mechanism the shared animation design (below) actually picked decided
+which bank paid for it, and that is settled: sub-item 2 records the metasprite-flipbook mechanism, which
+is entirely banked-region code with no kernel-lo change (`docs/design-battle-animation.md`, which
+measured it at 243 bytes when it shipped), not `PALETTE_FX` reuse. Anything the 6502 would need a multiply for
 is precomputed into tables by `battletables.js` rather than computed at runtime, which is also where
-this item's own new table bytes would land and grow.
+this item's own new table bytes landed and grew.
 
 **Genuinely new in this item:**
 
@@ -1575,7 +1585,7 @@ this item's own new table bytes would land and grow.
    commits to.
 6. ~~**A caster stat and a target stat for spell damage/healing** — magic power and magic defence,
    one unit of work, not two: designed, priced, gated and tested together in
-   `docs/design-magic-power.md` v7.~~ — **done** (this change, on top of phase 1 `aeb19b8` and phase 2
+   `docs/design-magic-power.md` v7.~~ — **done** (`70f2db8`, on top of phase 1 `aeb19b8` and phase 2
    `2d6897c`): `baseMag`/`magPerLevel` and `baseMdef`/`mdefPerLevel` on a party member,
    `battle.mag`/`battle.mdef` on an actor; compiled into `pc_mag_at`/`mon_mag` and
    `pc_mdef_at`/`mon_mdef` (`main/build/battletables.js`) and read by `combatant_mag`/`combatant_mdef`
@@ -1586,7 +1596,7 @@ this item's own new table bytes would land and grow.
    (`MAGIC_POWER_BATTLE_ALLOWANCE`/`MAGIC_DEFENCE_BATTLE_ALLOWANCE`). Authored on the Character
    Forge's Magic / Magic defence rows and the Monster Forge's Magic / Magic defence fields (phase 2);
    shipped with real values on the RPG starter alone — Hero's own `baseMag`/`magPerLevel`
-   and Slime/Bat's own `mdef` (this phase) — no checked-in fixture opts in. See
+   and Slime/Bat's own `mdef` (that phase) — no checked-in fixture opts in. See
    `docs/design-character-forge.md` §5 for where the caster-stat request was first recorded and
    deferred, and item 14 below for the Monster Forge, which owns the actor `battle` record both
    fields live on. A monster's own *list* of spells — as opposed to the caster stat spent casting
@@ -1594,7 +1604,7 @@ this item's own new table bytes would land and grow.
 
 ---
 
-## 14. The Monster Forge
+## 14. The Monster Forge — **done**
 
 Set monsters' **animations**, **tile maps for RPG battles**, **sprites for the overworld**, **HP**,
 **MP**, **magic resistances and weaknesses**, **how much damage they do**, **how much MP they have**,
@@ -1642,7 +1652,7 @@ monsters the way item 5's shipped phases were for items.
 - The monster's own **spell list**: `spellIds` → `mon_spell`, an empty list meaning it only ever
   swings (`monster_turn`, `engine/battleturn.asm` — a uniform pick among whichever listed entries
   it can currently afford, duplicates counting as weighting, drawn before the same coin flip
-  between casting and attacking) — worth naming here since item 13 is where spells themselves get
+  between casting and attacking) — worth naming here since item 13 is where spells themselves got
   their Forge. See sub-item 4 below for the several-spells generalization.
 
 **Genuinely new in the user's ask:**
@@ -1688,7 +1698,7 @@ monsters the way item 5's shipped phases were for items.
    input (below); still no compiled-byte reader anywhere under `main/build/` or `engine/`, proved
    ROM-neutral by `test/unit/monsterlevel.test.js`'s same-tree byte-identical comparison of
    changing Level without re-deriving. Phase 3 — the "Derive from level…" action — is also **done**
-   (this change, `docs/design-monster-level-scaling.md`): a Monster Forge modal fills
+   (`1fe4000`, `docs/design-monster-level-scaling.md`): a Monster Forge modal fills
    Attack/Defence/Magic/Magic defence/Magic points/Experience/Gold from a Base plus growth-per-level
    pair, collapsed into the existing flat `battle.*` fields at Apply time — no new schema, no
    compiled reader of Level or the growth inputs themselves (the flat output fields already have
@@ -1698,7 +1708,8 @@ monsters the way item 5's shipped phases were for items.
    `hp` stays excluded per the Forge boundary above. The seed-value picker once deferred here is
    done (`docs/design-monster-derive-seed.md`): a "Start from" select that seeds the Derive modal's
    Base / `+ / level` rows from another monster or a party member, renderer-only with no ROM change. A live scaling curve — continuous, not this
-   one-time collapse — remains undesigned; nothing here commits to one.
+   one-time collapse — is a recorded idea outside this item's scope: it was never designed, and nothing
+   here commits to one.
 3. ~~**Battle-side animations** — battle art is a static block today, with no motion and no
    attack/cast animation on a monster at all. This shares the same open "what is an animation on the
    battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.
@@ -1711,12 +1722,13 @@ monsters the way item 5's shipped phases were for items.
 4. ~~**A monster's own spell list** — several spells, weighted by duplicate entries, picked
    uniformly among the affordable ones, replacing the single `battle.spellId` it has today;
    designed, priced, gated and tested in `docs/design-monster-spell-list.md` v9.2.~~ — **done**
-   (`d442aa7`, `89355a1`, this change): `battle.spellIds`, an array of up to
+   (`d442aa7`, `89355a1`, `b1ea0d4`): `battle.spellIds`, an array of up to
    `RPG_LIMITS.monsterSpells` (4) real spell ids, duplicates kept as weighting rather than
    deduplicated; `monster_turn` (`engine/battleturn.asm`) picks uniformly among whichever listed
    entries the monster can currently afford before the existing cast-or-attack coin flip. Gated by
    `MONSTER_SPELL_LIST_ENABLED`/`projectUsesMonsterSpellList` (some actor's `spellIds` has two or
-   more entries), with `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (153, flat on every RPG-capable board)
+   more entries), with `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (153 when it shipped, 125 after the zero-page kernel diet
+   re-measured it; flat on every RPG-capable board)
    in the banked battle region and the N-stride `mon_spell` table kept under its old, single-spell
    name so the off-path body reads it unchanged — off on all six checked-in fixtures, byte-identical
    ROMs. Authored on the Monster Forge's four selects (`Casts`/`Also`/`or`/`or`), whose trailing-
@@ -1737,9 +1749,9 @@ monsters the way item 5's shipped phases were for items.
    forward first (`BP_WALK`), always on. `animationSelect` is the one picker Magic, Monster and
    Character all render. See `docs/design-battle-animation.md` §16.
 
-**Shared with item 13, not repeated here**: which bank future engine work in either Forge would draw
-from — item 13's own paragraph above, which this item's battle-side animations (point 3) are equally
-subject to, not a separate claim; and item 5's scope list is where both Forges' threads originate.
+**Shared with item 13, not repeated here**: which bank the engine work in either Forge drew
+from — item 13's own paragraph above (settled there: the banked battle region), which this item's battle-side animations (point 3) were equally
+subject to, not a separate claim; and item 5's scope list is where both Forges' threads originated.
 
 ---
 
