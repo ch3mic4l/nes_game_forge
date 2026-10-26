@@ -429,8 +429,8 @@ system grows. Distinct compact records for:
 
 - Items and key items
 - ~~Weapons and armor, and equipment slots~~ — **built** (equipment, `docs/design-equipment.md`; growth profiles `docs/design-growth-profiles.md`; classes remain)
-- Skills and their effects
-- Status conditions (poison is already a status bit; this generalizes it)
+- ~~Skills and their effects~~ — **built** as spells (`project.spells`, `SPELL_KINDS`, the Magic Forge; item 13)
+- ~~Status conditions (poison is already a status bit; this generalizes it)~~ — **built**, narrowly: `STATUS_BURN` joined `STATUS_POISON` as a second independent bit (`engine/constants.asm`; item 13 sub-item 4, `docs/design-status-effects.md`). Two status bits, not a general status database
 - ~~Enemy groups / encounter tables~~ — **built** (encounter groups, `docs/design-encounter-groups.md`)
 - ~~Classes, or selectable growth profiles~~ — **growth profiles built** (named linear / early / late curves a party member can use, `docs/design-growth-profiles.md`). Still open and deferred: classes as authored data (a class's spell list and equipment restrictions) and a runtime class change
 
@@ -440,8 +440,8 @@ anything the 6502 would otherwise need a multiply for.
 
 Staged in six phases. Phases 1 and 2 landed in the opposite order to their numbering — the
 renumbering defects were found while scoping the rest and fixed first, so phase 2's commit precedes
-phase 1's. Phases 1 through 5 are now built; phase 6 (docs) is current for the developer-facing half
-and still owes an author-facing sentence.
+phase 1's. All six phases are built; phase 6 (docs) is marked done below, with its author-facing
+sentence in three places.
 
 - ~~**1. A capacity check for the banked battle region**~~ — **done** (`f7f3f28`). The 8 KB region
   `codeRegions()` takes off the switchable window had no bound on it at all: overflowing it was
@@ -457,14 +457,14 @@ and still owes an author-facing sentence.
   slid into the vacated number. Fixed before the database work rather than after, because phase 3
   moves two of those references to a new id space and carrying a known repointing bug across that
   move would make it far harder to see.
-- **3. `project.items[]`, and nothing else.** The schema, `normalizeProject`, the actor/item
+- ~~**3. `project.items[]`, and nothing else.**~~ — **done** (`f1222ee`). The schema, `normalizeProject`, the actor/item
   discriminator, the migration and its compatibility matrix, `validateProject`'s rules, and
   `renumberItemDeletion` — with `battle.drop` and Give/Take **moved out of** `renumberActorDeletion`
   rather than duplicated, since two functions renumbering the same reference is how the two answers
   drift apart. Plus the metasprite-deletion coupling and `firstPickup()` in `templates.js`.
   Deliberately **no engine change**: the ROM should assemble byte-for-byte identically at the end of
   this phase, which is a check worth actually running.
-- **4. The engine side.** Turned out to need its own budget prerequisite and then a split, once real
+- ~~**4. The engine side.**~~ — **done** (`9eda25f`, `ec8eb4b`, `a71a119`). Turned out to need its own budget prerequisite and then a split, once real
   measurement (below) showed why — three slices, not one:
   - ~~**4a. The kernel budget prerequisite**~~ — **done** (`9eda25f`). A titleless RPG was being
     charged 212–224 bytes of kernel-lo for title-screen code it never assembled
@@ -537,9 +537,11 @@ and still owes an author-facing sentence.
   slots per party member, ATK/DEF/MAG/MDEF bonuses, a bindable Equip action that opens an in-game
   Equip screen, the authoring UI, and the B-press and physical-damage fixes it carried; commits C1b to
   C6d, `docs/design-equipment.md`). **Encounter groups were built after that** (named groups in the Monster Forge, a per-map weighted table in the Map Forge,
-  per-map legacy dispatch; `docs/design-encounter-groups.md`). Skills, status-condition generalization and
-  classes (spell lists, equipment restrictions, a runtime class change) — the rest of this phase's original scope (line-for-line,
-  above) — are not built and stay open roadmap items of their own if this generalizes further. **Selectable growth profiles were built last**
+  per-map legacy dispatch; `docs/design-encounter-groups.md`). Skills and status-condition generalization,
+  which this paragraph once listed as not built, were built afterwards as item 13's spells and second
+  status bit. Only classes (spell lists, equipment restrictions, a runtime class change) — the rest of
+  this phase's original scope (line-for-line, above) — are not built and stay an open roadmap item of
+  their own if this generalizes further. **Selectable growth profiles were built last**
   (named linear / early / late curves per stat in the Character Forge; `docs/design-growth-profiles.md`).
 - **6. Docs** — **done**. The developer-facing half (CLAUDE.md, this file) is current as of phase
   4c's own implementation. The author-facing half now has a standing, true sentence in three places
