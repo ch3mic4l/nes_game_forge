@@ -98,6 +98,7 @@ import {
   reconcileCartridge,
   validateProject,
   RPG_LIMITS,
+  createGrowthProfile,
   projectUsesNameEntry,
   projectUsesNameToken,
   projectWithoutNameToken,
@@ -373,6 +374,18 @@ test('every RPG-capable board’s measured base equals nesasm’s own usage minu
     ['maxLevel 5', (p) => { p.rpg.maxLevel = 5; }],
     ['+1 party member', (p) => {
       p.party.push({ ...structuredClone(p.party[0]), id: p.party.length, name: 'DUDE', startsInParty: false });
+    }],
+    // Build-time classes (ROADMAP item 5; design-classes): a class resolves to numbers the generator already writes, so a classed project
+    // costs exactly its (unchanged-size) tables -- no allowance row, no engine byte.
+    ['two members assigned a class', (p) => {
+      p.growthProfiles = [createGrowthProfile(0, 'Fighter'), createGrowthProfile(1, 'Caster')];
+      p.growthProfiles[0].hp = { base: 40, perLevel: 7, shape: 'early' };
+      p.classes = [
+        { id: 0, name: 'Knight', profileId: 0, spells: [{ spellId: p.spells[0].id, level: 2 }] },
+        { id: 1, name: 'Sage', profileId: 1, spells: [{ spellId: p.spells[1].id, level: 1 }] }
+      ];
+      p.party[0].classId = 0;
+      p.party[1].classId = 1;
     }]
   ];
 

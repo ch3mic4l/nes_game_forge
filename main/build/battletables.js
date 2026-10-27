@@ -61,6 +61,7 @@ import {
   memberStatAt,
   memberClass,
   memberSpellList,
+  memberMayWear,
   projectWithoutNameToken,
   projectWithoutMonsterSpellList,
   projectUsesBattleAnimation,
@@ -334,7 +335,11 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
     const items = project.items ?? [];
     const piece = (pick, none = 0) => items.map((item) => (item.equip ? pick(item.equip) : none));
     chunks.push(`eq_slot:\n${dbRows(piece((equip) => equip.slot, 0xff))}`);
-    chunks.push(`eq_who:\n${dbRows(piece((equip) => equip.usableBy & 0xff))}`);
+    // One bit per member that memberMayWear (member bit AND class mask); bits above the party length pass through unchanged, so a
+    // project with no class masks keeps exactly `usableBy & 0xff`.
+    const partyBits = (1 << party.length) - 1;
+    const who = items.map((item) => (item.equip ? party.reduce((mask, _, m) => mask | (memberMayWear(project, item, m) ? 1 << m : 0), item.equip.usableBy & ~partyBits & 0xff) : 0));
+    chunks.push(`eq_who:\n${dbRows(who)}`);
     chunks.push(`eq_atk:\n${dbRows(piece((equip) => equip.atk))}`);
     chunks.push(`eq_def:\n${dbRows(piece((equip) => equip.def))}`);
     if (projectUsesEquipmentMag(project)) chunks.push(`eq_mag:\n${dbRows(piece((equip) => equip.mag))}`);
@@ -450,7 +455,7 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   // level, so up to eight spells each. Spells are learned and never forgotten.
   const known = party.flatMap((member) => {
     const learned = new Array(rpg.maxLevel).fill(0);
-    for (const entry of member.spells ?? []) {
+    for (const entry of memberSpellList(project, member)) {
       const slot = spells.findIndex((spell) => spell.id === entry.spellId);
       if (slot < 0 || slot > 7) continue;
       for (let level = Math.max(1, entry.level); level <= rpg.maxLevel; level++) {

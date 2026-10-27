@@ -453,8 +453,10 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // Re-pinned for classes C1 fix 1: audited -- `git diff -U0 shared/project.js` against the first C1 pin is one hunk in validateProject (the two item-mask
 // diagnostics no longer wait for a non-empty class table); remapScreenReferences, projectEvents and allCommands are untouched and no stored screen
 // reference is added.
+// Re-pinned for classes C2: audited -- `git diff -U0 shared/project.js` against the C1 pin is growthRecord (the class's profile is read first) and the
+// doc comment of effectiveGrowth; remapScreenReferences, projectEvents and allCommands are untouched and no stored screen reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': '1da5b9b8e68fa02915a14afd407d6f9d4a6e424c5a8ed4875d7e0efbc495bfca',
+  'shared/project.js': '7f124f07797b909291f35f06d35b54326cd057994820807317d604ddeb4b772f',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 

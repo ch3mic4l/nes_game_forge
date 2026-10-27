@@ -3,8 +3,8 @@
 // UNROM 512} x four gate scenarios -- each built as a set of HAND-RESOLVED, UNCLASSED projects (only profileId / spells / usableBy set by hand
 // to what a class will resolve to). Independent oracles read the generated pc_hp/mp/atk/def/mag/mdef_at, pc_spells_at, eq_who and
 // config.inc's MAGIC_*_ENABLED against an expectation written in the harness, and header byte 6 against a value derived from the iNES
-// spec. C2 adds the classed twin of each variant and its ROM-equality tests beside these; it changes nothing here (see the header of
-// test/lib/classcases.js).
+// spec. C2 added the classed twin of each variant (`classedTwin`) and its tests, further down this file ("classed twins (C2)"); the tests
+// above them are C0's and did not change (see the header of test/lib/classcases.js).
 //
 // Why one named test per oracle group: a sabotage (a wrong generator) must die in a test whose name says what it broke, and from C2 each of
 // the nine prototype sabotages must die on the oracle reads ALONE, with every ROM-to-ROM comparison removed. The groups call the same
@@ -23,6 +23,7 @@ import {
   assertStats,
   buildCase,
   caseSpecs,
+  classedTwin,
   checkGates,
   checkGrowth,
   checkHeader,
@@ -31,6 +32,7 @@ import {
   checkWho,
   expectedHdr6,
   readRom,
+  readTables,
   variantKeysOf
 } from '../lib/classcases.js';
 
@@ -46,6 +48,14 @@ const romOf = (c, key) => {
 async function eachCase(fn) {
   for (const spec of caseSpecs()) await fn(await buildCase(spec.base, spec.board, spec.scenario));
 }
+const twinReads = new Map();
+const twinOf = (c, key) => {
+  const id = `${c.tag}|${key}`;
+  // `fallback` (a class with no profile that a member is assigned) is refused by the build gate: it is read as generated tables, not as a ROM
+  if (!twinReads.has(id)) twinReads.set(id, key === 'fallback' ? Promise.resolve(readTables(classedTwin(c, key), `${c.tag} [${key}] classed twin`)) : readRom(classedTwin(c, key), `${c.tag} [${key}] classed twin`));
+  return twinReads.get(id);
+};
+const fingerprint = (read) => read.sha ?? read.text; // a ROM's digest, or the generated tables' text when there is no ROM
 /** Run `check(case, key, built)` on every built variant of every case. */
 const everyRom = (check) => eachCase(async (c) => { for (const key of variantKeysOf(c)) check(c, key, await romOf(c, key)); });
 
@@ -107,7 +117,7 @@ test('MAGIC_POWER_ENABLED / MAGIC_DEFENCE_ENABLED follow the effective growth by
 
 test('the oracle reads are callable on their own: each rejects a corrupted read of a good ROM (they can fail)', async () => {
   // Catches an oracle that cannot fail. C2's sabotage tests run exactly these checks on the ROM of a wrong implementation; here the wrong
-  // implementation is simulated on the read itself, one field at a time, on a case with every feature (pieces, both gates).
+  // implementation is simulated on the read itself, one field at a time, on a case with every feature (pieces, MAG on and MDEF off).
   const spec = caseSpecs().find((s) => s.base.label === 'Save + naming together' && s.board.id === 4 && s.scenario.name === 'class-only-MAG');
   const c = await buildCase(spec.base, spec.board, spec.scenario);
   const good = await romOf(c, 'resolved');
@@ -151,7 +161,100 @@ test('hand-resolved variants relate as the design says: unreferenced profiles mo
   });
 });
 
+// ------------------------------------------------------------------------------------------------------------------ classed twins (C2)
+// Each hand-resolved variant above has a CLASSED twin (`classedTwin`: `classes`, `classId`, `equip.classes`, the retained data left in place).
+// The twin is judged by the SAME intent and the same check* functions as the hand-resolved variant, and must build the same ROM. One named
+// test per oracle group, so a wrong generator dies in a test that says what it broke; the ROM-to-ROM comparisons come last.
+
+/** Run `check(case, key, built)` on the built classed twin of every variant of every case. */
+const everyTwin = (check) => eachCase(async (c) => { for (const key of variantKeysOf(c)) if (key !== 'fallback' || check !== checkHeader) check(c, key, await twinOf(c, key)); }); // a tables-only read has no header
+
+test('classed twins: header byte 6 is the value the iNES spec gives', async () => {
+  // Catches a classed build whose header differs from the spec's (a class feature that reached cartridge.inc).
+  await everyTwin(checkHeader);
+});
+
+test('classed twins: pc_hp/mp/atk/def_at (and pc_mag/mdef_at when their gate is on) follow the CLASS profile at every level', async () => {
+  // Catches a resolver that reads the member's own profile or raw numbers first, falls back to raw numbers when the class has no profile
+  // (the member's retained profile must decide), reads a zero class stat as unset, or flattens a class's non-linear curve.
+  await everyTwin(checkGrowth);
+});
+
+test('classed twins: pc_spells_at is the CLASS list while classed, the member\'s own list otherwise; a retained spell never shows', async () => {
+  // Catches pc_spells_at still reading the member's raw list (a classed member keeps the retained one) and a union of class and member lists.
+  await everyTwin(checkSpells);
+});
+
+test('classed twins: eq_who is the member bit AND the class mask for a classed member, the member bit alone for a classless one', async () => {
+  // Catches eq_who still reading raw usableBy (classes honoured only in the UI), a class mask applied to a classless wearer (R3), and a
+  // mask read as the wrong class's bit.
+  await everyTwin(checkWho);
+});
+
+test('classed twins: MAGIC_POWER_ENABLED / MAGIC_DEFENCE_ENABLED follow the CLASS growth by reference', async () => {
+  // Catches a gate read from the member's raw fields (a class-only mage builds with MAG off, retained MAG under a zero class turns it on) and
+  // a gate that counts a class nobody is assigned.
+  await everyTwin(checkGates);
+});
+
+test('classed twins: the classed twin of every variant builds the byte-identical ROM of the hand-resolved project (zero engine change)', async () => {
+  // Catches any class feature that moves a byte the hand-resolved project does not have: a table, a label, the ROM size. Buffer.equals on the
+  // whole image (not a digest).
+  await eachCase(async (c) => {
+    for (const key of variantKeysOf(c)) {
+      const hand = await romOf(c, key);
+      const twin = await twinOf(c, key);
+      if (key === 'fallback') { // no ROM can exist for the classed twin: the generated tables are what is compared
+        assert.equal(twin.text, readTables(c.projects.fallback, `${c.tag} hand fallback`).text, `${c.tag} [fallback]: the classed twin's generated tables differ from the hand-resolved project's`);
+        continue;
+      }
+      assert.equal(twin.size, hand.size, `${c.tag} [${key}]: the classed twin has the size of the hand-resolved ROM`);
+      assert.ok(twin.rom.equals(hand.rom), `${c.tag} [${key}]: the classed twin's ROM differs from the hand-resolved project's (sha256 ${twin.sha} vs ${hand.sha})`);
+      assert.equal(twin.sha, hand.sha, `${c.tag} [${key}]: digests`);
+    }
+  });
+});
+
+test('unreferenced classes and all-null masks change no ROM byte; a nulled mask equals the same member bits written by hand', async () => {
+  // Catches a gate or table that counts a class nobody is assigned to, a class table that costs bytes while unused, and an all-null mask read as
+  // restricting. `base` and `unreferenced` twins are the no-class ROM; `resolved` with every mask nulled equals the hand-resolved project that
+  // carries the same member bits (and differs from `resolved`: the masks were doing something). Releases the ROM images it is done with.
+  await eachCase(async (c) => {
+    const base = await romOf(c, 'base');
+    for (const key of ['base', 'unreferenced']) {
+      assert.ok((await twinOf(c, key)).rom.equals(base.rom), `${c.tag} [${key}]: the classed twin is not the no-class ROM`);
+    }
+    if (c.scenario.name === 'main' && c.pieces) { // the mask axis does not depend on the gate scenario: one scenario per board and base is enough
+      const nulled = classedTwin(c, 'resolved');
+      const hand = structuredClone(c.projects.resolved);
+      c.pieceIds.forEach((id) => { hand.items[id].equip.usableBy = nulled.items[id].equip.usableBy; nulled.items[id].equip.classes = null; });
+      const [a, b] = [await readRom(nulled, `${c.tag} nulled masks`), await readRom(hand, `${c.tag} hand, same member bits`)];
+      assert.ok(a.rom.equals(b.rom), `${c.tag}: resolved classes with every mask null differ from the hand-resolved project with the same member bits`);
+      assert.notEqual(a.sha, (await romOf(c, 'resolved')).sha, `${c.tag}: nulling the masks changes the ROM`);
+    }
+    for (const key of variantKeysOf(c)) { delete (await romOf(c, key)).rom; delete (await twinOf(c, key)).rom; }
+  });
+});
+
+test('the build gate refuses a class with no profile that a member is assigned (class-no-profile), so the fallback is judged on generated tables', async () => {
+  // Catches a gate that lets an undefined-stats class reach the assembler (the resolver's fallback would then decide a real ROM).
+  await eachCase(async (c) => {
+    await assert.rejects(readRom(classedTwin(c, 'fallback'), `${c.tag} fallback`), /Warrior is the class of .* has no growth profile/, `${c.tag}: the build refuses the profile-less assigned class`);
+  });
+});
+
+test('classed twins relate as the hand-resolved variants do: swapped, remasked, fallback and unassigned all differ from resolved', async () => {
+  // Catches a classed build blind to a data axis (which would make the identity above vacuous): the twins differ exactly where the variants do.
+  await eachCase(async (c) => {
+    const resolved = await twinOf(c, 'resolved');
+    for (const key of variantKeysOf(c).filter((k) => ['swapped', 'remasked', 'fallback', 'unassigned'].includes(k))) {
+      assert.notEqual(fingerprint(await twinOf(c, key)), fingerprint(resolved), `${c.tag}: the classed twin "${key}" differs from "resolved"`);
+    }
+    assert.notEqual(resolved.sha, (await twinOf(c, 'base')).sha, `${c.tag}: a classed project differs from the classless one`);
+  });
+});
+
 test('summary: builds and assertions in the case family', async (t) => {
-  // Not a check: prints the counts the C0 report quotes. Runs last, after every group above has filled the build cache.
-  t.diagnostic(`classidentity: 36 cases, ${reads.size} ROM builds (each shared by every group), ${assertStats.count} assertions in the case-family library`);
+  // Not a check: prints the counts the reports quote. Runs last, after every group above has filled the build caches.
+  t.diagnostic(`classidentity: 36 cases, ${reads.size} hand-resolved ROM builds + ${twinReads.size} classed-twin ROM builds (each shared by every group), ${assertStats.count} assertions in the case-family library`);
 });

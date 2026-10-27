@@ -9,10 +9,10 @@
 // each variant the independent expectation (`intent`) of what the generated tables must say. No `classes`, `classId` or `equip.classes`
 // field exists in C0 -- no code reads them yet, and a test that is red on the tree it ships in is never committed.
 //
-// How C2 adds the classed (X) half WITHOUT rewriting this one. Each C0 variant has a classed twin that must build the identical ROM
-// (VARIANT_TWINS below). C2 adds ONE function here, `classedTwin(c, key)`, returning the classed project for a variant key (a `classes`
+// How C2 added the classed (X) half WITHOUT rewriting this one. Each C0 variant has a classed twin that must build the identical ROM
+// (VARIANT_TWINS below). C2 added ONE function here, `classedTwin(c, key)`, returning the classed project for a variant key (a `classes`
 // array on a structuredClone of c.projects.base, a `classId` per member, `equip.classes` per piece, the retained fields kept) and
-// asserts `rom(twin).sha === rom(c.projects[key]).sha` in a new test of classidentity.test.js. The variants, their intents, the oracle
+// asserts `rom(twin)` equals `rom(c.projects[key])` byte for byte in a new test of classidentity.test.js. The variants, their intents, the oracle
 // reads and the checks below do not change: the classed twin is judged by the SAME `intent[key]`, because the twin and the hand-resolved
 // variant must resolve to the same numbers. `ROLES` carries, per role, exactly the fields a class holds ({ name, profileId, spells }),
 // so C2 builds `classes` from `c.roles` directly.
@@ -32,6 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
+import { battleTables } from '../../main/build/battletables.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { BANKED_CELLS } from './equipcells.js';
 import { equipProject, SAMPLE_RPG } from './equipharness.js';
@@ -248,15 +249,103 @@ export async function buildCase(base, board, scenario) {
 export const caseSpecs = () => CASE_BASES.flatMap((base) => CASE_BOARDS.flatMap((board) => GATE_SCENARIOS.map((scenario) => ({ base, board, scenario }))));
 export const variantKeysOf = (c) => VARIANT_KEYS.filter((k) => c.projects[k]);
 
+// ------------------------------------------------------------------------------------------------------------- the classed twins
+
+/** The class assignment (member index -> class index | null) behind each variant key's classed twin; members 2 and 3 are always classless. */
+export const TWIN_ASSIGNMENT = { base: [null, null], resolved: [0, 1], swapped: [1, 0], remasked: [0, 1], fallback: [0, 1], unassigned: [null, null], unreferenced: [null, null] };
+
+/**
+ * The wearers of a piece under a (usableBy, class mask, assignment), written here from the design (member bit AND, for a classed member,
+ * mask null or the member's class bit) and NOT through memberMayWear: it is the check that classedTwin built the masks it meant to.
+ */
+const wearersOf = (usableBy, mask, assign) =>
+  [0, 1, 2, 3].filter((m) => ((usableBy >> m) & 1) === 1 && (assign[m] == null || mask === null || ((mask >> assign[m]) & 1) === 1));
+
+/**
+ * The CLASSED project that must build the same ROM as c.projects[key] (the hand-resolved one), judged by the same c.intent[key] / c.wearers[key].
+ * `classes` come from c.roles ({ name, profileId, spells } is exactly a class); each variant keeps what the hand-resolved one retains:
+ *   - members 0 and 1 keep their retained positive stats and retained spell lists (the `unassigned` variant's members are those, verbatim),
+ *     and member 0 keeps its retained profileId = 2 -- the shadowing witness: a resolver that reads the member's profile first builds Decoy
+ *     for member 0 in `resolved`, and one that ignores a class's absence of profile builds raw numbers in `fallback`;
+ *   - `fallback`: class 0 has NO profile (profileId null) and member 0 retains profile 2, so profile 2 decides. The build gate refuses this
+ *     project (`class-no-profile`), so it is judged through readTables (the generated tables), never as a ROM;
+ *   - pieces: each class mask is the set of classes of the classed wearers, and `usableBy` keeps every classed member plus the intended
+ *     wearers, so the CLASS mask (not the member bit) is what excludes a classed non-wearer; classless wearers are named by the member bit
+ *     alone and a mask never reaches them (R3). A mask covering every classed member is `null` (any class).
+ * Asserts the wearers the stored masks give equal c.wearers[key]. Never touches a fixture; the result is a fresh structuredClone.
+ */
+export function classedTwin(c, key) {
+  const assign = TWIN_ASSIGNMENT[key];
+  A.ok(assign, `${c.tag}: classedTwin knows variant "${key}"`);
+  const project = structuredClone(c.projects.base);
+  project.classes = [];
+  if (key === 'base') return project; // classes: [] and the project's own nulls: the classless project
+  project.growthProfiles = structuredClone(c.profiles);
+  project.classes = c.roles.map((role, id) => ({ id, name: role.name, profileId: role.profileId, spells: structuredClone(role.spells) }));
+  if (key === 'fallback') project.classes[0].profileId = null;
+  if (key !== 'unreferenced') for (const m of [0, 1]) project.party[m] = structuredClone(c.projects.unassigned.party[m]); // the retained data, profileId 2 on member 0
+  assign.forEach((classId, m) => { project.party[m].classId = classId; });
+  if (c.pieces) {
+    const pieceEquip = (proj, i) => proj.items[c.pieceIds[i]].equip;
+    if (key === 'unassigned') { // the resolved twin's masks and member bits, left in place; nobody is classed, so no mask reaches anyone
+      const resolved = classedTwin(c, 'resolved');
+      c.pieceNames.forEach((_, i) => { Object.assign(pieceEquip(project, i), { usableBy: pieceEquip(resolved, i).usableBy, classes: pieceEquip(resolved, i).classes }); });
+    } else if (key !== 'unreferenced') { // unreferenced: every mask stays null and usableBy everyone
+      const classed = [0, 1].filter((m) => assign[m] != null);
+      c.pieceNames.forEach((name, i) => {
+        const wanted = c.wearers[key][name];
+        const classedWearers = classed.filter((m) => wanted.includes(m));
+        const equip = pieceEquip(project, i);
+        equip.classes = classedWearers.length === classed.length ? null : classedWearers.reduce((mask, m) => mask | (1 << assign[m]), 0);
+        equip.usableBy = maskOf([...new Set([...wanted, ...classed])]);
+      });
+    }
+    c.pieceNames.forEach((name, i) => {
+      const { usableBy, classes } = pieceEquip(project, i);
+      A.deepEqual(wearersOf(usableBy, classes, assign), c.wearers[key][name], where(c, key, `the twin's ${name} (usableBy %${usableBy.toString(2)}, classes ${classes}) is worn by the intended members`));
+    });
+  }
+  return project;
+}
+
 // ------------------------------------------------------------------------------------------- building a ROM and reading it back
 
 /** The generated tables the oracles read, and the gate flags; a table is `null` when the build did not emit it. */
 export const ORACLE_TABLES = ['pc_hp_at', 'pc_mp_at', 'pc_atk_at', 'pc_def_at', 'pc_mag_at', 'pc_mdef_at', 'pc_spells_at', 'eq_who'];
 export const ORACLE_FLAGS = ['MAGIC_POWER_ENABLED', 'MAGIC_DEFENCE_ENABLED'];
 
+/** The bytes of the `label:` table in assembly text `all` (its .db operands), or null when the text has no such label. */
+const parseTable = (all, label) => {
+  const i = all.indexOf(`\n${label}:`);
+  if (i < 0) return null;
+  const rest = all.slice(i + label.length + 2);
+  const end = rest.search(/\n[A-Za-z_]\w*:/);
+  return [...(end < 0 ? rest : rest.slice(0, end)).matchAll(/\$([0-9A-Fa-f]{2})/g)].map((m) => parseInt(m[1], 16));
+};
+
+/**
+ * Read a project's generated battle tables WITHOUT building a ROM: the text `battleTables(project)` emits (what goes into assets/*.inc), parsed
+ * the way readRom parses it. For a project the build gate refuses (a class with no profile that a member is assigned: `class-no-profile` is an
+ * error, so buildProject throws before nesasm) -- the resolver's fallback is reachable only here. Returns { tag, text, tables, symbols, flags }
+ * shaped like readRom's so checkGrowth / checkSpells / checkWho / checkGates take it; `symbols` is true for every emitted table (there is no
+ * symbol file) and `flags` are derived from which gated tables were emitted. There is no header or image: checkHeader does not apply.
+ */
+export function readTables(project, tag) {
+  const text = `\n${battleTables(project)}`;
+  const tables = Object.fromEntries(ORACLE_TABLES.map((label) => [label, parseTable(text, label)]));
+  return {
+    tag,
+    text,
+    tables,
+    symbols: Object.fromEntries(ORACLE_TABLES.map((label) => [label, tables[label] !== null])),
+    flags: { MAGIC_POWER_ENABLED: Number(tables.pc_mag_at !== null), MAGIC_DEFENCE_ENABLED: Number(tables.pc_mdef_at !== null) }
+  };
+}
+
 /**
  * Build `project` in its own mkdtemp directory (removed before returning; a fixture is never written to) and read it back:
- * { tag, size, sha, hdr6, mirroring, tables: { label: bytes | null }, symbols: { label: boolean }, flags: { NAME: 0 | 1 } }.
+ * { tag, size, sha, rom, hdr6, mirroring, tables: { label: bytes | null }, symbols: { label: boolean }, flags: { NAME: 0 | 1 } }.
+ * `rom` is the ROM image itself (a Buffer): a test that has compared it releases it (`delete read.rom`) so 496 images are not held at once.
  * Tables and flags come from the generated build/assets/*.inc (what the assembler saw); `symbols` says whether the same label made it
  * into the ROM's own symbol file, so a table that was written but not assembled cannot satisfy an oracle.
  */
@@ -271,13 +360,7 @@ export async function readRom(project, tag) {
     const texts = [];
     for (const f of await fs.readdir(assetDir)) if (f.endsWith('.inc')) texts.push(await fs.readFile(path.join(assetDir, f), 'utf8'));
     const all = texts.join('\n');
-    const tableOf = (label) => {
-      const i = all.indexOf(`\n${label}:`);
-      if (i < 0) return null;
-      const rest = all.slice(i + label.length + 2);
-      const end = rest.search(/\n[A-Za-z_]\w*:/);
-      return [...(end < 0 ? rest : rest.slice(0, end)).matchAll(/\$([0-9A-Fa-f]{2})/g)].map((m) => parseInt(m[1], 16));
-    };
+    const tableOf = (label) => parseTable(all, label);
     const flags = {};
     for (const name of ORACLE_FLAGS) {
       const m = all.match(new RegExp(`^${name}\\s*=\\s*(\\d+)`, 'm'));
@@ -288,6 +371,7 @@ export async function readRom(project, tag) {
       tag,
       size: rom.length,
       sha: crypto.createHash('sha256').update(rom).digest('hex'),
+      rom,
       hdr6: rom[6],
       mirroring: project.cartridge.mirroring,
       tables: Object.fromEntries(ORACLE_TABLES.map((label) => [label, tableOf(label)])),

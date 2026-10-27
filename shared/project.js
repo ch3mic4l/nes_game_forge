@@ -6080,17 +6080,25 @@ export function createGrowthProfile(id, name = `Profile ${id}`) {
   return profile;
 }
 
-/** The growth record ({ base, perLevel, shape }) a member's `stat` is evaluated from: its profile's when it has a live one. */
+/**
+ * The growth record ({ base, perLevel, shape }) a member's `stat` is evaluated from. A class OWNS growth (design 3.2): the first live
+ * profile of, in order, the member's class, the member's own retained `profileId`, then the member's own baseX / xPerLevel numbers.
+ * A class with a live profile therefore wins over the member's profile and numbers (even over zero class stats); a profile-less
+ * class (a draft assigned anyway) falls back to what the member would have without it -- never to raw numbers while a retained
+ * profile exists.
+ */
 function growthRecord(project, member, stat) {
-  const profile = Number.isInteger(member.profileId) ? project.growthProfiles?.[member.profileId] : undefined;
+  const live = (id) => (Number.isInteger(id) ? project.growthProfiles?.[id] : undefined);
+  const profile = live(memberClass(project, member)?.profileId) ?? live(member.profileId);
   if (profile) return profile[stat];
   const fields = memberGrowthFields(stat);
   return { base: member[fields.base], perLevel: member[fields.perLevel], shape: 'linear' };
 }
 
 /**
- * The growth a party member actually has: `{ hp: { base, perLevel, shape }, mp, atk, def, mag, mdef }`, from its profile when
- * `member.profileId` indexes one, else from its own baseX / xPerLevel fields (shape 'linear'). A dangling id reads as no profile.
+ * The growth a party member actually has: `{ hp: { base, perLevel, shape }, mp, atk, def, mag, mdef }`, from its class's profile
+ * while classed, else from its profile when `member.profileId` indexes one, else from its own baseX / xPerLevel fields (shape
+ * 'linear'). A dangling id reads as no profile.
  * Every production consumer of a party stat table or a magic gate reads growth through this and memberStatAt, never the raw
  * fields (those stay the member's retained custom numbers while a profile is assigned).
  */
