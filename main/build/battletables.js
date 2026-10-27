@@ -59,6 +59,8 @@ import {
   projectNeedsNameSeed,
   projectUsesNameToken,
   memberStatAt,
+  memberClass,
+  memberSpellList,
   projectWithoutNameToken,
   projectWithoutMonsterSpellList,
   projectUsesBattleAnimation,
@@ -581,29 +583,51 @@ export function checkBattleTables(project) {
       counts: [project.spells.length]
     });
   }
+  // The learnable lists the ROM really contains (memberSpellList): a classless member's own, and the list of each class some member
+  // is assigned, once. A classed member's retained own list is shadowed -- not in the ROM -- so it is not scanned.
+  const learnLists = [];
+  const seenClasses = new Set();
   for (const [memberIndex, member] of party.entries()) {
-    for (const [entryIndex, entry] of (member.spells ?? []).entries()) {
+    const cls = memberClass(project, member);
+    if (!cls) learnLists.push({ who: member.name, subject: { member: memberIndex }, list: memberSpellList(project, member) });
+    else if (!seenClasses.has(member.classId)) {
+      seenClasses.add(member.classId);
+      learnLists.push({ who: `the ${cls.name} class`, subject: { class: member.classId }, list: memberSpellList(project, member) });
+    }
+  }
+  for (const { who, subject, list } of learnLists) {
+    for (const [entryIndex, entry] of list.entries()) {
       if (entry.level > project.rpg.maxLevel) {
         problems.push({
           severity: 'warning',
           where: 'Character Forge',
           message:
-            `${member.name} learns a spell at level ${entry.level}, past the maximum of ` +
+            `${who} learns a spell at level ${entry.level}, past the maximum of ` +
             `${project.rpg.maxLevel}, so it will never be learned.`,
           rule: 'spell-learned-past-max',
-          subject: { member: memberIndex, spell: entryIndex },
+          subject: { ...subject, spell: entryIndex },
           counts: [entry.level, project.rpg.maxLevel]
         });
       }
     }
   }
-  const profileUsers = new Set(party.map((member) => member.profileId));
+  // A profile counts as used when a class points at it (assigned or still a draft: a class is an authored use) or when a member that
+  // is not shadowed by a class does. A profile only a classed member retains does not reach the game, so it warns -- naming who keeps it.
+  const profileUsers = new Set([
+    ...(project.classes ?? []).map((cls) => cls.profileId),
+    ...party.filter((member) => !memberClass(project, member)).map((member) => member.profileId)
+  ]);
   for (const [profileIndex, profile] of (project.growthProfiles ?? []).entries()) {
     if (profileUsers.has(profileIndex)) continue;
+    const shadowed = party.filter((member) => memberClass(project, member) && member.profileId === profileIndex);
     problems.push({
       severity: 'warning',
       where: 'Character Forge',
-      message: `Growth profile "${profile.name}" is not used by any party member, so it has no effect on the game.`,
+      message:
+        `Growth profile "${profile.name}" is not used by any class or party member with no class, so it has no effect on the game.` +
+        (shadowed.length
+          ? ` It is only kept by ${shadowed.map((member) => member.name).join(', ')}, whose class decides their growth.`
+          : ''),
       rule: 'growth-profile-unused',
       subject: { profile: profileIndex },
       counts: []

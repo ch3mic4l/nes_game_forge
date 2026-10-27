@@ -128,9 +128,9 @@ test('equip stats clamp to an integer 0-255 and usableBy is masked to the four p
     { ...plain(2, 'C'), equip: { slot: 2, atk: null, def: undefined, mag: NaN, mdef: 12.4, usableBy: 0b0101 } }
   ];
   const [a, b, c] = normalizeProject(project).items.map((item) => item.equip);
-  assert.deepEqual(a, { slot: 0, atk: 255, def: 0, mag: 8, mdef: 0, usableBy: 0b1111 });
-  assert.deepEqual(b, { slot: 1, atk: 255, def: 0, mag: 255, mdef: 0, usableBy: 0b0101 });
-  assert.deepEqual(c, { slot: 2, atk: 0, def: 0, mag: 0, mdef: 12, usableBy: 0b0101 });
+  assert.deepEqual(a, { slot: 0, atk: 255, def: 0, mag: 8, mdef: 0, usableBy: 0b1111, classes: null });
+  assert.deepEqual(b, { slot: 1, atk: 255, def: 0, mag: 255, mdef: 0, usableBy: 0b0101, classes: null });
+  assert.deepEqual(c, { slot: 2, atk: 0, def: 0, mag: 0, mdef: 12, usableBy: 0b0101, classes: null });
 });
 
 test('a piece that does not say who may wear it is wearable by everyone; an explicit 0 stays 0', () => {
@@ -202,7 +202,7 @@ test('equipment on an action game is kept, not stripped, by normalization', () =
   project.items = [piece(0, 'Sword', 0, { atk: 5, mag: 9 })];
   project.party[0].startEquip = [0, null, null];
   const out = normalizeProject(project);
-  assert.deepEqual(out.items[0].equip, { slot: 0, atk: 5, def: 0, mag: 9, mdef: 0, usableBy: EVERYONE });
+  assert.deepEqual(out.items[0].equip, { slot: 0, atk: 5, def: 0, mag: 9, mdef: 0, usableBy: EVERYONE, classes: null });
   assert.deepEqual(out.party[0].startEquip, [0, null, null]);
 });
 

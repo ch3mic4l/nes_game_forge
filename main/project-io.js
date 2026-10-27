@@ -162,6 +162,8 @@ async function saveProjectNow(dir, data) {
   await writeJson(path.join(dir, 'encounterGroups.json'), project.encounterGroups ?? []);
   // Always written, empty array included, like encounterGroups.json above.
   await writeJson(path.join(dir, 'growthProfiles.json'), project.growthProfiles ?? []);
+  // Always written, empty array included, like growthProfiles.json above.
+  await writeJson(path.join(dir, 'classes.json'), project.classes ?? []);
   await writeJson(path.join(dir, 'input.json'), project.input);
   await writeJson(path.join(dir, 'party.json'), project.party);
   await writeJson(path.join(dir, 'spells.json'), project.spells);
@@ -356,6 +358,8 @@ export async function loadProject(dir) {
     encounterGroups: await readJson(path.join(dir, 'encounterGroups.json')),
     // Missing (a project saved before growth profiles existed) reads back as null; normalizeProject makes it [].
     growthProfiles: await readJson(path.join(dir, 'growthProfiles.json')),
+    // Missing (a project saved before classes existed) reads back as null; normalizeProject makes it [].
+    classes: await readJson(path.join(dir, 'classes.json')),
     input: await readJson(path.join(dir, 'input.json')),
     party: await readJson(path.join(dir, 'party.json')),
     spells: await readJson(path.join(dir, 'spells.json')),

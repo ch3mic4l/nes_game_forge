@@ -294,7 +294,7 @@ test('an action game: equipment is invisible to the UI and the data is kept', ()
   action.items = [item(0, 'Sword', gear(0, { atk: 3 }))];
   assert.equal(equipmentVisible(action), false);
   assert.equal(equipmentVisible(rpg()), true);
-  assert.deepEqual(normalizeProject(structuredClone(action)).items[0].equip, gear(0, { atk: 3 }), 'kept through normalization');
+  assert.deepEqual(normalizeProject(structuredClone(action)).items[0].equip, { ...gear(0, { atk: 3 }), classes: null }, 'kept through normalization');
   assert.ok(validateProject(action).some((p) => p.rule === 'equip-ignored-action-game'), 'the C2 warning still shows');
   assert.equal(EQUIP_SLOTS.length, 3);
 });

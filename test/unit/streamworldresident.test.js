@@ -803,9 +803,13 @@ const CANONICAL_HASHES = {
   // Re-pinned again (growth profiles, data layer): createProject gained `growthProfiles: []` and createPartyMember `profileId: null`.
   // That is the whole change -- the canonical JSON of each shape with those two keys deleted hashes to the previous three values
   // (action d8765e02..., rpg 541a36c0..., action-mixed 8a7b9764...).
-  action: '383ef6ac633ddd2c9e08db51631346c59d12835884f2da1dd439c933122f7f4c',
-  rpg: '95d2a8a647268f65e2f96c62bb56acd2e668bdc17368c138d7aff58912e1567d',
-  'action-mixed': 'd5164042ba841c63a44b4ed3cf64fd9eeb6ec4ccc5717b939b5f973313984eae'
+  //
+  // Re-pinned again (classes, data layer): createProject gained `classes: []` and createPartyMember `classId: null`. That is the whole
+  // change -- the canonical JSON of each shape with those two keys deleted hashes to the previous three values (action 383ef6ac...,
+  // rpg 95d2a8a6..., action-mixed d5164042...).
+  action: '2eb8f44ba8b8277e72487a6598251edcb12a972268ba41a70e77414f4ba22ef1',
+  rpg: '13fac2e6913c39b1747407f964607421ec6cffbed5cf97a44315d8c665623a1b',
+  'action-mixed': 'd92c9ba224ad23a874a05c611f4393e746e2a08ab81a4fa7157f507e5cc29859'
 };
 
 test('test/lib/streamedproject.js: the canonical JSON of each generator shape hashes to a pinned SHA-256', () => {

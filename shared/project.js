@@ -1183,6 +1183,9 @@ export const RPG_LIMITS = {
   encounterGroups: 32,
   // Growth profiles (named stat curves a party member may reference): profiles per project.
   growthProfiles: 8,
+  // Classes (a named growth profile + learnable spell list + equipment mask a member may be assigned): classes per project. A class
+  // mask on an item is one byte, so this is also the width of `item.equip.classes`.
+  classes: 8,
   encounterTableEntries: 8,
   encounterWeightMax: 16,
   encounterEntriesTotal: 255,
@@ -2855,6 +2858,12 @@ export function renumberSpellDeletion(project, index) {
   }
   for (const member of project.party ?? []) {
     member.spells = (member.spells ?? [])
+      .filter((entry) => entry.spellId !== index)
+      .map((entry) => ({ ...entry, spellId: shift(entry.spellId) }));
+  }
+  // A class owns a learnable list of its own (docs: classes), rewritten by exactly the same rule as a member's.
+  for (const cls of project.classes ?? []) {
+    cls.spells = (cls.spells ?? [])
       .filter((entry) => entry.spellId !== index)
       .map((entry) => ({ ...entry, spellId: shift(entry.spellId) }));
   }
@@ -4781,6 +4790,8 @@ export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
     eva: 8,
     // Index into project.growthProfiles, or null = this member's own base*/ *PerLevel fields above.
     profileId: null,
+    // Index into project.classes, or null = classless (the member's own growth, spells and gear bits, as before classes existed).
+    classId: null,
     attackAnim: null, // this member's flipbook on a physical attack (§16)
     spells: [], // { spellId, level } — learned on reaching that level
     // What the member wears at New Game, one entry per EQUIP_SLOTS slot: an item id
@@ -4835,6 +4846,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     items: [],
     encounterGroups: [],
     growthProfiles: [],
+    classes: [],
     sprites: {
       metasprites: [],
       animations: [],
@@ -6091,28 +6103,137 @@ export function memberStatAt(project, member, stat, level) {
   return profileStatAt(growthRecord(project, member, stat), level);
 }
 
-/** The party members that reference growth profile `index`, so a deletion can be refused and name them. */
-export function growthProfileUsers(project, index) {
-  return (project.party ?? []).filter((member) => member.profileId === index);
+/** The classes and the party members that reference growth profile `index`, split. */
+function profileReferences(project, index) {
+  return {
+    classes: (project.classes ?? []).filter((cls) => cls.profileId === index),
+    members: (project.party ?? []).filter((member) => member.profileId === index)
+  };
 }
 
 /**
- * What every reference to a growth profile becomes once `index` is gone from `project.growthProfiles`: each member's higher
- * `profileId` shifts down one. Deleting a referenced profile is refused (ruling R2), so this THROWS, before touching anything,
- * when a member still references `index` -- a skipped refusal can never silently null a member. It reads no profile data, so
+ * Everything that references growth profile `index`, so a deletion can be refused and name it: the classes naming it as their
+ * profile, then the party members whose own `profileId` is it. A classed member that retains a `profileId` is still listed
+ * (the id is retained data a later unassign would bring back), so the refusal covers every reference, not just the effective ones.
+ * A class is an entry of `project.classes`; a member is an entry of `project.party`.
+ */
+export function growthProfileUsers(project, index) {
+  const { classes, members } = profileReferences(project, index);
+  return [...classes, ...members];
+}
+
+/**
+ * What every reference to a growth profile becomes once `index` is gone from `project.growthProfiles`: each member's and each class's
+ * higher `profileId` shifts down one. Deleting a referenced profile is refused (ruling R2), so this THROWS, before touching anything,
+ * when a class or member still references `index` -- a skipped refusal can never silently null one. It reads no profile data, so
  * either order against the splice is correct; the caller splices, then restamps `id = index` over the profiles.
  *
  * Mutates `project` and returns it.
  */
 export function renumberGrowthProfileDeletion(project, index) {
-  const users = growthProfileUsers(project, index);
-  if (users.length) {
+  const { classes, members } = profileReferences(project, index);
+  if (classes.length || members.length) {
+    const names = members.map((member) => member.name).join(', ');
     throw new Error(
-      `Growth profile ${index} is used by ${users.map((member) => member.name).join(', ')}; set their Growth to Custom first.`
+      classes.length
+        ? `Growth profile ${index} is used by classes ${classes.map((cls) => cls.name).join(', ')}` +
+            `${members.length ? ` and by ${names}` : ''}; point those classes at another profile` +
+            `${members.length ? " and set those members' Growth to Custom" : ''} first.`
+        : `Growth profile ${index} is used by ${names}; set their Growth to Custom first.`
     );
   }
   for (const member of project.party ?? []) {
     if (Number.isInteger(member.profileId) && member.profileId > index) member.profileId -= 1;
+  }
+  for (const cls of project.classes ?? []) {
+    if (Number.isInteger(cls.profileId) && cls.profileId > index) cls.profileId -= 1;
+  }
+  return project;
+}
+
+/** A new class: no growth profile yet (a draft -- `class-no-profile` is an error only once a member is assigned it), no spells. */
+export function createClass(id, name = `Class ${id}`) {
+  return { id, name, profileId: null, spells: [] };
+}
+
+/** The class a party member is assigned, or `undefined` for a classless member (no `classId`, or one that names no class). */
+export function memberClass(project, member) {
+  return Number.isInteger(member?.classId) ? project.classes?.[member.classId] : undefined;
+}
+
+/**
+ * The one answer to "may party member `memberIndex` wear this piece": the item's member bit AND, for a CLASSED member, the piece's class
+ * mask (`equip.classes`: `null` = any class, else bit c = class c may wear). A classless member is not restricted by a class mask
+ * (ruling R3). A piece that is not equipment is worn by nobody. A pure read.
+ */
+export function memberMayWear(project, item, memberIndex) {
+  if (!item?.equip) return false;
+  if (((item.equip.usableBy >> memberIndex) & 1) === 0) return false;
+  const member = project.party?.[memberIndex];
+  if (!memberClass(project, member) || !Number.isInteger(item.equip.classes)) return true;
+  return ((item.equip.classes >> member.classId) & 1) === 1;
+}
+
+/**
+ * The learnable-spell list a member actually has: its class's while classed (ruling R2, "class replaces, restorable"), else its own.
+ * The member's own `spells` are retained but ignored while classed, and come back unassigned. A pure read.
+ */
+export function memberSpellList(project, member) {
+  return memberClass(project, member)?.spells ?? member.spells ?? [];
+}
+
+/**
+ * Starting-equipment invariant for a class edit: clears, in place, exactly the starting slots a class edit made ineligible. A slot is
+ * ineligible when it names a piece of its own slot that `memberMayWear` refuses -- the very condition `start-equip-not-allowed`
+ * reports -- so a slot naming a non-piece or a piece of another slot (other rules' business) is left alone, as is every eligible one.
+ * `target` is `{ member }` (that member index) or `{ item }` (that item index, across every member). Mutates and returns `project`.
+ */
+export function clearStartEquipNotAllowed(project, target) {
+  const members = Number.isInteger(target?.member) ? [target.member] : Number.isInteger(target?.item) ? (project.party ?? []).map((_, i) => i) : [];
+  for (const memberIndex of members) {
+    const start = project.party?.[memberIndex]?.startEquip;
+    if (!Array.isArray(start)) continue;
+    start.forEach((id, slot) => {
+      if (id === null || id === undefined) return;
+      if (Number.isInteger(target.item) && id !== target.item) return;
+      const piece = project.items?.[id];
+      if (piece?.equip && piece.equip.slot === slot && !memberMayWear(project, piece, memberIndex)) start[slot] = null;
+    });
+  }
+  return project;
+}
+
+/** The party members assigned class `index`, so a class deletion can be refused and name them. */
+export function classUsers(project, index) {
+  return (project.party ?? []).filter((member) => member.classId === index);
+}
+
+/**
+ * What every reference to a class becomes once `index` is gone from `project.classes`: each member's higher `classId` shifts down one,
+ * and so does every item's class mask (`mask = ((mask >> (index + 1)) << index) | (mask & low)`, the member-mask idiom of
+ * `renumberPartyMemberDeletion`). `null` (any class) is not a mask and is untouched; a mask the removal empties stays 0 -- no class may
+ * wear it, classless members still may -- and `class-mask-empty` warns, rather than widening it to `null` (ruling R4a).
+ * Deleting a class a member is assigned is refused (ruling R4c), so this THROWS, before touching anything, naming the members. The
+ * caller splices `project.classes` and restamps `id = index`.
+ *
+ * Mutates `project` and returns it.
+ */
+export function renumberClassDeletion(project, index) {
+  const users = classUsers(project, index);
+  if (users.length) {
+    throw new Error(`Class ${index} is assigned to ${users.map((member) => member.name).join(', ')}; remove the class from them first.`);
+  }
+  for (const member of project.party ?? []) {
+    if (Number.isInteger(member.classId) && member.classId > index) member.classId -= 1;
+  }
+  // An index outside 0-7 (or not an integer) leaves every mask unchanged: a JS `1 << index` wraps at 32 and would corrupt it.
+  if (Number.isInteger(index) && index >= 0 && index < RPG_LIMITS.classes) {
+    const low = (1 << index) - 1;
+    for (const item of project.items ?? []) {
+      const mask = item.equip?.classes;
+      if (!Number.isInteger(mask)) continue;
+      item.equip.classes = ((mask >> (index + 1)) << index) | (mask & low);
+    }
   }
   return project;
 }
@@ -6246,7 +6367,31 @@ function normalizeGrowthProfiles(raw) {
   });
 }
 
-function normalizePartyMember(raw, id, spellCount, maxLevel, profileCount = 0) {
+/**
+ * A class: a name, the growth profile it points at (a dangling or non-integer id is "no profile" -- a draft class), and the spells it
+ * teaches, kept to the same rules as a member's own list.
+ */
+function normalizeClasses(raw, profileCount, spellCount, maxLevel) {
+  return (Array.isArray(raw) ? raw : []).slice(0, RPG_LIMITS.classes).map((entry, id) => ({
+    ...createClass(id, normalizeLabel(entry?.name, `Class ${id}`)),
+    profileId:
+      Number.isInteger(entry?.profileId) && entry.profileId >= 0 && entry.profileId < profileCount ? entry.profileId : null,
+    spells: normalizeLearnedSpells(entry?.spells, spellCount, maxLevel)
+  }));
+}
+
+/** A learnable list ({ spellId, level }[]): entries naming no spell dropped, capped, level clamped to 1..maxLevel. */
+function normalizeLearnedSpells(raw, spellCount, maxLevel) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((entry) => spellCount > 0 && Number(entry?.spellId) < spellCount)
+    .slice(0, RPG_LIMITS.spells)
+    .map((entry) => ({
+      spellId: clamp(entry?.spellId, 0, Math.max(0, spellCount - 1), 0),
+      level: clamp(entry?.level, 1, maxLevel, 1)
+    }));
+}
+
+function normalizePartyMember(raw, id, spellCount, maxLevel, profileCount = 0, classCount = 0) {
   const base = createPartyMember(id);
   const num = (key, min, max) => clamp(raw?.[key], min, max, base[key]);
   return {
@@ -6273,6 +6418,8 @@ function normalizePartyMember(raw, id, spellCount, maxLevel, profileCount = 0) {
     mdefPerLevel: num('mdefPerLevel', GROWTH_LIMITS.mdef.perLevelMin, GROWTH_LIMITS.mdef.perLevelMax),
     // A dangling or non-integer reference is "no profile": the generator would otherwise emit a NaN row.
     profileId: Number.isInteger(raw?.profileId) && raw.profileId >= 0 && raw.profileId < profileCount ? raw.profileId : null,
+    // Likewise: a dangling class is "classless".
+    classId: Number.isInteger(raw?.classId) && raw.classId >= 0 && raw.classId < classCount ? raw.classId : null,
     speed: num('speed', 0, 255),
     acc: num('acc', 0, 255),
     eva: num('eva', 0, 255),
@@ -6283,13 +6430,7 @@ function normalizePartyMember(raw, id, spellCount, maxLevel, profileCount = 0) {
       Number.isInteger(raw?.attackAnim) && raw.attackAnim >= 0 && raw.attackAnim <= 255
         ? raw.attackAnim
         : null,
-    spells: (Array.isArray(raw?.spells) ? raw.spells : [])
-      .filter((entry) => spellCount > 0 && Number(entry?.spellId) < spellCount)
-      .slice(0, RPG_LIMITS.spells)
-      .map((entry) => ({
-        spellId: clamp(entry?.spellId, 0, Math.max(0, spellCount - 1), 0),
-        level: clamp(entry?.level, 1, maxLevel, 1)
-      })),
+    spells: normalizeLearnedSpells(raw?.spells, spellCount, maxLevel),
     // An id or null per slot. Whether the id names a piece of that slot is the
     // post-pass in normalizeProject's question: this function does not see `items`.
     startEquip: Array.from({ length: RPG_LIMITS.equipSlots }, (_, slot) => {
@@ -6488,7 +6629,7 @@ function normalizeItem(raw, id, rawActors) {
  * An item's equipment record (docs/design-equipment.md section 1): `null` for an ordinary item, else
  * `{ slot, atk, def, mag, mdef, usableBy }`. A `slot` that is not an index into EQUIP_SLOTS makes the whole
  * record `null` -- an unusable piece becomes an ordinary item rather than a piece in a slot that does not
- * exist. Each stat is an integer 0-255; `usableBy` is masked to the party's bits. Not gated on the game type:
+ * exist. Each stat is an integer 0-255; `usableBy` is masked to the party's bits; `classes` is null (any class) or a class mask. Not gated on the game type:
  * switching a project to an action game must not lose the data (the engine and the UI ignore it there).
  */
 function normalizeEquip(raw) {
@@ -6502,7 +6643,10 @@ function normalizeEquip(raw) {
     mdef: clamp(raw.mdef, 0, 255, 0),
     // The party mask applies straight to a supplied integer (two's-complement `&`, so -1 is 0b1111 and 256 is 0): no byte clamp first,
     // which would turn 0x101 into everyone. Anything that is not an integer (missing, 1.5, NaN, a string) is "did not say": everyone.
-    usableBy: Number.isInteger(raw.usableBy) ? raw.usableBy & EVERYONE_MASK : EVERYONE_MASK
+    usableBy: Number.isInteger(raw.usableBy) ? raw.usableBy & EVERYONE_MASK : EVERYONE_MASK,
+    // The class mask: `null` = any class, an integer = bit c set means class c may wear it (0 = no class may). Masked to the class byte
+    // here and to the class COUNT in normalizeProject, which alone knows it; anything that is not an integer is "did not say": any class.
+    classes: Number.isInteger(raw.classes) ? raw.classes & 0xff : null
   };
 }
 
@@ -6738,9 +6882,18 @@ export function normalizeProject(raw) {
     .map(normalizeSpell);
   // Before the party: a member's profileId is judged against how many profiles exist.
   const growthProfiles = normalizeGrowthProfiles(raw.growthProfiles);
+  // After profiles and spells (a class names both), before the party and the items (a member names a class, a piece masks them).
+  const classes = normalizeClasses(raw.classes, growthProfiles.length, spells.length, rpg.maxLevel);
   const party = (Array.isArray(raw.party) ? raw.party : [])
     .slice(0, characterCap(project.gameType))
-    .map((member, index) => normalizePartyMember(member, index, spells.length, rpg.maxLevel, growthProfiles.length));
+    .map((member, index) =>
+      normalizePartyMember(member, index, spells.length, rpg.maxLevel, growthProfiles.length, classes.length)
+    );
+  // An explicit class mask holds only the bits of classes that exist; `null` (any class) is not a mask and is kept.
+  const classBits = (1 << classes.length) - 1;
+  for (const item of items) {
+    if (item.equip && item.equip.classes !== null) item.equip.classes &= classBits;
+  }
   // Every project always has someone to play as.
   if (!party.length) party.push(createPartyMember(0, 'Hero'));
   // A starting piece has to name an equipment piece of its slot. Done here, after both lists exist, because
@@ -6764,6 +6917,7 @@ export function normalizeProject(raw) {
     items,
     encounterGroups,
     growthProfiles,
+    classes,
     sprites: {
       metasprites: (raw.sprites?.metasprites ?? []).map(normalizeMetasprite),
       animations: (raw.sprites?.animations ?? []).map(normalizeAnimation),
@@ -8590,6 +8744,45 @@ export function validateProject(project) {
         );
       }
     });
+    // Classes (docs/design-classes: C1). A class that some member is assigned has to name a growth profile; a draft one may not yet.
+    (project.classes ?? []).forEach((cls, classIndex) => {
+      const holders = project.party.filter((member) => member.classId === classIndex);
+      if (holders.length && !project.growthProfiles?.[cls.profileId]) {
+        add(
+          'error',
+          'Character Forge',
+          `${cls.name} is the class of ${holders.map((member) => member.name).join(', ')} but has no growth profile, so its stats ` +
+            'are undefined. Choose a growth profile for the class in the Character Forge, or take the class off those characters.',
+          'class-no-profile', { class: classIndex }, []
+        );
+      }
+    });
+    // An explicit mask is a stored restriction whether or not a class still exists (deleting the last class leaves it at 0, ruling R4a).
+    const classBits = (1 << (project.classes ?? []).length) - 1;
+    project.items.forEach((item, itemIndex) => {
+      const mask = item.equip?.classes;
+      if (!Number.isInteger(mask)) return;
+      if ((mask & classBits) === 0) {
+        add(
+          'warning',
+          'Items Forge',
+          `${item.name} can be worn by no class: its class list is empty. Characters with a class cannot wear it; characters ` +
+            'with no class still can. Tick a class in the Items Forge, or choose "Any class".',
+          'class-mask-empty', { item: itemIndex }, []
+        );
+      }
+      project.party.forEach((member, memberIndex) => {
+        if (((item.equip.usableBy >> memberIndex) & 1) === 1 && !memberClass(project, member)) {
+          add(
+            'warning',
+            'Items Forge',
+            `${item.name} is limited to some classes, but ${member.name} has no class, so the class limit does not apply to ` +
+              `${member.name}. Give ${member.name} a class, or take ${member.name} off the piece.`,
+            'piece-class-mask-classless-wearer', { item: itemIndex, member: memberIndex }, []
+          );
+        }
+      });
+    });
     project.party.forEach((member, memberIndex) => {
       (member.startEquip ?? []).slice(0, RPG_LIMITS.equipSlots).forEach((id, slot) => {
         if (id === null || id === undefined) return;
@@ -8611,12 +8804,17 @@ export function validateProject(project) {
               `${EQUIP_SLOTS[piece.equip.slot]} piece. Choose a ${EQUIP_SLOTS[slot]} or clear the slot.`,
             'start-equip-wrong-slot', subject, []
           );
-        } else if (((piece.equip.usableBy >> memberIndex) & 1) === 0) {
+        } else if (!memberMayWear(project, piece, memberIndex)) {
+          // The member bit and the class mask are one question (memberMayWear); only the advice depends on which one said no.
+          const classBlocked = ((piece.equip.usableBy >> memberIndex) & 1) === 1;
           add(
             'error',
             'Character Forge',
-            `${member.name} starts wearing ${piece.name}, which ${member.name} is not allowed to wear. Allow ` +
-              'the piece to this character in the Items Forge, or choose another.',
+            classBlocked
+              ? `${member.name} starts wearing ${piece.name}, which ${member.name}'s class (${memberClass(project, member).name}) ` +
+                'is not allowed to wear. Allow the class to wear the piece in the Items Forge, or choose another.'
+              : `${member.name} starts wearing ${piece.name}, which ${member.name} is not allowed to wear. Allow ` +
+                'the piece to this character in the Items Forge, or choose another.',
             'start-equip-not-allowed', subject, []
           );
         }

@@ -444,8 +444,17 @@ test('M6: after a map reorder the rebuilt links\' targets are the permutation of
 // Re-pinned for growth profiles C3 fix 1: audited -- `git diff -U0 shared/project.js` against C2 adds the exported clampGrowthValue (a clamp through
 // GROWTH_LIMITS) and points normalizeGrowthProfiles' base / perLevel at it (same values); remapScreenReferences, projectEvents and allCommands are
 // untouched and no stored screen reference is added.
+// Re-pinned for classes C1: audited -- `git diff -U0 shared/project.js` adds RPG_LIMITS.classes, createClass, memberClass / memberMayWear /
+// memberSpellList / clearStartEquipNotAllowed / classUsers / renumberClassDeletion, the class half of growthProfileUsers /
+// renumberGrowthProfileDeletion / renumberSpellDeletion, normalizeClasses (+ the shared normalizeLearnedSpells), `classes: []` on createProject,
+// `classId` on createPartyMember and normalizePartyMember, `classes` on normalizeEquip's record, three validateProject rules and the
+// memberMayWear form of start-equip-not-allowed; remapScreenReferences, projectEvents and allCommands are untouched and no stored screen
+// reference is added (a class names a profile and spells, a mask names classes, a classId names a class -- none names a screen).
+// Re-pinned for classes C1 fix 1: audited -- `git diff -U0 shared/project.js` against the first C1 pin is one hunk in validateProject (the two item-mask
+// diagnostics no longer wait for a non-empty class table); remapScreenReferences, projectEvents and allCommands are untouched and no stored screen
+// reference is added.
 const PINNED_DIGESTS = {
-  'shared/project.js': 'c2183bd5e9768c49428e6c897744cb07c354ba3261484ae6cc6cd1158f64c458',
+  'shared/project.js': '1da5b9b8e68fa02915a14afd407d6f9d4a6e424c5a8ed4875d7e0efbc495bfca',
   'shared/eventrules.js': '8fb4ac1e24cdd60802fde56eeee83ac0d1983c86bfcca509ec026b087c611f72'
 };
 
